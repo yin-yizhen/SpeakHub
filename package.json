@@ -1,0 +1,44 @@
+{
+  "name": "speaksub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal Windows speaking subtitle prototype",
+  "author": "SpeakSub",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "prepare:ecdict": "node scripts/prepare-ecdict.mjs",
+    "dev": "electron-vite dev",
+    "dev:electron": "electron-vite dev",
+    "start": "electron-vite preview",
+    "build": "electron-vite build",
+    "package:win": "pnpm build && electron-builder --win --x64",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "build": {
+    "appId": "com.speaksub.app",
+    "productName": "SpeakSub",
+    "directories": { "output": "release" },
+    "files": ["out/**", "resources/dictionaries/**", "package.json"],
+    "win": { "target": ["nsis"] }
+  },
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.16",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.3",
+    "electron": "^38.3.0",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^4.0.0",
+    "jsdom": "^27.0.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7",
+    "vitest": "^3.2.4"
+  }
+}

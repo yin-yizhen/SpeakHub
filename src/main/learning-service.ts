@@ -1,0 +1,65 @@
+import { z } from 'zod'
+import type { DictionaryResult, ReviewResult, TranscriptEvent } from '../shared/types'
+import { LocalDictionary } from './local-dictionary'
+import { SecureSettings } from './secure-settings'
+
+const reviewSchema = z.object({
+  topic: z.string(), summary: z.string(),
+  issues: z.array(z.object({ original: z.string(), improved: z.string(), reason: z.string() })).min(0).max(8),
+  vocabulary: z.array(z.object({ term: z.string(), meaning: z.string() })).max(12),
+  nextPractice: z.string()
+})
+
+type LlmMessage = { role: 'system' | 'user' | 'assistant'; content: string }
+
+export class LearningService {
+  private readonly localDictionary?: LocalDictionary
+
+  constructor(private readonly settings: SecureSettings, dictionaryDir?: string) {
+    this.localDictionary = dictionaryDir ? new LocalDictionary(dictionaryDir) : undefined
+  }
+
+  async lookup(query: string, sentence?: string): Promise<DictionaryResult> {
+    const config = this.settings.get()
+    const base: DictionaryResult = this.localDictionary?.lookup(query) ?? { query, definitions: [] }
+    if (config.hasLlmKey) {
+      const llm = await this.askLlm(`Explain the English selection for a Chinese learner. Return JSON only: {"contextualMeaning":"...","naturalAlternative":"..."}. Selection: ${query}. Context: ${sentence ?? ''}`)
+      const contextual = z.object({ contextualMeaning: z.string().optional(), naturalAlternative: z.string().optional() }).parse(llm)
+      return { ...base, ...contextual }
+    }
+    if (!base.definitions.length) throw new Error('The built-in dictionary did not find this word. Configure an OpenAI-compatible LLM for fallback lookup.')
+    return base
+  }
+
+  async review(events: TranscriptEvent[], strength: string): Promise<ReviewResult> {
+    const transcript = events.map((event) => `${event.speaker === 'assistant' ? 'AI' : 'Me'}: ${event.text}`).join('\n')
+    const result = await this.askLlm(`You are a concise English speaking coach. Review this transcript at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string"}],"nextPractice":"string"}. Use Chinese for explanations. Transcript:\n${transcript}`)
+    return reviewSchema.parse(result)
+  }
+
+  async chat(events: TranscriptEvent[], topic: string, level: string): Promise<string> {
+    const messages: LlmMessage[] = [
+      { role: 'system', content: `You are a warm English speaking partner. The learner selected ${topic} at CEFR ${level}. Reply in English, keep each turn concise, ask at most one question, and gently adapt to the learner's level.` },
+      ...events.map((event) => ({ role: event.speaker === 'assistant' ? 'assistant' as const : 'user' as const, content: event.text }))
+    ]
+    return this.requestLlm(messages)
+  }
+
+  private async askLlm(prompt: string): Promise<unknown> {
+    const content = await this.requestLlm([{ role: 'user', content: prompt }], true)
+    try { return JSON.parse(content) } catch { throw new Error('LLM returned invalid JSON.') }
+  }
+
+  private async requestLlm(messages: LlmMessage[], json = false): Promise<string> {
+    const config = this.settings.get(); const secrets = this.settings.getSecrets()
+    if (!config.llmBaseUrl || !config.llmModel || !secrets.llmApiKey) throw new Error('Please configure an OpenAI-compatible Base URL, model, and API key first.')
+    const url = new URL('/chat/completions', config.llmBaseUrl.endsWith('/') ? config.llmBaseUrl : `${config.llmBaseUrl}/`)
+    const body = { model: config.llmModel, messages, ...(json ? { response_format: { type: 'json_object' } } : {}) }
+    const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${secrets.llmApiKey}` }, body: JSON.stringify(body) })
+    if (!response.ok) throw new Error(`LLM request failed (${response.status})`)
+    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
+    const content = payload.choices?.[0]?.message?.content
+    if (!content) throw new Error('LLM returned no message content.')
+    return content
+  }
+}

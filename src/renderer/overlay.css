@@ -1,0 +1,297 @@
+:root {
+  font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+  color: #f1f6f3;
+  background: transparent;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: transparent; }
+
+.subtitle-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  padding: 12px 24px 18px;
+  border: 1px solid rgba(207, 239, 217, .22);
+  border-radius: 16px;
+  background: rgba(14, 23, 19, .86);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.09), 0 16px 40px rgba(0, 0, 0, .22);
+  backdrop-filter: blur(18px);
+  user-select: text;
+  overflow: hidden;
+}
+
+.subtitle-shell.background-transparent {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.subtitle-shell.background-solid {
+  backdrop-filter: none;
+}
+
+.subtitle-resize-handle {
+  position: absolute;
+  z-index: 8;
+  -webkit-app-region: no-drag;
+}
+
+.subtitle-resize-handle.top,
+.subtitle-resize-handle.bottom {
+  left: 10px;
+  right: 10px;
+  height: 8px;
+}
+
+.subtitle-resize-handle.left,
+.subtitle-resize-handle.right {
+  top: 10px;
+  bottom: 10px;
+  width: 8px;
+}
+
+.subtitle-resize-handle.top { top: 0; cursor: ns-resize; }
+.subtitle-resize-handle.right { right: 0; cursor: ew-resize; }
+.subtitle-resize-handle.bottom { bottom: 0; cursor: ns-resize; }
+.subtitle-resize-handle.left { left: 0; cursor: ew-resize; }
+.subtitle-resize-handle.top-left,
+.subtitle-resize-handle.top-right,
+.subtitle-resize-handle.bottom-left,
+.subtitle-resize-handle.bottom-right { width: 14px; height: 14px; }
+.subtitle-resize-handle.top-left { top: 0; left: 0; cursor: nwse-resize; }
+.subtitle-resize-handle.top-right { top: 0; right: 0; cursor: nesw-resize; }
+.subtitle-resize-handle.bottom-left { bottom: 0; left: 0; cursor: nesw-resize; }
+.subtitle-resize-handle.bottom-right { right: 0; bottom: 0; cursor: nwse-resize; }
+
+.subtitle-toolbar-zone {
+  flex: 0 0 auto;
+  position: relative;
+  width: 160px;
+  height: 24px;
+  margin: 0 auto 2px;
+}
+
+.subtitle-drag-zone {
+  width: 100%;
+  height: 20px;
+  display: flex;
+  justify-content: center;
+}
+
+.subtitle-drag-bars {
+  -webkit-app-region: drag;
+  width: max-content;
+  height: 14px;
+  display: flex;
+  gap: 4px;
+  cursor: move;
+}
+
+.subtitle-drag-bars span {
+  width: 18px;
+  height: 2px;
+  background: rgba(208,234,216,.42);
+  border-radius: 4px;
+}
+
+.subtitle-controls {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px;
+  border: 1px solid rgba(220, 240, 227, .24);
+  border-radius: 8px;
+  background: rgba(9, 16, 12, .88);
+  transform: translateX(-50%);
+  -webkit-app-region: no-drag;
+}
+
+.toolbar-open .subtitle-controls { display: flex; }
+
+.subtitle-controls label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #dce9e0;
+  font-size: 10px;
+}
+
+.subtitle-controls input[type="range"] {
+  width: 72px;
+  accent-color: #90d6a7;
+}
+
+.subtitle-controls input[type="color"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.subtitle-lock,
+.subtitle-unlock {
+  border: 0;
+  color: #e6f0e9;
+  background: transparent;
+  cursor: pointer;
+}
+
+.subtitle-unlock {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  z-index: 4;
+  padding: 4px 6px;
+  border-radius: 7px;
+  background: rgba(9, 16, 12, .78);
+  font-size: 11px;
+  transform: translateX(-50%);
+}
+
+.subtitle-shell.locked .subtitle-drag-bars {
+  -webkit-app-region: no-drag;
+  cursor: default;
+}
+.subtitle-shell.locked .subtitle-controls { display: none; }
+
+.subtitle-transcript {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+}
+
+.subtitle-transcript::-webkit-scrollbar { display: none; }
+
+.subtitle-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 6px 0;
+  line-height: 1.31;
+  letter-spacing: -.015em;
+  text-shadow: 0 1px 8px rgba(0,0,0,.38);
+}
+
+.subtitle-shell.layout-split .subtitle-line.user {
+  justify-content: flex-end;
+  flex-direction: row-reverse;
+}
+
+.subtitle-line b {
+  flex: 0 0 auto;
+  min-width: 24px;
+  color: #8fd2aa;
+  font-size: .55em;
+  letter-spacing: .08em;
+  padding-top: .55em;
+}
+
+.subtitle-line.user b {
+  color: #d7bd83;
+  text-align: right;
+}
+
+.subtitle-text {
+  max-width: 86%;
+  padding: .16em .42em .2em;
+  border-radius: .32em;
+  background: rgba(114, 175, 137, .13);
+  color: var(--assistant-color);
+  font-weight: 580;
+}
+
+.subtitle-line.user .subtitle-text {
+  background: rgba(211, 177, 106, .16);
+  color: var(--user-color);
+}
+
+.background-transparent .subtitle-text {
+  background: transparent;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.subtitle-word {
+  border: 0;
+  border-radius: 4px;
+  padding: 0 .05em;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  text-shadow: inherit;
+  cursor: pointer;
+}
+
+.subtitle-word:hover,
+.subtitle-word:focus-visible {
+  color: #ffffff;
+  background: rgba(144, 214, 167, .28);
+  outline: none;
+}
+
+.subtitle-fragment { white-space: pre-wrap; }
+
+.lookup-popover {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  width: min(360px, calc(100% - 36px));
+  padding: 11px 36px 12px 13px;
+  border: 1px solid rgba(220, 240, 227, .24);
+  border-radius: 8px;
+  background: rgba(8, 14, 11, .94);
+  color: #ecf6ef;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .26);
+  -webkit-app-region: no-drag;
+}
+
+.lookup-popover strong {
+  display: inline-block;
+  margin-right: 8px;
+  font-size: 15px;
+}
+
+.lookup-popover small {
+  color: #91d3a8;
+  font-size: 11px;
+}
+
+.lookup-popover p {
+  margin: 6px 0 0;
+  color: #bfd0c5;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.lookup-close {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  color: #c9d8ce;
+  background: rgba(255, 255, 255, .08);
+  cursor: pointer;
+}
+
+.subtitle-empty {
+  margin: 20px 0 0;
+  text-align: center;
+  color: #9cafA3;
+  font-size: .62em;
+  letter-spacing: .01em;
+}

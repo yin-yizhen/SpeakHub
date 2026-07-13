@@ -1,0 +1,6 @@
+overrides:
+  '@electron/get': 4.0.0
+onlyBuiltDependencies:
+  - electron
+allowBuilds:
+  electron: true

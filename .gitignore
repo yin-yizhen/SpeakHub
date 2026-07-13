@@ -1,0 +1,13 @@
+node_modules/
+out/
+release/
+tmp/
+
+.env
+.env.*
+*.log
+
+dist/
+coverage/
+.vite/
+.electron-vite/
