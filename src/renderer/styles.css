@@ -23,4 +23,6 @@
 .session-history > article > small { color: #7f9588; font-size: 10px; }
 .session-history > article > p { margin: 0; color: #a6b8ad; font-size: 12px; line-height: 1.55; }
 .provider-form select { border: 1px solid #354b40; border-radius: 7px; padding: 8px 9px; color: #e3ebe5; background: #151e1a; outline: none; }
+.archive-directory { display: grid; gap: 9px; margin-top: 36px; border-top: 1px solid rgba(201,227,210,.14); padding-top: 19px; }.archive-directory h2 { margin: 0; font-size: 15px; letter-spacing: -.02em; }.archive-directory p, .archive-directory small { margin: 0; color: #84998d; font-size: 12px; }.archive-directory output { overflow: hidden; padding: 9px; border: 1px solid #354b40; border-radius: 7px; color: #c5d4cb; background: #151e1a; font: 11px/1.4 ui-monospace, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }.archive-directory button { width: max-content; }
 .connection-skip { margin-top: 10px; }
+.subtitle-unlock-action { border: 1px solid #e0b75d; border-radius: 8px; padding: 9px 13px; color: #2d210b; background: #f0c85d; font-size: 12px; font-weight: 700; cursor: pointer; }

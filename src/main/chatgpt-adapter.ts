@@ -4,7 +4,7 @@ import type { TranscriptEvent } from '../shared/types'
 
 type PageMessage = { sourceMessageId: string; speaker: string; text: string; status: 'streaming' | 'complete' }
 
-/** Future sources such as Gemini only need to implement this lifecycle. */
+/** Web practice adapters share this small lifecycle. */
 export interface SourceAdapter {
   start(): void
   stop(): void

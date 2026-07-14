@@ -19,7 +19,7 @@ body { margin: 0; background: transparent; }
   box-shadow: inset 0 1px 0 rgba(255,255,255,.09), 0 16px 40px rgba(0, 0, 0, .22);
   backdrop-filter: blur(18px);
   user-select: text;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .subtitle-shell.background-transparent {
@@ -69,7 +69,7 @@ body { margin: 0; background: transparent; }
 .subtitle-toolbar-zone {
   flex: 0 0 auto;
   position: relative;
-  width: 160px;
+  width: 260px;
   height: 24px;
   margin: 0 auto 2px;
 }
@@ -79,6 +79,8 @@ body { margin: 0; background: transparent; }
   height: 20px;
   display: flex;
   justify-content: center;
+  -webkit-app-region: drag;
+  cursor: move;
 }
 
 .subtitle-drag-bars {
@@ -113,6 +115,7 @@ body { margin: 0; background: transparent; }
 }
 
 .toolbar-open .subtitle-controls { display: flex; }
+.toolbar-open .subtitle-toolbar-zone { height: 60px; }
 
 .subtitle-controls label {
   display: flex;
@@ -160,7 +163,10 @@ body { margin: 0; background: transparent; }
   -webkit-app-region: no-drag;
   cursor: default;
 }
-.subtitle-shell.locked .subtitle-controls { display: none; }
+.subtitle-shell.locked .subtitle-drag-zone {
+  -webkit-app-region: no-drag;
+  cursor: default;
+}
 
 .subtitle-transcript {
   flex: 1 1 auto;
@@ -247,16 +253,26 @@ body { margin: 0; background: transparent; }
   position: absolute;
   z-index: 10;
   width: min(360px, calc(100% - 36px));
-  padding: 11px 13px 12px;
+  padding: 11px 64px 12px 13px;
   border: 1px solid rgba(220, 240, 227, .24);
   border-radius: 8px;
   background: rgba(8, 14, 11, .94);
   color: #ecf6ef;
   box-shadow: 0 12px 32px rgba(0, 0, 0, .26);
-  transform: translate(-50%, calc(-100% - 8px));
-  pointer-events: none;
+  overflow-y: auto;
+  scrollbar-width: none;
+  pointer-events: auto;
   -webkit-app-region: no-drag;
 }
+
+.lookup-popover.above { transform: translate(-50%, -100%); }
+.lookup-popover.below { transform: translateX(-50%); }
+.lookup-popover::-webkit-scrollbar { display: none; }
+
+.lookup-actions { position: absolute; top: 9px; right: 10px; display: grid; justify-items: end; gap: 4px; }
+.lookup-actions button { min-width: 42px; border: 0; border-radius: 999px; padding: 6px 8px; color: #33270c; background: #f0c85d; cursor: pointer; font: inherit; font-size: 10px; font-weight: 700; }
+.lookup-actions button:disabled { cursor: default; opacity: .65; }
+.lookup-actions small { max-width: 86px; color: #e5b47b; font-size: 10px; text-align: right; }
 
 .lookup-popover strong {
   display: inline-block;
@@ -282,4 +298,60 @@ body { margin: 0; background: transparent; }
   color: #9cafA3;
   font-size: .62em;
   letter-spacing: .01em;
+}
+
+.subtitle-composer {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px;
+  border: 2px solid #f0c85d;
+  border-radius: 15px;
+  background: rgba(240, 200, 93, .12);
+  -webkit-app-region: no-drag;
+}
+
+.subtitle-composer input {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 12px;
+  outline: none;
+  color: #f7f9f7;
+  background: rgba(7, 15, 10, .78);
+  font: 500 14px/1 "Segoe UI Variable", "Segoe UI", sans-serif;
+}
+
+.subtitle-composer input::placeholder { color: rgba(226, 235, 229, .58); }
+
+.subtitle-composer button {
+  flex: 0 0 auto;
+  min-width: 56px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 10px;
+  color: #1d1b10;
+  background: #f0c85d;
+  font: 700 13px/1 "Segoe UI Variable", "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+
+.subtitle-composer button:disabled,
+.subtitle-composer input:disabled { cursor: wait; opacity: .62; }
+
+.subtitle-composer p {
+  position: absolute;
+  right: 8px;
+  bottom: calc(100% + 5px);
+  max-width: 70%;
+  margin: 0;
+  padding: 4px 7px;
+  border-radius: 5px;
+  color: #fff0f0;
+  background: rgba(112, 27, 27, .92);
+  font-size: 11px;
 }

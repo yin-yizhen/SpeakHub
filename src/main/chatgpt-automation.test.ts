@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { fillComposer, findComposer, findEndVoiceButton, findSendButton, findStopButton, findVoiceButton } from './chatgpt-automation'
+import { fillComposer, findComposer, findConversationMenuButton, findEndVoiceButton, findSendButton, findStopButton, findVoiceButton } from './chatgpt-automation'
 
 describe('ChatGPT page automation selectors', () => {
   it('fills the composer and finds send and voice controls', () => {
@@ -34,5 +34,12 @@ describe('ChatGPT page automation selectors', () => {
   it('recognises the dedicated voice-session end control', () => {
     document.body.innerHTML = '<button aria-label="结束语音聊天"></button><button aria-label="开始语音聊天"></button>'
     expect(findEndVoiceButton(document)?.getAttribute('aria-label')).toBe('结束语音聊天')
+  })
+
+  it('finds the target conversation’s ellipsis menu, including icon-only controls', () => {
+    document.body.innerHTML = '<div class="conversation-row"><a href="/c/target">English Conversation</a><button aria-label="置顶聊天"></button><button data-testid="conversation-options-button">…</button></div>'
+    const row = document.querySelector('.conversation-row')!
+
+    expect(findConversationMenuButton(row)?.getAttribute('data-testid')).toBe('conversation-options-button')
   })
 })

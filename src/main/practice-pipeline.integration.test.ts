@@ -19,7 +19,7 @@ describe('fake provider to archive integration', () => {
         events = mergeTranscriptEvent(events, event); store.upsertEvent(event)
       }
       expect(subtitleEvents(events, 'both', 4).map((event) => event.text)).toEqual(['I went to London.', 'What did you enjoy there?'])
-      expect(readFileSync(join(directory, 'sessions', `${session.id}.md`), 'utf8')).toContain('What did you enjoy there?')
+      expect(readFileSync(join(directory, 'current-practice.md'), 'utf8')).toContain('What did you enjoy there?')
     } finally { rmSync(directory, { recursive: true, force: true }) }
   })
 })

@@ -5,7 +5,7 @@ export const practiceProfileSchema = z.object({
   topic: z.enum(['日常聊天', '旅行英语', '面试英语', '职场会议', '雅思口语', '自由闲聊', '情景角色扮演']),
   level: z.enum(['A1', 'A2', 'B1', 'B2', 'C1']),
   correctionStrength: z.enum(['light', 'normal', 'strict']),
-  source: z.enum(['chatgpt-web', 'gemini-web', 'api-direct']),
+  source: z.enum(['chatgpt-web', 'api-direct']),
   mode: z.enum(['text', 'voice'])
 })
 

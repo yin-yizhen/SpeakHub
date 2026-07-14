@@ -6,7 +6,7 @@ import { SecureSettings } from './secure-settings'
 const reviewSchema = z.object({
   topic: z.string(), summary: z.string(),
   issues: z.array(z.object({ original: z.string(), improved: z.string(), reason: z.string() })).min(0).max(8),
-  vocabulary: z.array(z.object({ term: z.string(), meaning: z.string() })).max(12),
+  vocabulary: z.array(z.object({ term: z.string(), meaning: z.string(), example: z.string().optional() })).max(12),
   nextPractice: z.string()
 })
 
@@ -22,19 +22,21 @@ export class LearningService {
   async lookup(query: string, sentence?: string): Promise<DictionaryResult> {
     const config = this.settings.get()
     const base: DictionaryResult = this.localDictionary?.lookup(query) ?? { query, definitions: [] }
+    if (base.definitions.length) return base
     if (config.hasLlmKey) {
       const llm = await this.askLlm(`Explain the English selection for a Chinese learner. Return JSON only: {"contextualMeaning":"...","naturalAlternative":"..."}. Selection: ${query}. Context: ${sentence ?? ''}`)
       const contextual = z.object({ contextualMeaning: z.string().optional(), naturalAlternative: z.string().optional() }).parse(llm)
       return { ...base, ...contextual }
     }
-    if (!base.definitions.length) throw new Error('The built-in dictionary did not find this word. Configure an OpenAI-compatible LLM for fallback lookup.')
-    return base
+    throw new Error('The built-in dictionary did not find this word. Configure an OpenAI-compatible LLM for fallback lookup.')
   }
 
-  async review(events: TranscriptEvent[], strength: string): Promise<ReviewResult> {
-    const transcript = events.map((event) => `${event.speaker === 'assistant' ? 'AI' : 'Me'}: ${event.text}`).join('\n')
-    const result = await this.askLlm(`You are a concise English speaking coach. Review this transcript at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string"}],"nextPractice":"string"}. Use Chinese for explanations. Transcript:\n${transcript}`)
-    return reviewSchema.parse(result)
+  async review(archiveMarkdown: string, strength: string, favorites: string[] = []): Promise<ReviewResult> {
+    const savedVocabulary = favorites.length ? favorites.map((word) => `- ${word}`).join('\n') : '(none)'
+    const result = await this.askLlm(`You are a concise English speaking coach. Analyze this complete practice archive at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string"}. Use Chinese for explanations. The vocabulary array must contain explanations only for the saved vocabulary below. Give each saved word a short English example sentence. Do not add other vocabulary; when none is saved, return an empty vocabulary array. Saved vocabulary:\n${savedVocabulary}\nPractice archive Markdown:\n${archiveMarkdown}`)
+    const review = reviewSchema.parse(result)
+    const saved = new Set(favorites.map((word) => word.toLocaleLowerCase()))
+    return { ...review, vocabulary: review.vocabulary.filter((item) => saved.has(item.term.toLocaleLowerCase())) }
   }
 
   async chat(events: TranscriptEvent[], topic: string, level: string): Promise<string> {

@@ -33,6 +33,12 @@ export function findStopButton(root: ParentNode): HTMLButtonElement | undefined 
 export function findVoiceButton(root: ParentNode): HTMLButtonElement | undefined { return root.querySelector<HTMLButtonElement>(voiceSelector) ?? undefined }
 export function findEndVoiceButton(root: ParentNode): HTMLButtonElement | undefined { return root.querySelector<HTMLButtonElement>(endVoiceSelector) ?? undefined }
 
+export function findConversationMenuButton(row: ParentNode): HTMLButtonElement | undefined {
+  const buttons = [...row.querySelectorAll<HTMLButtonElement>('button:not([disabled])')]
+  const attributes = (button: HTMLButtonElement) => [button.textContent, button.getAttribute('aria-label'), button.getAttribute('title'), button.getAttribute('data-testid')].filter(Boolean).join(' ').toLowerCase()
+  return buttons.find((button) => /more|options|menu|ellipsis|更多|选项|…/.test(attributes(button))) ?? buttons.at(-1)
+}
+
 export function fillComposer(composer: HTMLElement, prompt: string): void {
   composer.focus()
   if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) Object.getOwnPropertyDescriptor(Object.getPrototypeOf(composer), 'value')?.set?.call(composer, prompt)
@@ -112,16 +118,28 @@ const deleteConversationScript = `(targetUrl => new Promise((resolve) => {
   const target = new URL(targetUrl).pathname;
   const deadline = Date.now() + 12000;
   const textOf = element => (element.innerText || element.textContent || element.getAttribute('aria-label') || '').trim().toLowerCase();
+  const isVisible = element => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none'; };
+  const menuButtonFor = link => {
+    const isMenuButton = button => /more|options|menu|ellipsis|更多|选项|…/i.test([button.innerText, button.textContent, button.getAttribute('aria-label'), button.getAttribute('title'), button.getAttribute('data-testid')].filter(Boolean).join(' '));
+    let ancestor = link.parentElement;
+    while (ancestor && ancestor !== document.body) {
+      const buttons = [...ancestor.querySelectorAll('button:not([disabled])')].filter(isVisible);
+      const named = buttons.find(isMenuButton);
+      if (named) return named;
+      if (buttons.length >= 2) return buttons.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0];
+      ancestor = ancestor.parentElement;
+    }
+    return undefined;
+  };
   const clickNamed = names => {
-    const element = [...document.querySelectorAll('button, [role="menuitem"], [role="button"]')].find(item => names.some(name => textOf(item).includes(name)) && !item.disabled);
+    const element = [...document.querySelectorAll('button, [role="menuitem"], [role="button"]')].find(item => isVisible(item) && names.some(name => textOf(item).includes(name)) && !item.disabled);
     if (element) { element.click(); return true; }
     return false;
   };
   const tick = () => {
     const link = [...document.querySelectorAll('a[href*="/c/"]')].find(anchor => { try { return new URL(anchor.href).pathname === target; } catch { return false; } });
     if (!link) { if (Date.now() > deadline) resolve({ ok: false, message: '未在 ChatGPT 侧栏找到上一轮 SpeakSub 对话。' }); else setTimeout(tick, 250); return; }
-    const row = link.closest('li, [data-testid], nav > div, div');
-    const menu = [...(row?.querySelectorAll('button') || [])].find(button => /more|menu|更多|选项/i.test(textOf(button)));
+    const menu = menuButtonFor(link);
     if (menu && !menu.dataset.speaksubOpened) { menu.dataset.speaksubOpened = '1'; menu.click(); setTimeout(tick, 200); return; }
     if (clickNamed(['delete', '删除'])) { setTimeout(() => {
       if (!clickNamed(['delete', '删除', 'confirm'])) { resolve({ ok: false, message: '找到目标对话，但删除确认未完成。' }); return; }

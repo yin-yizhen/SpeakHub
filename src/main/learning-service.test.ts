@@ -16,6 +16,16 @@ describe('review response boundary', () => {
     const schema = z.object({ topic: z.string(), issues: z.array(z.object({ original: z.string() })).max(8) })
     expect(() => schema.parse({ topic: 'travel', issues: [{ original: 2 }] })).toThrow()
   })
+
+  it('asks the model to explain only the saved vocabulary', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ topic: 'travel', summary: 'summary', issues: [], vocabulary: [{ term: 'persistent', meaning: '坚持的' }, { term: 'extra', meaning: '不应保留' }], nextPractice: 'next time' }) } }] }) }))
+    vi.stubGlobal('fetch', fetchMock)
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'review-model', hasLlmKey: true }, { llmApiKey: 'secret' }))
+
+    await expect(service.review('# Speaking practice\n\n## Transcript\n\nMe: I keep practicing.', 'normal', ['persistent'])).resolves.toMatchObject({ vocabulary: [{ term: 'persistent' }] })
+    const request = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1]
+    expect(JSON.parse(String(request.body)).messages[0].content).toContain('Practice archive Markdown:\n# Speaking practice')
+  })
 })
 
 describe('lookup response boundary', () => {
@@ -26,6 +36,15 @@ describe('lookup response boundary', () => {
       query: 'word',
       definitions: expect.arrayContaining([expect.stringContaining('词')])
     })
+  })
+
+  it('returns a local definition without calling a rate-limited LLM fallback', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 429, json: async () => ({}) }))
+    vi.stubGlobal('fetch', fetchMock)
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'lookup-model', hasLlmKey: true }, { llmApiKey: 'secret' }), 'resources/dictionaries/ecdict-en-zh')
+
+    await expect(service.lookup('today')).resolves.toMatchObject({ query: 'today', definitions: expect.any(Array) })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('rejects lookup when no provider is configured and the built-in dictionary misses', async () => {

@@ -19,6 +19,6 @@ describe('connection page navigation', () => {
   it('keeps the already-open provider page instead of reloading it', () => {
     expect(isCurrentConnectionPage('https://chatgpt.com/c/example', 'chatgpt-web')).toBe(true)
     expect(isCurrentConnectionPage('https://auth.openai.com/log-in', 'chatgpt-web')).toBe(true)
-    expect(isCurrentConnectionPage('https://gemini.google.com/app', 'chatgpt-web')).toBe(false)
+    expect(isCurrentConnectionPage('https://example.com/', 'chatgpt-web')).toBe(false)
   })
 })

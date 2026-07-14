@@ -2,7 +2,7 @@ type NavigableWebContents = {
   loadURL(url: string): Promise<unknown>
 }
 
-export type WebPracticeSource = 'chatgpt-web' | 'gemini-web'
+export type WebPracticeSource = 'chatgpt-web'
 
 export function isAbortedNavigationError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ERR_ABORTED'
@@ -20,9 +20,7 @@ export async function loadConnectionUrl(contents: NavigableWebContents, url: str
 export function isCurrentConnectionPage(url: string, source: WebPracticeSource): boolean {
   try {
     const host = new URL(url).hostname
-    return source === 'chatgpt-web'
-      ? host === 'chatgpt.com' || host === 'auth.openai.com'
-      : host === 'gemini.google.com' || host === 'accounts.google.com'
+    return source === 'chatgpt-web' && (host === 'chatgpt.com' || host === 'auth.openai.com')
   } catch {
     return false
   }

@@ -4,11 +4,11 @@ export type SubtitleMode = 'assistant' | 'user' | 'both'
 export type SubtitleLayout = 'same-side' | 'split'
 export type SubtitleBackground = 'transparent' | 'glass' | 'solid'
 export type CorrectionStrength = 'light' | 'normal' | 'strict'
-export type PracticeSource = 'chatgpt-web' | 'gemini-web' | 'api-direct'
+export type PracticeSource = 'chatgpt-web' | 'api-direct'
 export type PracticeMode = 'text' | 'voice'
 export type PracticeLifecycle = 'idle' | 'starting' | 'active' | 'ending' | 'error'
 export type RealtimeProtocolProfile = 'current' | 'legacy'
-export type WebPracticeSource = Extract<PracticeSource, 'chatgpt-web' | 'gemini-web'>
+export type WebPracticeSource = Extract<PracticeSource, 'chatgpt-web'>
 
 export interface TranscriptEvent {
   id: string
@@ -33,12 +33,6 @@ export interface PracticeProfile {
   correctionStrength: CorrectionStrength
   source: PracticeSource
   mode: PracticeMode
-}
-
-export interface SessionArchiveItem {
-  session: PracticeSession
-  transcript: TranscriptEvent[]
-  review?: ReviewResult
 }
 
 export interface ConnectionState {
@@ -106,16 +100,8 @@ export interface ReviewResult {
   topic: string
   summary: string
   issues: ReviewIssue[]
-  vocabulary: Array<{ term: string; meaning: string }>
+  vocabulary: Array<{ term: string; meaning: string; example?: string }>
   nextPractice: string
-}
-
-export interface SavedStudyItem {
-  id: string
-  kind: 'word' | 'sentence'
-  sourceText: string
-  note?: string
-  createdAt: string
 }
 
 export interface ProviderSettings {
@@ -139,6 +125,7 @@ export interface ProviderSettingsInput {
 
 export interface SpeakSubApi {
   startPractice: (topic: string, level: string, strength: CorrectionStrength, source: PracticeSource, mode: PracticeMode) => Promise<PracticeStartResult>
+  sendPracticeMessage: (message: string) => Promise<void>
   sendApiMessage: (message: string) => Promise<void>
   startVoiceCapture: () => Promise<void>
   stopVoiceCapture: () => Promise<void>
@@ -147,18 +134,17 @@ export interface SpeakSubApi {
   cancelPracticeStart: () => Promise<void>
   getState: () => Promise<{ session?: PracticeSession; settings: SubtitlePreferences; events: TranscriptEvent[]; connection: ConnectionState; automation: AutomationStatus; source: PracticeSource; mode: PracticeMode; lifecycle: PracticeLifecycle }>
   completeConnection: () => Promise<ConnectionState>
-  showConnectionPage: (source?: Extract<PracticeSource, 'chatgpt-web' | 'gemini-web'>) => Promise<ConnectionState>
-  clearPendingCleanup: (source: Extract<PracticeSource, 'chatgpt-web' | 'gemini-web'>) => Promise<void>
+  showConnectionPage: () => Promise<ConnectionState>
+  clearPendingCleanup: () => Promise<void>
   hideConnectionPage: () => Promise<ConnectionState>
   updateSubtitle: (settings: Partial<SubtitlePreferences>) => Promise<SubtitlePreferences>
   toggleOverlay: () => Promise<SubtitlePreferences>
   setOverlayInteractive: (interactive: boolean) => Promise<void>
   resizeOverlay: (direction: import('../main/window-layout').ResizeDirection, origin: { x: number; y: number; width: number; height: number }, deltaX: number, deltaY: number) => Promise<SubtitlePreferences>
   lookup: (selection: string, sentence?: string) => Promise<DictionaryResult>
-  saveStudyItem: (item: Omit<SavedStudyItem, 'id' | 'createdAt'>) => Promise<SavedStudyItem>
-  listStudyItems: () => Promise<SavedStudyItem[]>
-  deleteStudyItem: (id: string) => Promise<void>
-  listSessions: () => Promise<SessionArchiveItem[]>
+  saveSessionFavorite: (word: string) => Promise<void>
+  getArchiveDirectory: () => Promise<string>
+  chooseArchiveDirectory: () => Promise<string | undefined>
   getProviderSettings: () => Promise<ProviderSettings>
   saveProviderSettings: (settings: ProviderSettingsInput) => Promise<ProviderSettings>
   clearAllData: () => Promise<void>

@@ -1,76 +1,65 @@
 # SpeakSub Code Map
 
-本文件是 SpeakSub 后续查找、修改、测试和审查代码的项目索引，按“我要改什么”组织。
+本文件用于快速定位 SpeakSub 的修改入口、数据流和验证方式。
 
-最近完整验收提交：`uncommitted working tree (2026-07-14)`
+最近完整验收：`uncommitted working tree (2026-07-14)`
 
 ## 先看这里
 
 | 目标 | 主要文件 | 配套测试 | 验证命令 |
 | --- | --- | --- | --- |
 | 改练习状态、来源或模式 | `src/main/practice-controller.ts`, `src/main/practice-profile.ts`, `src/main/index.ts` | `practice-controller.test.ts`, `practice-profile.test.ts`, `practice-pipeline.integration.test.ts` | `pnpm lint && pnpm test` |
-| 改 ChatGPT/Gemini 网页采集与清理 | `src/main/*-adapter.ts`, `src/main/*-automation.ts`, `src/main/background-cleanup.ts` | `src/main/chatgpt-*.test.ts`, `src/main/gemini-*.test.ts`, `background-cleanup.test.ts` | `pnpm test` 加对应网页真实验收 |
-| 改 API 文本、Realtime 语音或音频 | `src/main/learning-service.ts`, `src/main/realtime-voice-service.ts`, `src/renderer/realtime-audio.ts` | `learning-service.test.ts`, `realtime-voice-service.test.ts` | `pnpm test` 加 API/麦克风真实验收 |
-| 改字幕、连接页或学习本 | `src/renderer/App.tsx`, `src/renderer/subtitle-overlay.tsx`, `src/main/app-settings.ts` | `renderer/app-state.test.ts`, `app-settings.test.ts`, Electron 手工验收 | `pnpm lint && pnpm build` |
-| 改 Markdown 入库、历史或收藏 | `src/main/store.ts` | `store.test.ts`, `practice-pipeline.integration.test.ts` | `pnpm test` |
+| 改 ChatGPT 网页采集或清理 | `src/main/chatgpt-adapter.ts`, `src/main/chatgpt-automation.ts`, `src/main/chatgpt-marker.ts`, `src/main/background-cleanup.ts` | 对应 ChatGPT adapter/automation/marker 测试 | `pnpm test` 加网页手工验收 |
+| 改 API 文本、语音或复盘 | `src/main/learning-service.ts`, `src/main/realtime-voice-service.ts`, `src/renderer/realtime-audio.ts` | `learning-service.test.ts`, `realtime-voice-service.test.ts` | `pnpm test` |
+| 改字幕、词汇卡或归档目录 | `src/renderer/App.tsx`, `src/renderer/subtitle-overlay.tsx`, `src/main/index.ts`, `src/main/store.ts` | `store.test.ts`, `session-checkpoint.test.ts`, `app-settings.test.ts` | `pnpm lint && pnpm test && pnpm build` |
 
-## End-To-End Flow
+## End-to-End Flow
 
 ```text
-App.tsx 选择 PracticeProfile
--> practice:start IPC（Zod 边界）
--> PracticeController 单飞状态：idle -> starting -> active
--> Web adapter / LearningService / RealtimeVoiceService
--> mergeTranscriptEvent
--> 字幕广播 + SpeakSubStore 原子写入 Markdown/JSON
--> practice:end：active -> ending -> idle
--> LearningService.review -> 历史复盘与下一次建议
+App.tsx
+-> practice:start IPC -> PracticeController
+-> ChatGPT automation/adapter, or LearningService/RealtimeVoiceService
+-> mergeTranscriptEvent -> subtitle broadcast + SpeakSubStore current-practice.md
+-> practice:end -> LearningService.review
+-> store.finalizeSession -> speaksub-practice-*.md
 ```
 
-网页模式的关键顺序不可反转：`startNewChat -> createSession -> start observer -> send prompt -> capture URL`。这样首轮用户提示和模型回复才能进入 parser、字幕和归档；发送失败必须停止 observer 并 `abortSession`。
+网页模式的顺序不可反转：`startNewChat -> createSession -> start observer -> send prompt -> capture URL`。发送失败必须停止 observer、写入最终检查点并 abort session。
 
-## Code Map
+## 关键模块
 
 ### 练习控制与 IPC
 
-`src/main/practice-controller.ts` 管理开始/结束单飞和生命周期；`src/main/practice-profile.ts` 统一场景、CEFR、纠错强度、来源、模式和提示词。`src/main/index.ts` 只负责 Electron 窗口、IPC 绑定和各服务编排。不要重新引入第二套会话状态。
+`src/main/index.ts` 负责 Electron 窗口、IPC、连接页、活动会话、检查点和归档目录。`practice-controller.ts` 保证开始与结束操作单飞。`practice-profile.ts` 校验场景、难度、来源和模式。
 
-连接 readiness 按 ChatGPT/Gemini 分开持久化，用户确认登录时还会检查当前域名和输入框。API direct 可跳过网页登录。IPC 的 profile、消息、字幕、resize、学习本和 provider 设置都需要运行时校验。
+练习来源只有 `chatgpt-web` 与 `api-direct`：ChatGPT 模式通过后台网页采集文本；API 直连的文字和 Realtime 语音都直接转成 `TranscriptEvent`。
 
-### 网页采集与安全清理
+### ChatGPT 网页模式
 
-ChatGPT 与 Gemini 保持独立 selector。observer 在发送提示词前安装；ChatGPT parser 只选择外层 turn，避免与内层 role 节点重复。streaming/complete 变化使用同一个 `sourceMessageId` 更新。
+`chatgpt-adapter.ts` 观察页面对话文本，`chatgpt-automation.ts` 发送提示词、发送用户文字、可选语音启动/结束；`chatgpt-marker.ts` 只记录 SpeakSub 创建的会话 URL。`background-cleanup.ts` 在下一次练习前尝试删除已记录的 ChatGPT 会话，失败会保留记录供重试。
 
-清理仅处理 marker 中记录的精确 URL。删除脚本必须找到目标链接所属行、完成二次确认并验证目标消失；任何一步不确定都返回失败并保留 marker，不能点击页面第一个通用 More/Delete。
+### 持久化与复盘
 
-### API 与 Realtime
+`store.ts` 把当前练习原子写入 `current-practice.md`，`session-checkpoint.ts` 每 5 秒刷新。结束后 `learning-service.ts` 基于相同 Markdown 生成复盘，随后文件改名为 `speaksub-practice-*.md`。异常退出遗留的临时文件会在下次开始时保留为中断记录。
 
-`LearningService` 使用保留 Base URL 路径的 `chat/completions` 地址并设置 30 秒总超时。`RealtimeVoiceService` 默认当前 OpenAI session/audio 结构，也提供显式 `legacy` profile；连接超时或 open 前关闭必须拒绝启动。
+### 字幕与词汇卡
 
-`realtime-audio.ts` 使用 AudioWorklet 采集、线性重采样到 24 kHz，并在服务端 speech-started 事件到达时中断尚未播放的模型音频。API Key 只保存在主进程 safeStorage，不得出现在日志、URL 或归档。
-
-### 持久化与学习闭环
-
-`app-settings.ts` 保存每个网页提供商 readiness 和字幕偏好/位置；损坏文件回退默认值。锁定字幕时窗口鼠标穿透，需要从主设置页取消锁定。
-
-`store.ts` 每次 transcript upsert 都原子更新人类可读 Markdown，并写 JSON 索引供历史页读取；旧的纯 Markdown 会话仍可列出。学习本按 kind/text 去重，支持删除。诊断日志只记录会话 ID、阶段、字符数和条数等脱敏字段并自动轮换。
+`subtitle-overlay.tsx` 管理悬浮、固定、收藏与关闭。锁定字幕后禁止拖拽和缩放，但仍可查词与收藏。`LocalDictionary` 提供离线查词，API 只做补充。
 
 ## Test Index
 
-| Test | Covers |
+| Test file | Covers |
 | --- | --- |
-| `practice-controller.test.ts` | 重复开始/结束、失败状态与重置 |
-| `practice-profile.test.ts` | 场景、CEFR、纠错与非法 IPC 值 |
-| `practice-pipeline.integration.test.ts` | parser -> transcript -> subtitle -> Markdown 边界 |
-| `chatgpt-adapter.test.ts`, `gemini-adapter.test.ts` | DOM fixture、嵌套去重、说话人解析 |
-| `background-cleanup.test.ts`, marker tests | 顺序删除、失败保留和并发写保护 |
-| `realtime-voice-service.test.ts` | current/legacy profile、音频/转录、打断、提前关闭 |
-| `learning-service.test.ts` | 本地词典、API URL、请求与 JSON 边界 |
-| `store.test.ts` | 增量归档、历史、收藏去重与删除 |
-| `app-settings.test.ts`, `secure-settings.test.ts` | 分提供商状态、损坏恢复和 Key 清除 |
-| `renderer/app-state.test.ts` | 收藏即时出现和按钮忙碌态 |
+| `src/main/practice-controller.test.ts` | 开始/结束单飞和状态迁移 |
+| `src/main/practice-profile.test.ts` | 来源、模式、场景和 CEFR 校验 |
+| `src/main/chatgpt-adapter.test.ts` | ChatGPT DOM 解析 |
+| `src/main/chatgpt-automation.test.ts` | ChatGPT 控件选择和发送 |
+| `src/main/chatgpt-marker.test.ts` | 已记录 ChatGPT 会话校验 |
+| `src/main/learning-service.test.ts` | API 直连、复盘与查词边界 |
+| `src/main/store.test.ts` | Markdown 写入、收藏和归档 |
+| `src/main/session-checkpoint.test.ts` | 定时检查点与停止 |
 
-## Local Verification Commands
+## 验证命令
 
 ```powershell
 pnpm lint
@@ -82,15 +71,7 @@ pnpm dev
 
 ## 真实验收
 
-1. ChatGPT/Gemini：用一次性对话登录，开始后确认首轮 user/assistant 都出现在字幕与会话 Markdown；结束并重启，再开始时确认只删除 marker 记录的旧对话。
-2. API text：Base URL 保留 `/v1` 等路径，发送一轮后核对 parser 等价事件、字幕、Markdown 和历史复盘；测试 30 秒超时。
-3. API voice：分别验证 current 与 legacy profile；测试麦克风拒绝、错误 endpoint、说话打断播放、双方 completed transcript、结束后的连接/麦克风清理。
-4. 字幕：移动、缩放、样式、锁定后重启；锁定时鼠标应穿透，主设置页取消锁定后恢复操作。
-5. 学习本：收藏重复词句只保留一条，新增即时出现，可删除；旧 Markdown 和新 JSON 会话都能出现在历史中。
-
-## Known Runtime Notes
-
-- 网页 DOM 会随 ChatGPT/Gemini 更新而变化；不能只看 UI 截图判断成功，至少核对 parser 输出、subtitle event 和 Markdown 入库中的一个或多个边界。
-- 自动清理宁可保留 marker 重试，也不能在目标链接不唯一时猜测删除。
-- `resources/dictionaries/ecdict-en-zh/<letter>.json.br` 必须随安装包发布；`word` 查询依赖 `w.json.br`。
-- `speaksub-diagnostics.jsonl` 位于 Electron userData，仅允许脱敏字段，不记录 API Key、完整认证 URL 或转录正文。
+1. 登录 ChatGPT，选择场景、难度和文字或语音模式；确认网页文本进入字幕和 `current-practice.md`。
+2. 结束练习，确认复盘写回并归档为 `speaksub-practice-*.md`；重启后确认只清理记录的 SpeakSub ChatGPT 会话。
+3. 配置 API Base URL、model 和 key 后，启动 API 直连，确认用户与 AI 双方事件进入字幕和 Markdown；结束后确认复盘生成。
+4. 验证 parser 输出、subtitle event 和 Markdown 入库至少一个关键边界，不能只看 UI。

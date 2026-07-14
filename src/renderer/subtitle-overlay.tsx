@@ -29,18 +29,24 @@ function hexToRgba(hex: string, opacity: number): string {
 }
 
 type LookupState =
-  | { status: 'loading'; query: string; anchor: LookupAnchor }
-  | { status: 'ready'; result: DictionaryResult; anchor: LookupAnchor }
-  | { status: 'error'; query: string; message: string; anchor: LookupAnchor }
+  | { status: 'loading'; query: string; anchor: LookupAnchor; pinned: boolean; saving: boolean; saved: boolean; saveError?: string }
+  | { status: 'ready'; result: DictionaryResult; anchor: LookupAnchor; pinned: boolean; saving: boolean; saved: boolean; saveError?: string }
+  | { status: 'error'; query: string; message: string; anchor: LookupAnchor; pinned: boolean; saving: boolean; saved: boolean; saveError?: string }
 
 interface LookupAnchor {
   left: number
   top: number
+  placement: 'above' | 'below'
+  maxHeight: number
 }
 
 export function SubtitleOverlay() {
   const [settings, setSettings] = useState<SubtitlePreferences>(defaultSettings)
   const [events, setEvents] = useState<TranscriptEvent[]>([])
+  const [textPracticeActive, setTextPracticeActive] = useState(false)
+  const [message, setMessage] = useState('')
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState<string>()
   const [hoveredToolbar, setHoveredToolbar] = useState(false)
   const [lookupState, setLookupState] = useState<LookupState>()
   const lookupRequest = useRef(0)
@@ -48,10 +54,12 @@ export function SubtitleOverlay() {
   const resizeStart = useRef<{ direction: ResizeDirection; origin: NonNullable<SubtitlePreferences['bounds']>; screenX: number; screenY: number } | undefined>(undefined)
 
   useEffect(() => {
-    void window.speaksub.getState().then((state) => {
+    const refreshPracticeState = () => void window.speaksub.getState().then((state) => {
       setSettings(state.settings)
       setEvents(state.events)
+      setTextPracticeActive(Boolean(state.session) && state.mode === 'text')
     })
+    refreshPracticeState()
     const removeEvents = window.speaksub.onTranscript((event) => setEvents((current) => {
       const index = current.findIndex((item) => item.sourceMessageId === event.sourceMessageId)
       if (index === -1) return [...current, event]
@@ -62,7 +70,8 @@ export function SubtitleOverlay() {
     const removeSettings = window.speaksub.onSubtitleSettings((next) => {
       setSettings(next)
     })
-    return () => { removeEvents(); removeSettings() }
+    const removeAutomation = window.speaksub.onAutomationStatus(refreshPracticeState)
+    return () => { removeEvents(); removeSettings(); removeAutomation() }
   }, [])
 
   const charactersPerLine = Math.max(10, Math.floor(((settings.bounds?.width ?? window.innerWidth) * 0.86 - 70) / settings.fontSize))
@@ -71,7 +80,7 @@ export function SubtitleOverlay() {
     const transcript = transcriptRef.current
     if (transcript) transcript.scrollTop = transcript.scrollHeight
   }, [displayed, settings.fontSize, settings.layout])
-  const toolbarOpen = hoveredToolbar && !settings.locked
+  const toolbarOpen = hoveredToolbar
   const shellClass = ['subtitle-shell', settings.locked ? 'locked' : '', toolbarOpen ? 'toolbar-open' : '', `layout-${settings.layout}`, `background-${settings.background}`].filter(Boolean).join(' ')
   const style = {
     opacity: settings.opacity,
@@ -95,53 +104,110 @@ export function SubtitleOverlay() {
   }
   const finishResize = () => { resizeStart.current = undefined }
 
-  const lookupWord = async (word: string, context: string, target: HTMLElement) => {
+  const lookupWord = async (word: string, context: string, target: HTMLElement, pinned = false) => {
+    if (!pinned && lookupState?.pinned) return
     const request = lookupRequest.current + 1
     lookupRequest.current = request
     const shell = target.closest<HTMLElement>('.subtitle-shell')
     if (!shell) return
     const targetBounds = target.getBoundingClientRect()
     const shellBounds = shell.getBoundingClientRect()
+    const horizontalPadding = 18
+    const verticalPadding = 12
+    const gap = 8
+    const popoverWidth = Math.min(360, shellBounds.width - horizontalPadding * 2)
+    const targetTop = targetBounds.top - shellBounds.top
+    const targetBottom = targetBounds.bottom - shellBounds.top
+    const availableAbove = targetTop - verticalPadding - gap
+    const availableBelow = shellBounds.height - targetBottom - verticalPadding - gap
+    const placement: LookupAnchor['placement'] = availableAbove >= availableBelow ? 'above' : 'below'
+    const availableHeight = placement === 'above' ? availableAbove : availableBelow
+    const center = targetBounds.left - shellBounds.left + targetBounds.width / 2
     const anchor = {
-      left: targetBounds.left - shellBounds.left + targetBounds.width / 2,
-      top: targetBounds.top - shellBounds.top
+      left: Math.min(Math.max(center, horizontalPadding + popoverWidth / 2), shellBounds.width - horizontalPadding - popoverWidth / 2),
+      top: placement === 'above' ? targetTop - gap : targetBottom + gap,
+      placement,
+      maxHeight: Math.max(0, availableHeight)
     }
-    setLookupState({ status: 'loading', query: word, anchor })
+    setLookupState({ status: 'loading', query: word, anchor, pinned, saving: false, saved: false })
     try {
       const result = await window.speaksub.lookup(word, context)
-      if (lookupRequest.current === request) setLookupState({ status: 'ready', result, anchor })
+      if (lookupRequest.current === request) setLookupState({ status: 'ready', result, anchor, pinned, saving: false, saved: false })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Lookup failed. Check learning service settings.'
-      if (lookupRequest.current === request) setLookupState({ status: 'error', query: word, message, anchor })
+      if (lookupRequest.current === request) setLookupState({ status: 'error', query: word, message, anchor, pinned, saving: false, saved: false })
     }
   }
   const dismissLookup = () => {
-    lookupRequest.current += 1
-    setLookupState(undefined)
+    setLookupState((current) => {
+      if (current?.pinned) return current
+      lookupRequest.current += 1
+      return undefined
+    })
+  }
+  const closePinnedLookup = () => {
+    setLookupState((current) => {
+      if (!current?.pinned) return current
+      lookupRequest.current += 1
+      return undefined
+    })
+  }
+  const saveLookup = async () => {
+    const current = lookupState
+    if (!current || current.saving || current.saved) return
+    setLookupState({ ...current, saving: true, saveError: undefined })
+    try {
+      await window.speaksub.saveSessionFavorite(current.status === 'ready' ? current.result.query : current.query)
+      setLookupState((next) => next ? { ...next, saving: false, saved: true } : next)
+    } catch (error) {
+      const saveError = error instanceof Error ? error.message : 'Could not save this word.'
+      setLookupState((next) => next ? { ...next, saving: false, saveError } : next)
+    }
+  }
+  const sendTextMessage = async () => {
+    const outgoing = message.trim()
+    if (!outgoing || sending) return
+    setMessage('')
+    setSendError(undefined)
+    setSending(true)
+    try {
+      await window.speaksub.sendPracticeMessage(outgoing)
+    } catch (error) {
+      setMessage(outgoing)
+      setSendError(error instanceof Error ? error.message : 'Message failed to send.')
+    } finally {
+      setSending(false)
+    }
   }
 
-  return <div className={shellClass} style={style}>
+  return <div className={shellClass} style={style} onPointerDown={closePinnedLookup}>
     {!settings.locked && (['top', 'right', 'bottom', 'left', 'top-left', 'top-right', 'bottom-left', 'bottom-right'] as ResizeDirection[]).map((direction) => <div key={direction} className={`subtitle-resize-handle ${direction}`} onPointerDown={(event) => beginResize(direction, event)} onPointerMove={resize} onPointerUp={finishResize} onPointerCancel={finishResize}/>) }
     <div className="subtitle-toolbar-zone" onMouseEnter={() => setHoveredToolbar(true)} onMouseLeave={() => setHoveredToolbar(false)}>
-      <div className="subtitle-drag-zone"><div className="subtitle-drag-bars" title="Drag subtitle"><span></span><span></span><span></span></div></div>
+      <div className="subtitle-drag-zone" title={settings.locked ? '字幕已锁定' : '拖动字幕'}><div className="subtitle-drag-bars"><span></span><span></span><span></span></div></div>
       <div className="subtitle-controls" onClick={(event) => event.stopPropagation()}>
         <label>Size<input aria-label="Subtitle size" type="range" min="18" max="38" value={settings.fontSize} onChange={(event) => update({ fontSize: Number(event.target.value) })}/></label>
         <label>AI <input aria-label="AI subtitle color" type="color" value={settings.assistantColor} onChange={(event) => update({ assistantColor: event.target.value })}/></label>
         <label>Me <input aria-label="My subtitle color" type="color" value={settings.userColor} onChange={(event) => update({ userColor: event.target.value })}/></label>
-        <button className="subtitle-lock" title="Lock subtitle" onClick={() => update({ locked: true })}>Lock</button>
+        <button className="subtitle-lock" title={settings.locked ? 'Unlock subtitle' : 'Lock subtitle'} onClick={() => update({ locked: !settings.locked })}>{settings.locked ? 'Unlock' : 'Lock'}</button>
       </div>
     </div>
     <div className="subtitle-transcript" ref={transcriptRef}>
       {displayed.length
         ? displayed.map((event) => <p className={`subtitle-line ${event.speaker}`} key={event.id}><b>{event.speaker === 'assistant' ? 'AI' : 'Me'}</b><span className="subtitle-text">{subtitleWordTokens(event.text).map((token, index) => token.clickable
-          ? <button className="subtitle-word" key={index} onMouseEnter={(mouse) => void lookupWord(token.text, event.text, mouse.currentTarget)} onMouseLeave={dismissLookup} onFocus={(focus) => void lookupWord(token.text, event.text, focus.currentTarget)} onBlur={dismissLookup} onClick={(click) => { click.stopPropagation(); void lookupWord(token.text, event.text, click.currentTarget) }}>{token.text}</button>
+          ? <button className="subtitle-word" key={index} onMouseEnter={(mouse) => void lookupWord(token.text, event.text, mouse.currentTarget)} onMouseLeave={dismissLookup} onFocus={(focus) => void lookupWord(token.text, event.text, focus.currentTarget)} onBlur={dismissLookup} onClick={(click) => { click.stopPropagation(); void lookupWord(token.text, event.text, click.currentTarget, true) }}>{token.text}</button>
           : <span className="subtitle-fragment" key={index}>{token.text}</span>)}</span></p>)
         : <p className="subtitle-empty">Start practice to show recent page text here.</p>}
     </div>
-    {lookupState && <aside className="lookup-popover" style={{ left: lookupState.anchor.left, top: lookupState.anchor.top }} onClick={(event) => event.stopPropagation()}>
+    {textPracticeActive && <form className="subtitle-composer" onSubmit={(event) => { event.preventDefault(); void sendTextMessage() }}>
+      <input aria-label="输入文字消息" value={message} disabled={sending} onChange={(event) => setMessage(event.target.value)} placeholder="输入文字，按 Enter 发送" autoComplete="off" />
+      <button type="submit" disabled={sending || !message.trim()}>{sending ? '发送中…' : '发送'}</button>
+      {sendError && <p role="alert">{sendError}</p>}
+    </form>}
+    {lookupState && <aside className={`lookup-popover ${lookupState.anchor.placement} ${lookupState.pinned ? 'pinned' : ''}`} style={{ left: lookupState.anchor.left, top: lookupState.anchor.top, maxHeight: lookupState.anchor.maxHeight }} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
       {lookupState.status === 'loading' && <><strong>{lookupState.query}</strong><p>Looking up...</p></>}
       {lookupState.status === 'error' && <><strong>{lookupState.query}</strong><p>{lookupState.message}</p></>}
       {lookupState.status === 'ready' && <><strong>{lookupState.result.query}</strong>{lookupState.result.phonetic && <small>/{lookupState.result.phonetic}/</small>}<p>{lookupState.result.definitions.join('; ') || lookupState.result.contextualMeaning || 'No definition returned.'}</p>{lookupState.result.naturalAlternative && <p>Natural: {lookupState.result.naturalAlternative}</p>}</>}
+      {lookupState.pinned && <div className="lookup-actions"><button type="button" title="收藏单词" aria-label="收藏单词" disabled={lookupState.saving || lookupState.saved} onClick={() => void saveLookup()}>{lookupState.saved ? '已收藏' : lookupState.saving ? '收藏中…' : '收藏'}</button>{lookupState.saveError && <small role="alert">{lookupState.saveError}</small>}</div>}
     </aside>}
   </div>
 }
