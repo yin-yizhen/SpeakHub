@@ -42,7 +42,7 @@ describe('OpenAI-compatible direct chat', () => {
     const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'practice-model', hasLlmKey: true }, { llmApiKey: 'secret' }))
 
     await expect(service.chat([{ id: 'u1', sessionId: 's1', sourceMessageId: 'u1', speaker: 'user', text: 'I like Japan.', status: 'complete', receivedAt: '2026-01-01T00:00:00.000Z' }], 'travel', 'B1')).resolves.toBe('Tell me about your last trip.')
-    expect(fetchMock).toHaveBeenCalledWith(new URL('/chat/completions', 'https://example.com/v1/'), expect.objectContaining({ method: 'POST' }))
+    expect(fetchMock).toHaveBeenCalledWith(new URL('chat/completions', 'https://example.com/v1/'), expect.objectContaining({ method: 'POST' }))
     const request = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1]
     expect(JSON.parse(String(request.body))).toMatchObject({ model: 'practice-model', messages: [expect.objectContaining({ role: 'system' }), { role: 'user', content: 'I like Japan.' }] })
   })

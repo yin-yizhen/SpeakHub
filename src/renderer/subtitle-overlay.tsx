@@ -29,9 +29,14 @@ function hexToRgba(hex: string, opacity: number): string {
 }
 
 type LookupState =
-  | { status: 'loading'; query: string }
-  | { status: 'ready'; result: DictionaryResult }
-  | { status: 'error'; query: string; message: string }
+  | { status: 'loading'; query: string; anchor: LookupAnchor }
+  | { status: 'ready'; result: DictionaryResult; anchor: LookupAnchor }
+  | { status: 'error'; query: string; message: string; anchor: LookupAnchor }
+
+interface LookupAnchor {
+  left: number
+  top: number
+}
 
 export function SubtitleOverlay() {
   const [settings, setSettings] = useState<SubtitlePreferences>(defaultSettings)
@@ -76,14 +81,6 @@ export function SubtitleOverlay() {
     '--user-color': settings.userColor
   } as CSSProperties
   const update = (input: Partial<SubtitlePreferences>) => void window.speaksub.updateSubtitle(input)
-  const unlock = (event: PointerEvent<HTMLButtonElement>) => {
-    event.preventDefault()
-    event.stopPropagation()
-    setHoveredToolbar(false)
-    setSettings((current) => ({ ...current, locked: false }))
-    void window.speaksub.setOverlayInteractive(true)
-    update({ locked: false })
-  }
   const beginResize = (direction: ResizeDirection, event: PointerEvent<HTMLDivElement>) => {
     if (settings.locked || !settings.bounds) return
     event.preventDefault()
@@ -98,24 +95,35 @@ export function SubtitleOverlay() {
   }
   const finishResize = () => { resizeStart.current = undefined }
 
-  const lookupWord = async (word: string, context: string) => {
+  const lookupWord = async (word: string, context: string, target: HTMLElement) => {
     const request = lookupRequest.current + 1
     lookupRequest.current = request
-    setLookupState({ status: 'loading', query: word })
+    const shell = target.closest<HTMLElement>('.subtitle-shell')
+    if (!shell) return
+    const targetBounds = target.getBoundingClientRect()
+    const shellBounds = shell.getBoundingClientRect()
+    const anchor = {
+      left: targetBounds.left - shellBounds.left + targetBounds.width / 2,
+      top: targetBounds.top - shellBounds.top
+    }
+    setLookupState({ status: 'loading', query: word, anchor })
     try {
       const result = await window.speaksub.lookup(word, context)
-      if (lookupRequest.current === request) setLookupState({ status: 'ready', result })
+      if (lookupRequest.current === request) setLookupState({ status: 'ready', result, anchor })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Lookup failed. Check learning service settings.'
-      if (lookupRequest.current === request) setLookupState({ status: 'error', query: word, message })
+      if (lookupRequest.current === request) setLookupState({ status: 'error', query: word, message, anchor })
     }
+  }
+  const dismissLookup = () => {
+    lookupRequest.current += 1
+    setLookupState(undefined)
   }
 
   return <div className={shellClass} style={style}>
     {!settings.locked && (['top', 'right', 'bottom', 'left', 'top-left', 'top-right', 'bottom-left', 'bottom-right'] as ResizeDirection[]).map((direction) => <div key={direction} className={`subtitle-resize-handle ${direction}`} onPointerDown={(event) => beginResize(direction, event)} onPointerMove={resize} onPointerUp={finishResize} onPointerCancel={finishResize}/>) }
     <div className="subtitle-toolbar-zone" onMouseEnter={() => setHoveredToolbar(true)} onMouseLeave={() => setHoveredToolbar(false)}>
       <div className="subtitle-drag-zone"><div className="subtitle-drag-bars" title="Drag subtitle"><span></span><span></span><span></span></div></div>
-      <button className="subtitle-unlock" title="Unlock subtitle" style={{ visibility: settings.locked && hoveredToolbar ? 'visible' : 'hidden', pointerEvents: settings.locked && hoveredToolbar ? 'auto' : 'none', WebkitAppRegion: 'no-drag' } as CSSProperties} onPointerDown={unlock}>Unlock</button>
       <div className="subtitle-controls" onClick={(event) => event.stopPropagation()}>
         <label>Size<input aria-label="Subtitle size" type="range" min="18" max="38" value={settings.fontSize} onChange={(event) => update({ fontSize: Number(event.target.value) })}/></label>
         <label>AI <input aria-label="AI subtitle color" type="color" value={settings.assistantColor} onChange={(event) => update({ assistantColor: event.target.value })}/></label>
@@ -126,12 +134,11 @@ export function SubtitleOverlay() {
     <div className="subtitle-transcript" ref={transcriptRef}>
       {displayed.length
         ? displayed.map((event) => <p className={`subtitle-line ${event.speaker}`} key={event.id}><b>{event.speaker === 'assistant' ? 'AI' : 'Me'}</b><span className="subtitle-text">{subtitleWordTokens(event.text).map((token, index) => token.clickable
-          ? <button className="subtitle-word" key={index} onMouseEnter={() => { if (!settings.locked) void lookupWord(token.text, event.text) }} onFocus={() => { if (!settings.locked) void lookupWord(token.text, event.text) }} onClick={(click) => { click.stopPropagation(); if (!settings.locked) void lookupWord(token.text, event.text) }}>{token.text}</button>
+          ? <button className="subtitle-word" key={index} onMouseEnter={(mouse) => void lookupWord(token.text, event.text, mouse.currentTarget)} onMouseLeave={dismissLookup} onFocus={(focus) => void lookupWord(token.text, event.text, focus.currentTarget)} onBlur={dismissLookup} onClick={(click) => { click.stopPropagation(); void lookupWord(token.text, event.text, click.currentTarget) }}>{token.text}</button>
           : <span className="subtitle-fragment" key={index}>{token.text}</span>)}</span></p>)
         : <p className="subtitle-empty">Start practice to show recent page text here.</p>}
     </div>
-    {lookupState && <aside className="lookup-popover" onClick={(event) => event.stopPropagation()}>
-      <button className="lookup-close" aria-label="Close lookup result" onClick={() => setLookupState(undefined)}>x</button>
+    {lookupState && <aside className="lookup-popover" style={{ left: lookupState.anchor.left, top: lookupState.anchor.top }} onClick={(event) => event.stopPropagation()}>
       {lookupState.status === 'loading' && <><strong>{lookupState.query}</strong><p>Looking up...</p></>}
       {lookupState.status === 'error' && <><strong>{lookupState.query}</strong><p>{lookupState.message}</p></>}
       {lookupState.status === 'ready' && <><strong>{lookupState.result.query}</strong>{lookupState.result.phonetic && <small>/{lookupState.result.phonetic}/</small>}<p>{lookupState.result.definitions.join('; ') || lookupState.result.contextualMeaning || 'No definition returned.'}</p>{lookupState.result.naturalAlternative && <p>Natural: {lookupState.result.naturalAlternative}</p>}</>}

@@ -7,22 +7,34 @@ type StoredSettings = Omit<ProviderSettings, 'hasLlmKey'> & { encrypted?: string
 export class SecureSettings {
   constructor(private readonly filePath: string) {}
 
-  private read(): StoredSettings { return existsSync(this.filePath) ? JSON.parse(readFileSync(this.filePath, 'utf8')) : {} }
+  private read(): StoredSettings {
+    if (!existsSync(this.filePath)) return {}
+    try { return JSON.parse(readFileSync(this.filePath, 'utf8')) as StoredSettings }
+    catch { return {} }
+  }
   private write(value: StoredSettings): void { writeFileSync(this.filePath, JSON.stringify(value), 'utf8') }
 
   get(): ProviderSettings {
     const value = this.removeLegacyDictionarySecrets(this.read())
     const secrets = this.secrets(value)
-    return { llmBaseUrl: value.llmBaseUrl, llmModel: value.llmModel, hasLlmKey: Boolean(secrets.llmApiKey) }
+    return { llmBaseUrl: value.llmBaseUrl, llmModel: value.llmModel, hasLlmKey: Boolean(secrets.llmApiKey), realtimeEnabled: value.realtimeEnabled === true, realtimeModel: value.realtimeModel, realtimeProtocol: value.realtimeProtocol === 'legacy' ? 'legacy' : 'current' }
   }
 
   getSecrets(): { llmApiKey?: string } { return this.secrets(this.read()) }
 
   save(input: ProviderSettingsInput): ProviderSettings {
     const current = this.read()
-    const secrets = { ...this.secrets(current), ...Object.fromEntries(Object.entries({ llmApiKey: input.llmApiKey }).filter(([, value]) => value)) }
+    const previousSecrets = input.clearLlmApiKey ? {} : this.secrets(current)
+    const secrets = { ...previousSecrets, ...Object.fromEntries(Object.entries({ llmApiKey: input.llmApiKey }).filter(([, value]) => value)) }
     const encrypted = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(JSON.stringify(secrets)).toString('base64') : undefined
-    this.write({ llmBaseUrl: input.llmBaseUrl ?? current.llmBaseUrl, llmModel: input.llmModel ?? current.llmModel, encrypted })
+    this.write({
+      llmBaseUrl: input.llmBaseUrl ?? current.llmBaseUrl,
+      llmModel: input.llmModel ?? current.llmModel,
+      realtimeEnabled: input.realtimeEnabled ?? current.realtimeEnabled,
+      realtimeModel: input.realtimeModel ?? current.realtimeModel,
+      realtimeProtocol: input.realtimeProtocol ?? current.realtimeProtocol ?? 'current',
+      encrypted
+    })
     return this.get()
   }
 

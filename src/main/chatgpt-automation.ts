@@ -123,7 +123,11 @@ const deleteConversationScript = `(targetUrl => new Promise((resolve) => {
     const row = link.closest('li, [data-testid], nav > div, div');
     const menu = [...(row?.querySelectorAll('button') || [])].find(button => /more|menu|更多|选项/i.test(textOf(button)));
     if (menu && !menu.dataset.speaksubOpened) { menu.dataset.speaksubOpened = '1'; menu.click(); setTimeout(tick, 200); return; }
-    if (clickNamed(['delete', '删除'])) { setTimeout(() => { clickNamed(['delete', '删除', 'confirm']); resolve({ ok: true, message: '已删除上一轮 SpeakSub ChatGPT 对话。' }); }, 180); return; }
+    if (clickNamed(['delete', '删除'])) { setTimeout(() => {
+      if (!clickNamed(['delete', '删除', 'confirm'])) { resolve({ ok: false, message: '找到目标对话，但删除确认未完成。' }); return; }
+      const verifyDeadline = Date.now() + 8000;
+      const verify = () => { const remains = [...document.querySelectorAll('a[href*="/c/"]')].some(anchor => { try { return new URL(anchor.href).pathname === target; } catch { return false; } }); if (!remains) resolve({ ok: true, message: '已删除上一轮 SpeakSub ChatGPT 对话。' }); else if (Date.now() > verifyDeadline) resolve({ ok: false, message: 'ChatGPT 未确认目标对话已删除；记录将保留重试。' }); else setTimeout(verify, 250); }; verify();
+    }, 180); return; }
     if (Date.now() > deadline) resolve({ ok: false, message: '找到了上一轮对话，但未找到 ChatGPT 删除菜单。' }); else setTimeout(tick, 250);
   };
   tick();
@@ -133,6 +137,8 @@ function pause(milliseconds: number): Promise<void> { return new Promise((resolv
 
 export class ChatGPTAutomation {
   constructor(private readonly contents: WebContents) {}
+
+  async isReady(): Promise<boolean> { return this.contents.executeJavaScript(`Boolean((${pageComposerLocator}).composer)`, true) as Promise<boolean> }
 
   async fillAndSendPrompt(prompt: string): Promise<AutomationResult> {
     const result = await this.contents.executeJavaScript(focusComposerScript, true) as { focused: boolean; diagnostics: Array<Record<string, unknown>> }

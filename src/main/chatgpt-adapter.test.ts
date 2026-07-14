@@ -10,4 +10,9 @@ describe('ChatGPT DOM fixture', () => {
       { sourceMessageId: 'u1', speaker: 'user', text: 'I agree.', status: 'complete' }
     ])
   })
+
+  it('does not duplicate a nested message role inside a conversation turn', () => {
+    document.body.innerHTML = '<article id="turn-1" data-testid="conversation-turn-1"><div data-message-author-role="assistant" data-message-id="a1">Hello there.</div></article>'
+    expect(parseChatGPTPage(document)).toEqual([{ sourceMessageId: 'a1', speaker: 'assistant', text: 'Hello there.', status: 'complete' }])
+  })
 })

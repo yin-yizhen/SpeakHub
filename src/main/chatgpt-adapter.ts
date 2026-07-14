@@ -12,10 +12,13 @@ export interface SourceAdapter {
 
 /** Testable selector contract for the current ChatGPT conversation DOM. */
 export function parseChatGPTPage(root: ParentNode): PageMessage[] {
-  return [...root.querySelectorAll<HTMLElement>('[data-message-author-role], article[data-testid^="conversation-turn-"]')].flatMap((node, index) => {
-    const speaker = node.dataset.messageAuthorRole ?? node.querySelector<HTMLElement>('[data-message-author-role]')?.dataset.messageAuthorRole
+  const turns = [...root.querySelectorAll<HTMLElement>('article[data-testid^="conversation-turn-"]')]
+  const nodes = turns.length ? turns : [...root.querySelectorAll<HTMLElement>('[data-message-author-role]')]
+  return nodes.flatMap((node, index) => {
+    const attributed = node.dataset.messageAuthorRole ? node : node.querySelector<HTMLElement>('[data-message-author-role]')
+    const speaker = attributed?.dataset.messageAuthorRole
     const text = node.innerText?.trim() || node.textContent?.trim() || ''
-    const sourceMessageId = node.dataset.messageId || node.id || `turn-${index}`
+    const sourceMessageId = node.dataset.messageId || attributed?.dataset.messageId || node.id || `turn-${index}`
     return speaker && text ? [{ sourceMessageId, speaker, text, status: 'complete' as const }] : []
   })
 }
@@ -24,16 +27,19 @@ const observerScript = `(() => {
   if (window.__speaksubDrain) return;
   const queue = []; const seen = new Map();
   const read = (emit = true) => {
-    const nodes = document.querySelectorAll('[data-message-author-role], article[data-testid^="conversation-turn-"]');
+    const turns = [...document.querySelectorAll('article[data-testid^="conversation-turn-"]')];
+    const nodes = turns.length ? turns : [...document.querySelectorAll('[data-message-author-role]')];
     nodes.forEach((node, index) => {
-      const speaker = node.getAttribute('data-message-author-role') || node.querySelector('[data-message-author-role]')?.getAttribute('data-message-author-role');
+      const attributed = node.getAttribute('data-message-author-role') ? node : node.querySelector('[data-message-author-role]');
+      const speaker = attributed?.getAttribute('data-message-author-role');
       const text = (node.innerText || '').trim();
       if (!speaker || !text) return;
-      const sourceMessageId = node.getAttribute('data-message-id') || node.id || 'turn-' + index;
-      const previous = seen.get(sourceMessageId);
-      if (previous === text) return;
-      seen.set(sourceMessageId, text);
-      if (emit) queue.push({ sourceMessageId, speaker, text, status: 'streaming' });
+      const sourceMessageId = node.getAttribute('data-message-id') || attributed?.getAttribute('data-message-id') || node.id || 'turn-' + index;
+      const busy = Boolean(document.querySelector('button[data-testid*="stop"], button[aria-label*="Stop"], button[aria-label*="停止"]'));
+      const status = speaker === 'assistant' && busy ? 'streaming' : 'complete'; const signature = status + '\\0' + text;
+      if (seen.get(sourceMessageId) === signature) return;
+      seen.set(sourceMessageId, signature);
+      if (emit) queue.push({ sourceMessageId, speaker, text, status });
     });
   };
   const observer = new MutationObserver(() => read(true)); observer.observe(document.body, { childList: true, subtree: true, characterData: true }); read(false);

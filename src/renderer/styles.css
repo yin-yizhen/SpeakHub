@@ -16,3 +16,11 @@
 .api-composer textarea { flex: 1; min-width: 0; resize: vertical; border: 1px solid #4c6e5a; border-radius: 7px; padding: 10px; color: #e3ebe5; background: #151e1a; outline: none; }
 .api-composer textarea:focus { border-color: #8fd5a8; }
 .api-composer button { flex: 0 0 auto; }
+.study-stream article .quiet-action { width: max-content; margin-top: 4px; padding: 5px 9px; }
+.session-history { display: grid; gap: 12px; margin-top: 46px; border-top: 1px solid rgba(201,227,210,.14); padding-top: 20px; }
+.session-history h2 { margin: 0 0 4px; font-size: 17px; }
+.session-history > article { display: grid; gap: 7px; border: 1px solid rgba(201,227,210,.12); border-radius: 10px; padding: 14px; background: rgba(24,35,29,.55); }
+.session-history > article > small { color: #7f9588; font-size: 10px; }
+.session-history > article > p { margin: 0; color: #a6b8ad; font-size: 12px; line-height: 1.55; }
+.provider-form select { border: 1px solid #354b40; border-radius: 7px; padding: 8px 9px; color: #e3ebe5; background: #151e1a; outline: none; }
+.connection-skip { margin-top: 10px; }

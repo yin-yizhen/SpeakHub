@@ -53,9 +53,12 @@ export class LearningService {
   private async requestLlm(messages: LlmMessage[], json = false): Promise<string> {
     const config = this.settings.get(); const secrets = this.settings.getSecrets()
     if (!config.llmBaseUrl || !config.llmModel || !secrets.llmApiKey) throw new Error('Please configure an OpenAI-compatible Base URL, model, and API key first.')
-    const url = new URL('/chat/completions', config.llmBaseUrl.endsWith('/') ? config.llmBaseUrl : `${config.llmBaseUrl}/`)
+    const url = new URL('chat/completions', config.llmBaseUrl.endsWith('/') ? config.llmBaseUrl : `${config.llmBaseUrl}/`)
+    if (!['https:', 'http:'].includes(url.protocol)) throw new Error('The LLM Base URL must use HTTP or HTTPS.')
     const body = { model: config.llmModel, messages, ...(json ? { response_format: { type: 'json_object' } } : {}) }
-    const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${secrets.llmApiKey}` }, body: JSON.stringify(body) })
+    let response: Response
+    try { response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${secrets.llmApiKey}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) }) }
+    catch (error) { if (error instanceof Error && error.name === 'TimeoutError') throw new Error('LLM request timed out after 30 seconds.'); throw error }
     if (!response.ok) throw new Error(`LLM request failed (${response.status})`)
     const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
     const content = payload.choices?.[0]?.message?.content
