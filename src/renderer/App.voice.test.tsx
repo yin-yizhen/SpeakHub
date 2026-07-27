@@ -15,7 +15,7 @@ vi.mock('./local-speech-audio', () => ({
 import { App } from './App'
 
 const settings: SubtitlePreferences = {
-  mode: 'assistant', layout: 'split', background: 'glass', backgroundColor: '#0e1713', backgroundOpacity: 0.86,
+  mode: 'assistant', background: 'glass', backgroundColor: '#0e1713', backgroundOpacity: 0.86,
   assistantColor: '#f1f6f3', userColor: '#fff1c9', fontSize: 25, opacity: 0.94, locked: false, visible: false, maxLines: 4
 }
 
@@ -109,6 +109,10 @@ describe('unified voice microphone gate', () => {
     expect(container.querySelector<HTMLButtonElement>('.source-picker button.active')?.textContent).toBe('API 直连')
     expect(container.querySelector<HTMLButtonElement>('.topic-grid .active')?.textContent).toBe('旅行英语')
     expect(container.querySelector<HTMLTextAreaElement>('.practice-focus textarea')?.value).toBe('练习过去时。')
+    expect(container.querySelector('.prompt-preview')?.textContent).toContain('将作为 system 发送给 AI 的完整提示词')
+    expect(container.querySelector('.prompt-preview')?.textContent).toContain('英文内容应占回复的至少 80%')
+    expect(container.querySelector('.prompt-preview')?.textContent).toContain('本次重点：')
+    expect(container.querySelector('.prompt-preview')?.textContent).toContain('练习过去时。')
 
     const daily = [...container.querySelectorAll<HTMLButtonElement>('.topic-grid button')].find((button) => button.textContent === '日常聊天')!
     await act(async () => { daily.click(); await Promise.resolve() })

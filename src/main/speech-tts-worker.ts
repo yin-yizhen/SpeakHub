@@ -32,8 +32,10 @@ const tts = new OfflineTts({
 
 let minimumGeneration = 0
 let tail = Promise.resolve()
+let stopping = false
 
 function synthesize(message: Extract<Incoming, { type: 'synthesize' }>): void {
+  if (stopping) return
   tail = tail.then(async () => {
     if (message.generation < minimumGeneration) return
     try {
@@ -58,7 +60,14 @@ function synthesize(message: Extract<Incoming, { type: 'synthesize' }>): void {
 port.on('message', (message: Incoming) => {
   if (message.type === 'synthesize') synthesize(message)
   if (message.type === 'cancel') minimumGeneration = Math.max(minimumGeneration, message.generation + 1)
-  if (message.type === 'stop') process.exit(0)
+  if (message.type === 'stop' && !stopping) {
+    stopping = true
+    minimumGeneration = Number.POSITIVE_INFINITY
+    void tail.finally(() => {
+      try { port.postMessage({ type: 'stopped' }) }
+      finally { port.close() }
+    }).catch(() => undefined)
+  }
 })
 
 port.postMessage({ type: 'ready' })

@@ -1,5 +1,12 @@
 # SpeakHub Code Map
 
+## Subtitle Overlay Interaction
+
+- Entry: `src/renderer/subtitle-overlay.tsx`; window control: `src/main/index.ts`; renderer IPC bridge: `src/main/preload.ts`.
+- Flow: word/control hover -> `subtitle:interactive` -> `BrowserWindow.setIgnoreMouseEvents`; three-bar drag -> `subtitle:move` -> persisted overlay bounds.
+- Tests: `src/renderer/subtitle-overlay.test.tsx`.
+- Verify: `pnpm exec vitest run src/renderer/subtitle-overlay.test.tsx`; then start the app and drag the three bars only while unlocked. Confirm locking prevents movement and transparent subtitle areas still click through.
+
 本文件按“要改什么”定位入口、数据流、测试和验收方式。最近完整验收提交：`uncommitted working tree (2026-07-27)`。
 
 ## 先看这里
@@ -49,6 +56,16 @@ practice:start
 -> ChatGPTAdapter 解析字幕并写入归档
 ```
 
+API 直连消息链路：
+
+```text
+App 选择的场景/难度/纠错提示词与本次重点
+-> shared/direct-chat-prompt.ts 叠加固定英语优先规则
+-> LearningService 把完整内容放入 messages[0].system
+-> 最终字幕依次作为 user / assistant 历史
+-> OpenAI-compatible /chat/completions（SSE 优先）
+```
+
 ## Code Map
 
 ### 主进程与 IPC
@@ -64,12 +81,13 @@ practice:start
 - `src/main/chatgpt-adapter.ts`：ChatGPT 页面消息解析及观察。
 - `src/main/local-speech-service.ts`：VAD、云端识别与本地 TTS worker 编排。
 - `src/main/speech-segments.ts`：流式文本分段，是 TTS chunk 边界的唯一实现。
+- `src/shared/direct-chat-prompt.ts`：生成 API 直连的完整 `system`；固定英语占比和残缺/错误输入处理规则，再叠加所选提示词与本次练习重点。
 
 ### 数据与学习
 
 - `src/main/store.ts`：`current-practice.md`、最终 Markdown 和 `learning-index.json` 的唯一写入入口。
 - `src/main/session-checkpoint.ts`：练习中的增量落盘。
-- `src/main/learning-service.ts`：LLM 对话、SSE 解析和复盘结构化。
+- `src/main/learning-service.ts`：LLM 消息角色组装、SSE 解析和复盘结构化；对话历史必须保持 `system -> user / assistant` 顺序。
 - `src/renderer/LearningCenter.tsx`：历史、完整复盘、词汇和复习 UI。
 
 ### 渲染与共享配置
@@ -88,6 +106,7 @@ practice:start
 | `src/main/store.test.ts` | chunk 合并、Markdown、复盘、搜索、词汇和索引持久化 |
 | `src/main/speech-segments.test.ts` | TTS 分段边界 |
 | `src/main/chatgpt-automation.test.ts` | 网页 DOM、发送确认、回复稳定和清理 |
+| `src/main/learning-service.test.ts` | 完整 system 组合、user/assistant 历史顺序、SSE 与非流式回退 |
 | `src/renderer/App.voice.test.tsx` | 来源、模式、语音门控、设置和客户端事件 |
 | `src/renderer/app-state.test.ts` | 生命周期忙碌状态、下一次练习模板映射 |
 | `src/renderer/subtitle-overlay.test.tsx` | 字幕、查词、收藏和交互状态 |
@@ -109,6 +128,19 @@ practice:start
 2. 不要在 UI 内复制解析或分段规则。
 3. 运行对应单元测试和集成测试。
 4. 本地启动后检查连续流式文本没有丢字、重复或提前入库。
+
+## Subtitle Layout Rule
+
+- `SubtitlePreferences` no longer stores a layout choice: AI and user subtitles always render on the same side.
+- Legacy saved `layout` values are ignored while reading settings; verify this migration in `app-settings.test.ts`.
+
+## API Voice Shutdown Safety
+
+- Entry: `src/main/index.ts` 的 `practice:end`；worker 编排在 `src/main/local-speech-service.ts`，原生任务分别在 `speech-vad-worker.ts` 与 `speech-tts-worker.ts`。
+- Flow: 取消当前回复 -> 停止接收新语音任务 -> 等待正在运行的 sherpa/ONNX 调用完成 -> worker 关闭消息端口并自然退出 -> 生成复盘 -> 归档入库。
+- Risk: 不得在 `OfflineTts.generateAsync()` 或 VAD 原生调用仍运行时直接调用 `Worker.terminate()`；这会导致 Electron 以 `0xc0000409` 原生退出。正常关闭也不得通过全局 error listener 上报为失败。
+- Tests: `src/main/local-speech-service.test.ts` 必须覆盖 stop 已发送但 worker 尚未退出时，`LocalSpeechService.stop()` 仍保持等待，并确认正常退出不产生错误事件。
+- Verify: `pnpm exec vitest run src/main/local-speech-service.test.ts src/main/practice-pipeline.integration.test.ts && pnpm build`；真实验收时在 AI 正在合成或播放语音时点击“结束并生成复盘”，确认应用不退出、复盘完成且归档可打开。
 
 ## Local Verification Commands
 

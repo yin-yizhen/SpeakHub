@@ -2,7 +2,6 @@ import type { SubtitlePreferences } from './types'
 
 export const defaultSubtitlePreferences: SubtitlePreferences = {
   mode: 'assistant',
-  layout: 'split',
   background: 'glass',
   backgroundColor: '#0e1713',
   backgroundOpacity: 0.86,

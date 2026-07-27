@@ -99,12 +99,12 @@ body { margin: 0; background: transparent; }
   height: 20px;
   display: flex;
   justify-content: center;
-  -webkit-app-region: drag;
+  -webkit-app-region: no-drag;
   cursor: move;
 }
 
 .subtitle-drag-bars {
-  -webkit-app-region: drag;
+  -webkit-app-region: no-drag;
   width: max-content;
   height: 14px;
   display: flex;
@@ -235,10 +235,6 @@ body { margin: 0; background: transparent; }
   text-shadow: 0 1px 8px rgba(0,0,0,.38);
 }
 
-.subtitle-shell.layout-split .subtitle-line.user {
-  justify-content: flex-end;
-  flex-direction: row-reverse;
-}
 
 .subtitle-line b {
   flex: 0 0 auto;

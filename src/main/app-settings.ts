@@ -8,7 +8,7 @@ export { defaultSubtitlePreferences } from '../shared/defaults'
 
 const boundsSchema = z.object({ x: z.number().int(), y: z.number().int(), width: z.number().int().min(320).max(10000), height: z.number().int().min(100).max(10000) })
 const subtitleSchema = z.object({
-  mode: z.enum(['assistant', 'user', 'both']), layout: z.enum(['same-side', 'split']), background: z.enum(['transparent', 'glass', 'solid']),
+  mode: z.enum(['assistant', 'user', 'both']), background: z.enum(['transparent', 'glass', 'solid']),
   backgroundColor: z.string().regex(/^#[0-9a-f]{6}$/i), backgroundOpacity: z.number().min(0.1).max(1), assistantColor: z.string().regex(/^#[0-9a-f]{6}$/i),
   userColor: z.string().regex(/^#[0-9a-f]{6}$/i), fontSize: z.number().int().min(18).max(38), opacity: z.number().min(0.55).max(1), locked: z.boolean(),
   visible: z.boolean(), maxLines: z.number().int().min(2).max(6), bounds: boundsSchema.optional()

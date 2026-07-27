@@ -4,6 +4,7 @@ import { LocalSpeechService } from './local-speech-service'
 class FakeWorker {
   readonly messages: unknown[] = []
   private listeners = new Map<string, Array<(...args: never[]) => void>>()
+  unref = vi.fn()
 
   on(event: string, listener: (...args: never[]) => void): this {
     const current = this.listeners.get(event) ?? []
@@ -13,7 +14,6 @@ class FakeWorker {
   }
 
   postMessage(message: unknown): void { this.messages.push(message) }
-  terminate = vi.fn(async () => 0)
   emit(event: string, value: unknown): void {
     for (const listener of this.listeners.get(event) ?? []) listener(value as never)
   }
@@ -107,6 +107,33 @@ describe('LocalSpeechService', () => {
 
     await expect(speech).rejects.toMatchObject({ name: 'AbortError' })
     expect(workers[1].messages).toContainEqual({ type: 'cancel', generation: 7 })
+  })
+
+  it('waits for native workers to exit cooperatively when stopping', async () => {
+    const workers: FakeWorker[] = []
+    const { service, cloud } = createService(workers)
+    const errors = vi.fn()
+    service.onError(errors)
+    await start(service, workers)
+
+    const pendingSynthesis = service.synthesize('A reply still being generated', 'message-1', 0, 3)
+    await Promise.resolve()
+    let stopped = false
+    const stopping = service.stop().then(() => { stopped = true })
+    await Promise.resolve()
+
+    await expect(pendingSynthesis).rejects.toMatchObject({ name: 'AbortError' })
+    expect(workers[0].messages).toContainEqual({ type: 'stop' })
+    expect(workers[1].messages).toContainEqual({ type: 'stop' })
+    expect(stopped).toBe(false)
+    workers[0].emit('exit', 0)
+    workers[1].emit('exit', 0)
+    await stopping
+
+    expect(cloud.api.stop).toHaveBeenCalledOnce()
+    expect(errors).not.toHaveBeenCalled()
+    expect(workers[0].unref).not.toHaveBeenCalled()
+    expect(workers[1].unref).not.toHaveBeenCalled()
   })
 
   it('requires an Aliyun API key before recognition starts', async () => {

@@ -35,6 +35,7 @@ const api: SpeakSubApi = {
   updateSubtitle: (settings) => ipcRenderer.invoke('subtitle:update', settings),
   toggleOverlay: () => ipcRenderer.invoke('subtitle:toggle'),
   setOverlayInteractive: (interactive) => ipcRenderer.invoke('subtitle:interactive', interactive),
+  moveOverlay: (origin, deltaX, deltaY) => ipcRenderer.invoke('subtitle:move', origin, deltaX, deltaY),
   resizeOverlay: (direction, origin, deltaX, deltaY) => ipcRenderer.invoke('subtitle:resize', direction, origin, deltaX, deltaY),
   lookup: (selection, sentence) => ipcRenderer.invoke('learning:lookup', selection, sentence),
   saveSessionFavorite: (word) => ipcRenderer.invoke('session:save-favorite', word),

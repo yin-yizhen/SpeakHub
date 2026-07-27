@@ -53,6 +53,7 @@ export function SubtitleOverlay() {
   const overlayInteractive = useRef<boolean | undefined>(undefined)
   const transcriptRef = useRef<HTMLDivElement>(null)
   const resizeStart = useRef<{ direction: ResizeDirection; origin: NonNullable<SubtitlePreferences['bounds']>; screenX: number; screenY: number } | undefined>(undefined)
+  const dragStart = useRef<{ origin: NonNullable<SubtitlePreferences['bounds']>; screenX: number; screenY: number } | undefined>(undefined)
   const setOverlayInteractivity = (interactive: boolean) => {
     if (overlayInteractive.current === interactive) return
     overlayInteractive.current = interactive
@@ -91,13 +92,13 @@ export function SubtitleOverlay() {
   useEffect(() => {
     const transcript = transcriptRef.current
     if (transcript) transcript.scrollTop = transcript.scrollHeight
-  }, [displayed, settings.fontSize, settings.layout])
+  }, [displayed, settings.fontSize])
   useEffect(() => {
     overlayInteractive.current = undefined
     syncOverlayInteractivity(null)
   }, [settings.locked])
   const toolbarOpen = hoveredToolbar
-  const shellClass = ['subtitle-shell', settings.locked ? 'locked' : '', toolbarOpen ? 'toolbar-open' : '', `layout-${settings.layout}`, `background-${settings.background}`].filter(Boolean).join(' ')
+  const shellClass = ['subtitle-shell', settings.locked ? 'locked' : '', toolbarOpen ? 'toolbar-open' : '', 'layout-same-side', `background-${settings.background}`].filter(Boolean).join(' ')
   const style = {
     opacity: settings.opacity,
     fontSize: settings.fontSize,
@@ -119,6 +120,24 @@ export function SubtitleOverlay() {
     void window.speaksub.resizeOverlay(start.direction, start.origin, event.screenX - start.screenX, event.screenY - start.screenY)
   }
   const finishResize = () => { resizeStart.current = undefined }
+  const beginDrag = (screenX: number, screenY: number) => {
+    if (settings.locked || !settings.bounds) return
+    dragStart.current = { origin: settings.bounds, screenX, screenY }
+    setOverlayInteractivity(true)
+  }
+  const drag = (screenX: number, screenY: number) => {
+    const start = dragStart.current
+    if (!start) return
+    void window.speaksub.moveOverlay(start.origin, screenX - start.screenX, screenY - start.screenY)
+  }
+  const finishDrag = () => { dragStart.current = undefined }
+  const handleMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+    syncOverlayInteractivity(event.target)
+    const dragging = !settings.locked && event.target instanceof Element && Boolean(event.target.closest('.subtitle-drag-zone')) && event.buttons === 1
+    if (!dragging) { if (event.buttons === 0) finishDrag(); return }
+    if (!dragStart.current) beginDrag(event.screenX, event.screenY)
+    else drag(event.screenX, event.screenY)
+  }
 
   const lookupWord = async (word: string, context: string, target: HTMLElement, pinned = false) => {
     if (!pinned && lookupState?.pinned) return
@@ -207,10 +226,10 @@ export function SubtitleOverlay() {
     catch { setEndingPractice(false) }
   }
 
-  return <div className={shellClass} style={style} onMouseMove={(event: ReactMouseEvent<HTMLDivElement>) => syncOverlayInteractivity(event.target)} onMouseLeave={() => syncOverlayInteractivity(null)} onPointerDown={closePinnedLookup}>
+  return <div className={shellClass} style={style} onMouseMove={handleMouseMove} onMouseUp={finishDrag} onMouseLeave={() => { if (!dragStart.current) syncOverlayInteractivity(null) }} onPointerDown={closePinnedLookup}>
     {!settings.locked && (['top', 'right', 'bottom', 'left', 'top-left', 'top-right', 'bottom-left', 'bottom-right'] as ResizeDirection[]).map((direction) => <div key={direction} data-subtitle-interactive className={`subtitle-resize-handle ${direction}`} onPointerDown={(event) => beginResize(direction, event)} onPointerMove={resize} onPointerUp={finishResize} onPointerCancel={finishResize}/>) }
     <div className="subtitle-toolbar-zone" data-subtitle-interactive data-subtitle-lock-access onMouseEnter={() => { setHoveredToolbar(true); setOverlayInteractivity(true) }} onMouseLeave={() => setHoveredToolbar(false)}>
-      {settings.locked ? <><div className="subtitle-lock-handle" title="Unlock subtitles"><div className="subtitle-drag-bars"><span></span><span></span><span></span></div></div>{toolbarOpen && <button className="subtitle-unlock" data-subtitle-interactive type="button" title="Unlock subtitles" onClick={() => update({ locked: false })}>Unlock</button>}</> : <><div className="subtitle-drag-zone" title="拖动字幕"><div className="subtitle-drag-bars"><span></span><span></span><span></span></div></div>
+      {settings.locked ? <><div className="subtitle-lock-handle" title="Unlock subtitles"><div className="subtitle-drag-bars"><span></span><span></span><span></span></div></div>{toolbarOpen && <button className="subtitle-unlock" data-subtitle-interactive type="button" title="Unlock subtitles" onClick={() => update({ locked: false })}>Unlock</button>}</> : <><div className="subtitle-drag-zone" title="拖动字幕" onMouseDown={(event) => { event.preventDefault(); beginDrag(event.screenX, event.screenY) }}><div className="subtitle-drag-bars"><span></span><span></span><span></span></div></div>
           <div className="subtitle-controls" onClick={(event) => event.stopPropagation()}>
             <div className="subtitle-settings-row"><label>Size<input aria-label="Subtitle size" type="range" min="18" max="38" value={settings.fontSize} onChange={(event) => update({ fontSize: Number(event.target.value) })}/></label><label>AI <input aria-label="AI subtitle color" type="color" value={settings.assistantColor} onChange={(event) => update({ assistantColor: event.target.value })}/></label><label>Me <input aria-label="My subtitle color" type="color" value={settings.userColor} onChange={(event) => update({ userColor: event.target.value })}/></label><button className="subtitle-lock" type="button" title="Lock subtitles" onClick={() => update({ locked: true })}>Lock</button></div>
             <div className="subtitle-action-row">{practiceActive ? <button className="subtitle-end-practice" type="button" disabled={endingPractice} onClick={() => void endPractice()}>{endingPractice ? '结束中…' : '结束对话'}</button> : <span/>}<button className="subtitle-close" type="button" title="Close subtitles" onClick={() => void window.speaksub.toggleOverlay()}>关闭字幕</button></div>

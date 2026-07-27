@@ -23,6 +23,14 @@ describe('AppSettingsStore', () => {
   it('rejects subtitle values outside the UI boundary', () => {
     expect(() => parseSubtitleUpdate(defaultSubtitlePreferences, { fontSize: 200 })).toThrow()
   })
+  it('migrates saved split subtitles to the fixed same-side layout', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speaksub-settings-')); const path = join(directory, 'app.json')
+    try {
+      writeFileSync(path, JSON.stringify({ providers: { 'chatgpt-web': false }, subtitle: { ...defaultSubtitlePreferences, layout: 'split' } }), 'utf8')
+      expect(new AppSettingsStore(path).readSubtitle()).toEqual(defaultSubtitlePreferences)
+      expect(parseSubtitleUpdate(defaultSubtitlePreferences, { layout: 'split' })).toEqual(defaultSubtitlePreferences)
+    } finally { rmSync(directory, { recursive: true, force: true }) }
+  })
   it('provides independent scenario, difficulty, and text-only correction defaults', () => {
     expect(defaultPromptTemplates.scenario).toHaveLength(7)
     expect(defaultPromptTemplates.difficulty.map((item) => item.name)).toEqual(['A1', 'A2', 'B1', 'B2', 'C1'])

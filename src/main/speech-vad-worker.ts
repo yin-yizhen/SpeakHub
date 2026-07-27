@@ -62,7 +62,10 @@ port.on('message', (message: Incoming) => {
       while (!vad.isEmpty()) vad.pop()
     }
     if (message.type === 'reset') reset()
-    if (message.type === 'stop') process.exit(0)
+    if (message.type === 'stop') {
+      try { port.postMessage({ type: 'stopped' }) }
+      finally { port.close() }
+    }
   } catch (error) {
     port.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) })
   }

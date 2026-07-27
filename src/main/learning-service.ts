@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { DictionaryResult, ReviewResult, TranscriptEvent } from '../shared/types'
+import { buildDirectChatSystemPrompt } from '../shared/direct-chat-prompt'
 import { LocalDictionary } from './local-dictionary'
 import { SecureSettings } from './secure-settings'
 
@@ -91,7 +92,7 @@ export class LearningService {
 
   private chatMessages(events: TranscriptEvent[], topic: string, level: string, prompt?: string): LlmMessage[] {
     return [
-      { role: 'system', content: prompt ?? `You are a warm bilingual speaking partner. The learner selected ${topic} at CEFR ${level}. Reply naturally in Chinese, English, or a helpful mix matching the learner. Keep each turn concise, ask at most one question, and gently adapt to the learner's level.` },
+      { role: 'system', content: buildDirectChatSystemPrompt(topic, level, prompt) },
       ...events.filter((event) => event.status === 'complete').map((event) => ({ role: event.speaker === 'assistant' ? 'assistant' as const : 'user' as const, content: event.text }))
     ]
   }

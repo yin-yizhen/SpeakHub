@@ -1,7 +1,6 @@
 export type Speaker = 'assistant' | 'user'
 type TranscriptStatus = 'streaming' | 'complete'
 export type SubtitleMode = 'assistant' | 'user' | 'both'
-type SubtitleLayout = 'same-side' | 'split'
 type SubtitleBackground = 'transparent' | 'glass' | 'solid'
 export type CorrectionStrength = 'light' | 'normal' | 'strict'
 export type PromptTemplateCategory = 'scenario' | 'difficulty' | 'correction'
@@ -97,7 +96,6 @@ export interface PracticeEndResult {
 
 export interface SubtitlePreferences {
   mode: SubtitleMode
-  layout: SubtitleLayout
   background: SubtitleBackground
   backgroundColor: string
   backgroundOpacity: number
@@ -310,6 +308,7 @@ export interface SpeakSubApi {
   updateSubtitle: (settings: Partial<SubtitlePreferences>) => Promise<SubtitlePreferences>
   toggleOverlay: () => Promise<SubtitlePreferences>
   setOverlayInteractive: (interactive: boolean) => Promise<void>
+  moveOverlay: (origin: { x: number; y: number; width: number; height: number }, deltaX: number, deltaY: number) => Promise<SubtitlePreferences>
   resizeOverlay: (direction: import('../main/window-layout').ResizeDirection, origin: { x: number; y: number; width: number; height: number }, deltaX: number, deltaY: number) => Promise<SubtitlePreferences>
   lookup: (selection: string, sentence?: string) => Promise<DictionaryResult>
   saveSessionFavorite: (word: string) => Promise<void>

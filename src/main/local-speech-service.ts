@@ -5,7 +5,7 @@ import { AliyunFunAsr } from './aliyun-fun-asr'
 
 type TranscriptListener = (event: { utteranceId: string; text: string; final: boolean }) => void
 type SpeechActivityListener = (active: boolean) => void
-type WorkerHandle = Pick<Worker, 'on' | 'postMessage' | 'terminate'>
+type WorkerHandle = Pick<Worker, 'on' | 'postMessage' | 'unref'>
 type WorkerFactory = (filename: string, options: ConstructorParameters<typeof Worker>[1]) => WorkerHandle
 type CloudRecognizer = Pick<AliyunFunAsr, 'onTranscript' | 'onUsage' | 'onError' | 'start' | 'accept' | 'stop'>
 type CloudFactory = (apiKey: string) => CloudRecognizer
@@ -85,14 +85,16 @@ export class LocalSpeechService {
 
   async stop(): Promise<void> {
     const workers = [this.vadWorker, this.ttsWorker].filter((worker): worker is WorkerHandle => Boolean(worker))
+    const cloudRecognizer = this.cloudRecognizer
     this.vadWorker = undefined
     this.ttsWorker = undefined
     this.ready = undefined
-    for (const worker of workers) worker.postMessage({ type: 'stop' })
-    await Promise.all(workers.map((worker) => worker.terminate()))
-    await this.cloudRecognizer?.stop()
     this.cloudRecognizer = undefined
-    this.failAll(new Error('Local speech stopped.'))
+    this.rejectAll(aborted())
+    await Promise.all([
+      cloudRecognizer?.stop(),
+      ...workers.map((worker) => this.stopWorker(worker))
+    ])
   }
 
   private waitUntilReady(worker: WorkerHandle, label: string, onMessage: (message: unknown) => void): Promise<void> {
@@ -144,9 +146,35 @@ export class LocalSpeechService {
   }
 
   private failAll(error: Error): void {
+    this.rejectAll(error)
+    this.errorListener?.(error)
+  }
+
+  private rejectAll(error: Error): void {
     for (const request of this.requests.values()) request.reject(error)
     this.requests.clear()
-    this.errorListener?.(error)
+  }
+
+  private stopWorker(worker: WorkerHandle): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        resolve()
+      }
+      const timeout = setTimeout(() => {
+        // Never force-terminate a worker while a native sherpa/ONNX call may still
+        // be active. Detaching lets the current native task finish safely.
+        worker.unref()
+        finish()
+      }, 30_000)
+      timeout.unref()
+      worker.on('exit', finish)
+      try { worker.postMessage({ type: 'stop' }) }
+      catch { finish() }
+    })
   }
 
   private startCloudRecognizer(): Promise<void> {
