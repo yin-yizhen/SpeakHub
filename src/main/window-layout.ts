@@ -10,6 +10,10 @@ export function subtitleBounds(workArea: DisplayWorkArea, width = Math.min(920, 
   return { x: Math.round(workArea.x + (workArea.width - width) / 2), y: Math.round(workArea.y + workArea.height - height - 42), width, height }
 }
 
+export function embeddedConnectionBounds(content: Pick<WindowBounds, 'width' | 'height'>, sidebarWidth = 420): WindowBounds {
+  return { x: sidebarWidth, y: 0, width: Math.max(0, content.width - sidebarWidth), height: content.height }
+}
+
 export function resizeBounds(origin: WindowBounds, direction: ResizeDirection, deltaX: number, deltaY: number, minWidth = 420, minHeight = 150): WindowBounds {
   const right = origin.x + origin.width
   const bottom = origin.y + origin.height

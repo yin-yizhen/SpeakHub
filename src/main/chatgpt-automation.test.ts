@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest'
-import { fillComposer, findComposer, findConversationMenuButton, findEndVoiceButton, findSendButton, findStopButton, findVoiceButton } from './chatgpt-automation'
+import { describe, expect, it, vi } from 'vitest'
+import { ChatGPTAutomation, fillComposer, findComposer, findConversationMenuButton, findEndVoiceButton, findSendButton, findStopButton, findVoiceButton } from './chatgpt-automation'
 
 describe('ChatGPT page automation selectors', () => {
   it('fills the composer and finds send and voice controls', () => {
@@ -41,5 +41,16 @@ describe('ChatGPT page automation selectors', () => {
     const row = document.querySelector('.conversation-row')!
 
     expect(findConversationMenuButton(row)?.getAttribute('data-testid')).toBe('conversation-options-button')
+  })
+
+  it('starts ChatGPT voice without injecting or ending the page microphone session', async () => {
+    const executeJavaScript = vi.fn(async () => ({ ok: true, message: 'voice started' }))
+    const automation = new ChatGPTAutomation({ executeJavaScript } as never)
+
+    await expect(automation.waitForReplyAndStartVoice()).resolves.toMatchObject({ ok: true })
+    expect(executeJavaScript).toHaveBeenCalledOnce()
+    const [script] = (executeJavaScript.mock.calls as unknown as Array<[string]>)[0]!
+    expect(script).toContain('voice.click()')
+    expect(script).not.toContain('endVoiceSelector')
   })
 })

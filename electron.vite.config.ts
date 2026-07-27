@@ -6,7 +6,7 @@ export default defineConfig({
   main: { plugins: [externalizeDepsPlugin()] },
   preload: {
     plugins: [externalizeDepsPlugin()],
-    build: { lib: { entry: resolve(__dirname, 'src/main/preload.ts'), formats: ['cjs'], fileName: 'index' } }
+    build: { lib: { entry: { preload: resolve(__dirname, 'src/main/preload.ts'), 'chatgpt-microphone': resolve(__dirname, 'src/main/chatgpt-microphone-preload.ts') }, formats: ['cjs'], fileName: '[name]' } }
   },
   renderer: {
     plugins: [react()],

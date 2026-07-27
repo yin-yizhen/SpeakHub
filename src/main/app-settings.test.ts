@@ -15,6 +15,9 @@ describe('AppSettingsStore', () => {
       expect(store.archiveDirectory('D:/default')).toBe('D:/default')
       store.setArchiveDirectory('D:/SpeakSub archive')
       expect(store.archiveDirectory('D:/default')).toBe('D:/SpeakSub archive')
+      expect(store.microphoneShortcut()).toBe('F8')
+      store.setMicrophoneShortcut('Ctrl+Shift+M')
+      expect(store.microphoneShortcut()).toBe('Ctrl+Shift+M')
     } finally { rmSync(directory, { recursive: true, force: true }) }
   })
   it('rejects subtitle values outside the UI boundary', () => {

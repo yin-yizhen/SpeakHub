@@ -43,10 +43,12 @@ interface LookupAnchor {
 export function SubtitleOverlay() {
   const [settings, setSettings] = useState<SubtitlePreferences>(defaultSettings)
   const [events, setEvents] = useState<TranscriptEvent[]>([])
+  const [practiceActive, setPracticeActive] = useState(false)
   const [textPracticeActive, setTextPracticeActive] = useState(false)
   const [message, setMessage] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string>()
+  const [endingPractice, setEndingPractice] = useState(false)
   const [hoveredToolbar, setHoveredToolbar] = useState(false)
   const [lookupState, setLookupState] = useState<LookupState>()
   const lookupRequest = useRef(0)
@@ -57,6 +59,7 @@ export function SubtitleOverlay() {
     const refreshPracticeState = () => void window.speaksub.getState().then((state) => {
       setSettings(state.settings)
       setEvents(state.events)
+      setPracticeActive(Boolean(state.session))
       setTextPracticeActive(Boolean(state.session) && state.mode === 'text')
     })
     refreshPracticeState()
@@ -71,7 +74,8 @@ export function SubtitleOverlay() {
       setSettings(next)
     })
     const removeAutomation = window.speaksub.onAutomationStatus(refreshPracticeState)
-    return () => { removeEvents(); removeSettings(); removeAutomation() }
+    const removePracticeEnded = window.speaksub.onPracticeEnded(() => { setPracticeActive(false); setTextPracticeActive(false); setEndingPractice(false) })
+    return () => { removeEvents(); removeSettings(); removeAutomation(); removePracticeEnded() }
   }, [])
 
   const charactersPerLine = Math.max(10, Math.floor(((settings.bounds?.width ?? window.innerWidth) * 0.86 - 70) / settings.fontSize))
@@ -80,7 +84,7 @@ export function SubtitleOverlay() {
     const transcript = transcriptRef.current
     if (transcript) transcript.scrollTop = transcript.scrollHeight
   }, [displayed, settings.fontSize, settings.layout])
-  const toolbarOpen = hoveredToolbar
+  const toolbarOpen = !settings.locked && hoveredToolbar
   const shellClass = ['subtitle-shell', settings.locked ? 'locked' : '', toolbarOpen ? 'toolbar-open' : '', `layout-${settings.layout}`, `background-${settings.background}`].filter(Boolean).join(' ')
   const style = {
     opacity: settings.opacity,
@@ -179,17 +183,23 @@ export function SubtitleOverlay() {
       setSending(false)
     }
   }
+  const endPractice = async () => {
+    if (!practiceActive || endingPractice) return
+    setEndingPractice(true)
+    try { await window.speaksub.endPractice() }
+    catch { setEndingPractice(false) }
+  }
 
   return <div className={shellClass} style={style} onPointerDown={closePinnedLookup}>
     {!settings.locked && (['top', 'right', 'bottom', 'left', 'top-left', 'top-right', 'bottom-left', 'bottom-right'] as ResizeDirection[]).map((direction) => <div key={direction} className={`subtitle-resize-handle ${direction}`} onPointerDown={(event) => beginResize(direction, event)} onPointerMove={resize} onPointerUp={finishResize} onPointerCancel={finishResize}/>) }
     <div className="subtitle-toolbar-zone" onMouseEnter={() => setHoveredToolbar(true)} onMouseLeave={() => setHoveredToolbar(false)}>
-      <div className="subtitle-drag-zone" title={settings.locked ? '字幕已锁定' : '拖动字幕'}><div className="subtitle-drag-bars"><span></span><span></span><span></span></div></div>
-      <div className="subtitle-controls" onClick={(event) => event.stopPropagation()}>
-        <label>Size<input aria-label="Subtitle size" type="range" min="18" max="38" value={settings.fontSize} onChange={(event) => update({ fontSize: Number(event.target.value) })}/></label>
-        <label>AI <input aria-label="AI subtitle color" type="color" value={settings.assistantColor} onChange={(event) => update({ assistantColor: event.target.value })}/></label>
-        <label>Me <input aria-label="My subtitle color" type="color" value={settings.userColor} onChange={(event) => update({ userColor: event.target.value })}/></label>
-        <button className="subtitle-lock" title={settings.locked ? 'Unlock subtitle' : 'Lock subtitle'} onClick={() => update({ locked: !settings.locked })}>{settings.locked ? 'Unlock' : 'Lock'}</button>
-      </div>
+      {settings.locked
+        ? <button className="subtitle-unlock" type="button" title="Unlock subtitles" onClick={() => update({ locked: false })}>Unlock</button>
+        : <><div className="subtitle-drag-zone" title="拖动字幕"><div className="subtitle-drag-bars"><span></span><span></span><span></span></div></div>
+          <div className="subtitle-controls" onClick={(event) => event.stopPropagation()}>
+            <div className="subtitle-settings-row"><label>Size<input aria-label="Subtitle size" type="range" min="18" max="38" value={settings.fontSize} onChange={(event) => update({ fontSize: Number(event.target.value) })}/></label><label>AI <input aria-label="AI subtitle color" type="color" value={settings.assistantColor} onChange={(event) => update({ assistantColor: event.target.value })}/></label><label>Me <input aria-label="My subtitle color" type="color" value={settings.userColor} onChange={(event) => update({ userColor: event.target.value })}/></label><button className="subtitle-lock" type="button" title="Lock subtitles" onClick={() => update({ locked: true })}>Lock</button></div>
+            <div className="subtitle-action-row">{practiceActive ? <button className="subtitle-end-practice" type="button" disabled={endingPractice} onClick={() => void endPractice()}>{endingPractice ? '结束中…' : '结束对话'}</button> : <span/>}<button className="subtitle-close" type="button" title="Close subtitles" onClick={() => void window.speaksub.toggleOverlay()}>关闭字幕</button></div>
+          </div></>}
     </div>
     <div className="subtitle-transcript" ref={transcriptRef}>
       {displayed.length
@@ -204,9 +214,9 @@ export function SubtitleOverlay() {
       {sendError && <p role="alert">{sendError}</p>}
     </form>}
     {lookupState && <aside className={`lookup-popover ${lookupState.anchor.placement} ${lookupState.pinned ? 'pinned' : ''}`} style={{ left: lookupState.anchor.left, top: lookupState.anchor.top, maxHeight: lookupState.anchor.maxHeight }} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
-      {lookupState.status === 'loading' && <><strong>{lookupState.query}</strong><p>Looking up...</p></>}
-      {lookupState.status === 'error' && <><strong>{lookupState.query}</strong><p>{lookupState.message}</p></>}
-      {lookupState.status === 'ready' && <><strong>{lookupState.result.query}</strong>{lookupState.result.phonetic && <small>/{lookupState.result.phonetic}/</small>}<p>{lookupState.result.definitions.join('; ') || lookupState.result.contextualMeaning || 'No definition returned.'}</p>{lookupState.result.naturalAlternative && <p>Natural: {lookupState.result.naturalAlternative}</p>}</>}
+      {lookupState.status === 'loading' && <><div className="lookup-heading"><strong>{lookupState.query}</strong></div><p>Looking up...</p></>}
+      {lookupState.status === 'error' && <><div className="lookup-heading"><strong>{lookupState.query}</strong></div><p>{lookupState.message}</p></>}
+      {lookupState.status === 'ready' && <><div className="lookup-heading"><strong>{lookupState.result.query}</strong>{lookupState.result.phonetic && <small>/{lookupState.result.phonetic}/</small>}</div><p>{lookupState.result.definitions.join('; ') || lookupState.result.contextualMeaning || 'No definition returned.'}</p>{lookupState.result.naturalAlternative && <p>Natural: {lookupState.result.naturalAlternative}</p>}</>}
       {lookupState.pinned && <div className="lookup-actions"><button type="button" title="收藏单词" aria-label="收藏单词" disabled={lookupState.saving || lookupState.saved} onClick={() => void saveLookup()}>{lookupState.saved ? '已收藏' : lookupState.saving ? '收藏中…' : '收藏'}</button>{lookupState.saveError && <small role="alert">{lookupState.saveError}</small>}</div>}
     </aside>}
   </div>

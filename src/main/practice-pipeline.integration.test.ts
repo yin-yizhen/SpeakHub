@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -20,6 +20,9 @@ describe('fake provider to archive integration', () => {
       }
       expect(subtitleEvents(events, 'both', 4).map((event) => event.text)).toEqual(['I went to London.', 'What did you enjoy there?'])
       expect(readFileSync(join(directory, 'current-practice.md'), 'utf8')).toContain('What did you enjoy there?')
+      store.endSession(session); store.finalizeSession(session.id)
+      expect(store.searchSessions({ text: 'London' })).toHaveLength(1)
+      expect(existsSync(join(directory, 'learning-index.json'))).toBe(true)
     } finally { rmSync(directory, { recursive: true, force: true }) }
   })
 })

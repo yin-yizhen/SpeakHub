@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resizeBounds, subtitleBounds, subtitleHeight } from './window-layout'
+import { embeddedConnectionBounds, resizeBounds, subtitleBounds, subtitleHeight } from './window-layout'
 
 describe('subtitle window placement', () => {
   it('centres the overlay above the taskbar area', () => {
@@ -9,6 +9,10 @@ describe('subtitle window placement', () => {
   it('leaves enough room for four lines at the configured font size', () => {
     expect(subtitleHeight(25, 4)).toBe(229)
     expect(subtitleHeight(38, 4)).toBeGreaterThan(subtitleHeight(25, 4))
+  })
+
+  it('places the embedded connection page flush against the SpeakSub sidebar', () => {
+    expect(embeddedConnectionBounds({ width: 1320, height: 820 })).toEqual({ x: 420, y: 0, width: 900, height: 820 })
   })
 
   it('resizes all sides while keeping the opposite edge fixed', () => {

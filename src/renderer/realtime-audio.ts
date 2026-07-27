@@ -45,6 +45,38 @@ export class RealtimeAudioPlayer {
   stop(): void { this.interrupt(); this.scheduledAt = 0; void this.context?.close(); this.context = undefined }
 }
 
+const microphoneOnTones = [261.63, 329.63, 392] as const
+const microphoneOffTones = [...microphoneOnTones].reverse() as [number, number, number]
+
+export function microphoneToggleTones(enabled: boolean): readonly number[] {
+  return enabled ? microphoneOnTones : microphoneOffTones
+}
+
+export function playMicrophoneToggleTone(enabled: boolean): void {
+  const AudioContextConstructor = window.AudioContext
+  if (!AudioContextConstructor) return
+  const context = new AudioContextConstructor()
+  void context.resume()
+  const tones = microphoneToggleTones(enabled)
+  const noteLength = 0.11
+  const noteSpacing = 0.09
+  const startedAt = context.currentTime + 0.01
+  tones.forEach((frequency, index) => {
+    const start = startedAt + index * noteSpacing
+    const stop = start + noteLength
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    oscillator.type = 'sine'
+    oscillator.frequency.setValueAtTime(frequency, start)
+    gain.gain.setValueAtTime(0.0001, start)
+    gain.gain.exponentialRampToValueAtTime(0.07, start + 0.012)
+    gain.gain.exponentialRampToValueAtTime(0.0001, stop)
+    oscillator.connect(gain); gain.connect(context.destination)
+    if (index === tones.length - 1) oscillator.onended = () => void context.close()
+    oscillator.start(start); oscillator.stop(stop)
+  })
+}
+
 function toPcm16(input: Float32Array, sampleRate: number): ArrayBuffer {
   const ratio = sampleRate / 24000; const output = new Int16Array(Math.floor(input.length / ratio))
   for (let index = 0; index < output.length; index += 1) {

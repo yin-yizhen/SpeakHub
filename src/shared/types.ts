@@ -9,6 +9,11 @@ export type PracticeMode = 'text' | 'voice'
 export type PracticeLifecycle = 'idle' | 'starting' | 'active' | 'ending' | 'error'
 export type RealtimeProtocolProfile = 'current' | 'legacy'
 export type WebPracticeSource = Extract<PracticeSource, 'chatgpt-web'>
+export type CefrLevel = 'A1' | 'A2' | 'B1' | 'B2' | 'C1'
+export type VocabularyFamiliarity = 'unfamiliar' | 'learning' | 'mastered'
+export type LearningPeriod = 'week' | 'month'
+export type SessionArchiveStatus = 'completed' | 'interrupted'
+export type ErrorCategory = 'grammar' | 'word-choice' | 'tense' | 'articles' | 'prepositions' | 'fluency' | 'coherence' | 'interaction' | 'other'
 
 export interface TranscriptEvent {
   id: string
@@ -25,15 +30,23 @@ export interface PracticeSession {
   startedAt: string
   endedAt?: string
   correctionStrength: CorrectionStrength
+  topic?: string
+  level?: CefrLevel
+  source?: PracticeSource
+  mode?: PracticeMode
+  focus?: string
 }
 
-export interface PracticeProfile {
+export interface PracticeSessionProfile {
   topic: string
-  level: 'A1' | 'A2' | 'B1' | 'B2' | 'C1'
+  level: CefrLevel
   correctionStrength: CorrectionStrength
   source: PracticeSource
   mode: PracticeMode
+  focus?: string
 }
+
+export interface PracticeProfile extends PracticeSessionProfile {}
 
 export interface ConnectionState {
   ready: boolean
@@ -96,12 +109,89 @@ export interface ReviewIssue {
   reason: string
 }
 
+export interface PracticeAssessment {
+  estimatedCefr: CefrLevel
+  scores: { accuracy: number; vocabulary: number; fluency: number; interaction: number }
+  errorCategories: Array<{ category: ErrorCategory; count: number }>
+  weakPoints: string[]
+}
+
 export interface ReviewResult {
   topic: string
   summary: string
   issues: ReviewIssue[]
   vocabulary: Array<{ term: string; meaning: string; example?: string }>
   nextPractice: string
+  assessment?: PracticeAssessment
+}
+
+export interface SessionArchiveSummary {
+  id: string
+  status: SessionArchiveStatus
+  startedAt: string
+  endedAt?: string
+  durationSeconds: number
+  topic: string
+  level?: CefrLevel
+  source?: PracticeSource
+  mode?: PracticeMode
+  correctionStrength: CorrectionStrength
+  summary?: string
+  estimatedCefr?: CefrLevel
+  favoriteWords: string[]
+  hasReview: boolean
+}
+
+export interface SessionArchiveDetail extends SessionArchiveSummary {
+  transcript: Array<{ speaker: Speaker; text: string; receivedAt?: string }>
+  review?: ReviewResult
+  focus?: string
+}
+
+export interface HistorySearchQuery {
+  text?: string
+  source?: PracticeSource
+  mode?: PracticeMode
+  level?: CefrLevel
+  status?: SessionArchiveStatus
+  dateFrom?: string
+  dateTo?: string
+}
+
+export interface VocabularyItem {
+  id: string
+  normalizedTerm: string
+  term: string
+  meaning?: string
+  example?: string
+  familiarity: VocabularyFamiliarity
+  firstSavedAt: string
+  lastSavedAt: string
+  lastReviewedAt?: string
+  nextReviewAt: string
+  occurrenceCount: number
+  sessionIds: string[]
+}
+
+export interface LearningDashboard {
+  period: LearningPeriod
+  from: string
+  to: string
+  sessionCount: number
+  totalMinutes: number
+  practiceDays: number
+  streakDays: number
+  newVocabulary: number
+  masteredVocabulary: number
+  dueVocabulary: number
+  averageScores?: PracticeAssessment['scores']
+  cefrTrend: Array<{ date: string; level: CefrLevel }>
+  topErrors: Array<{ category: ErrorCategory; count: number }>
+  activity: Array<{ date: string; sessions: number; minutes: number }>
+}
+
+export interface NextPracticeDraft extends PracticeSessionProfile {
+  derivedFromSessionId: string
 }
 
 export interface ProviderSettings {
@@ -123,8 +213,14 @@ export interface ProviderSettingsInput {
   clearLlmApiKey?: boolean
 }
 
+export interface MicrophoneGateState {
+  active: boolean
+  available: boolean
+  shortcut: string
+}
+
 export interface SpeakSubApi {
-  startPractice: (topic: string, level: string, strength: CorrectionStrength, source: PracticeSource, mode: PracticeMode) => Promise<PracticeStartResult>
+  startPractice: (topic: string, level: string, strength: CorrectionStrength, source: PracticeSource, mode: PracticeMode, focus?: string) => Promise<PracticeStartResult>
   sendPracticeMessage: (message: string) => Promise<void>
   sendApiMessage: (message: string) => Promise<void>
   startVoiceCapture: () => Promise<void>
@@ -132,7 +228,7 @@ export interface SpeakSubApi {
   sendVoiceAudio: (pcm16: ArrayBuffer) => Promise<void>
   endPractice: () => Promise<PracticeEndResult>
   cancelPracticeStart: () => Promise<void>
-  getState: () => Promise<{ session?: PracticeSession; settings: SubtitlePreferences; events: TranscriptEvent[]; connection: ConnectionState; automation: AutomationStatus; source: PracticeSource; mode: PracticeMode; lifecycle: PracticeLifecycle }>
+  getState: () => Promise<{ session?: PracticeSession; settings: SubtitlePreferences; events: TranscriptEvent[]; connection: ConnectionState; automation: AutomationStatus; source: PracticeSource; mode: PracticeMode; lifecycle: PracticeLifecycle; microphone: MicrophoneGateState }>
   completeConnection: () => Promise<ConnectionState>
   showConnectionPage: () => Promise<ConnectionState>
   clearPendingCleanup: () => Promise<void>
@@ -143,17 +239,30 @@ export interface SpeakSubApi {
   resizeOverlay: (direction: import('../main/window-layout').ResizeDirection, origin: { x: number; y: number; width: number; height: number }, deltaX: number, deltaY: number) => Promise<SubtitlePreferences>
   lookup: (selection: string, sentence?: string) => Promise<DictionaryResult>
   saveSessionFavorite: (word: string) => Promise<void>
+  searchSessions: (query?: HistorySearchQuery) => Promise<SessionArchiveSummary[]>
+  getSessionDetail: (id: string) => Promise<SessionArchiveDetail>
+  deleteSession: (id: string) => Promise<void>
+  listVocabulary: (filter?: { familiarity?: VocabularyFamiliarity; dueOnly?: boolean; text?: string }) => Promise<VocabularyItem[]>
+  updateVocabularyFamiliarity: (id: string, familiarity: VocabularyFamiliarity) => Promise<VocabularyItem>
+  getReviewQueue: () => Promise<VocabularyItem[]>
+  getLearningDashboard: (period: LearningPeriod) => Promise<LearningDashboard>
+  createNextPracticeDraft: (sessionId: string) => Promise<NextPracticeDraft>
   getArchiveDirectory: () => Promise<string>
   chooseArchiveDirectory: () => Promise<string | undefined>
   getProviderSettings: () => Promise<ProviderSettings>
   saveProviderSettings: (settings: ProviderSettingsInput) => Promise<ProviderSettings>
+  saveMicrophoneShortcut: (shortcut: string) => Promise<string>
+  toggleMicrophoneGate: () => Promise<MicrophoneGateState>
+  setMicrophoneGate: (active: boolean) => Promise<MicrophoneGateState>
   clearAllData: () => Promise<void>
   onTranscript: (listener: (event: TranscriptEvent) => void) => () => void
   onSubtitleSettings: (listener: (settings: SubtitlePreferences) => void) => () => void
   onAutomationStatus: (listener: (status: AutomationStatus) => void) => () => void
+  onPracticeEnded: (listener: (result: PracticeEndResult) => void) => () => void
   onConnectionState: (listener: (state: ConnectionState) => void) => () => void
   onVoiceAudio: (listener: (pcm16: ArrayBuffer) => void) => () => void
   onVoiceInterrupt: (listener: () => void) => () => void
+  onMicrophoneGateState: (listener: (state: MicrophoneGateState) => void) => () => void
 }
 
 declare global {

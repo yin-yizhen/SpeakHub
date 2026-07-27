@@ -6,7 +6,8 @@ export const practiceProfileSchema = z.object({
   level: z.enum(['A1', 'A2', 'B1', 'B2', 'C1']),
   correctionStrength: z.enum(['light', 'normal', 'strict']),
   source: z.enum(['chatgpt-web', 'api-direct']),
-  mode: z.enum(['text', 'voice'])
+  mode: z.enum(['text', 'voice']),
+  focus: z.string().trim().max(2_000).optional()
 })
 
 const prompts: Record<PracticeProfile['topic'], string> = {
@@ -23,11 +24,12 @@ export function parsePracticeProfile(input: unknown): PracticeProfile {
   return practiceProfileSchema.parse(input)
 }
 
-export function buildPracticePrompt(profile: Pick<PracticeProfile, 'topic' | 'level' | 'correctionStrength'>): string {
+export function buildPracticePrompt(profile: Pick<PracticeProfile, 'topic' | 'level' | 'correctionStrength' | 'focus'>): string {
   const correction = profile.correctionStrength === 'light'
     ? 'Correct only mistakes that block understanding.'
     : profile.correctionStrength === 'strict'
       ? 'Notice grammar and word-choice mistakes and briefly model a better version.'
       : 'Gently correct important mistakes without interrupting the conversation.'
-  return `${prompts[profile.topic]}\n\nMy CEFR level is ${profile.level}. Use vocabulary, grammar, and sentence length appropriate for this level. Speak clearly and use short turns. ${correction}`
+  const focus = profile.focus ? `\n\nFocus this practice on the learner's previous weak points:\n${profile.focus}` : ''
+  return `${prompts[profile.topic]}\n\nMy CEFR level is ${profile.level}. Use vocabulary, grammar, and sentence length appropriate for this level. Speak clearly and use short turns. ${correction}${focus}`
 }

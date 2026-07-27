@@ -7,7 +7,13 @@ const reviewSchema = z.object({
   topic: z.string(), summary: z.string(),
   issues: z.array(z.object({ original: z.string(), improved: z.string(), reason: z.string() })).min(0).max(8),
   vocabulary: z.array(z.object({ term: z.string(), meaning: z.string(), example: z.string().optional() })).max(12),
-  nextPractice: z.string()
+  nextPractice: z.string(),
+  assessment: z.object({
+    estimatedCefr: z.enum(['A1', 'A2', 'B1', 'B2', 'C1']),
+    scores: z.object({ accuracy: z.number().min(0).max(100), vocabulary: z.number().min(0).max(100), fluency: z.number().min(0).max(100), interaction: z.number().min(0).max(100) }),
+    errorCategories: z.array(z.object({ category: z.enum(['grammar', 'word-choice', 'tense', 'articles', 'prepositions', 'fluency', 'coherence', 'interaction', 'other']), count: z.number().int().min(1).max(100) })).max(9),
+    weakPoints: z.array(z.string()).max(6)
+  }).optional()
 })
 
 type LlmMessage = { role: 'system' | 'user' | 'assistant'; content: string }
@@ -33,7 +39,7 @@ export class LearningService {
 
   async review(archiveMarkdown: string, strength: string, favorites: string[] = []): Promise<ReviewResult> {
     const savedVocabulary = favorites.length ? favorites.map((word) => `- ${word}`).join('\n') : '(none)'
-    const result = await this.askLlm(`You are a concise English speaking coach. Analyze this complete practice archive at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string"}. Use Chinese for explanations. The vocabulary array must contain explanations only for the saved vocabulary below. Give each saved word a short English example sentence. Do not add other vocabulary; when none is saved, return an empty vocabulary array. Saved vocabulary:\n${savedVocabulary}\nPractice archive Markdown:\n${archiveMarkdown}`)
+    const result = await this.askLlm(`You are a concise English speaking coach. Analyze this complete practice archive at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]}}. Scores are integer-like values from 0 to 100 based only on language visible in the transcript; do not claim acoustic pronunciation analysis. Use Chinese for explanations. The vocabulary array must contain explanations only for the saved vocabulary below. Give each saved word a short English example sentence. Do not add other vocabulary; when none is saved, return an empty vocabulary array. Saved vocabulary:\n${savedVocabulary}\nPractice archive Markdown:\n${archiveMarkdown}`)
     const review = reviewSchema.parse(result)
     const saved = new Set(favorites.map((word) => word.toLocaleLowerCase()))
     return { ...review, vocabulary: review.vocabulary.filter((item) => saved.has(item.term.toLocaleLowerCase())) }
