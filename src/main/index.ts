@@ -129,7 +129,8 @@ function createChatHostView(): void {
     if (event.sender !== chatHostView?.webContents) return
     chatgptMicrophoneGateReady = result?.ok === true
     if (!chatgptMicrophoneGateReady) { announceAutomation({ phase: 'failed', message: result?.message ?? 'ChatGPT microphone gate could not start.', recoverable: true }); return }
-    event.sender.send('speaksub:microphone-gate', microphoneActive)
+    const webInputActive = Boolean(activeSession) && activeSource === 'chatgpt-web' && activeMode === 'voice' ? microphoneActive : true
+    event.sender.send('speaksub:microphone-gate', webInputActive)
   })
   ipcMain.on('speaksub:microphone-gate:applied', (event, result: { ok?: boolean; message?: string }) => {
     if (event.sender !== chatHostView?.webContents || result?.ok) return
@@ -384,7 +385,9 @@ function installIpc(): void {
   ipcMain.handle('practice:start', (_event, topic: string, level: string, strength: CorrectionStrength, source: PracticeSource = 'chatgpt-web', mode: PracticeMode = 'text', focus?: string) => practiceController.start(async () => {
     const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source, mode, focus })
     activeSource = profile.source; activeMode = profile.mode; activeTopic = profile.topic; activeLevel = profile.level
-    microphoneActive = false; announceMicrophone()
+    microphoneActive = profile.source === 'chatgpt-web' && profile.mode === 'voice'
+    if (profile.source === 'chatgpt-web' && profile.mode === 'voice') chatHostView?.webContents.send('speaksub:microphone-gate', true)
+    announceMicrophone()
     if (profile.source === 'api-direct') {
       if (profile.mode === 'voice') return beginLocalVoicePractice(profile.correctionStrength, profile.topic, profile.level, profile.focus)
       const session = beginSession(profile); announceAutomation({ phase: 'idle', message: 'API direct text practice is ready. Type a message to begin.' }); return { session, voiceStarted: false, source: profile.source, mode: profile.mode }

@@ -62,7 +62,7 @@ Electron 禁止原生 external ArrayBuffer；Kokoro `generate` 必须传 `enable
 
 ### 统一麦克风闸门
 
-`index.ts` 通过 Electron `globalShortcut` 注册保存在 `AppSettingsStore` 的快捷键（默认 `F8`）；`microphone-shortcut.ts` 负责验证、按键录入格式化和冲突回滚。主进程是闸门状态的唯一来源，并向主窗口广播 `microphone:state`。API 直连收到开启状态且阶段为 `listening` 后才启动 `LocalSpeechAudioCapture`，经 `voice:audio` IPC 交给本地 Worker；ChatGPT 网页仍切换已接管的 `MediaStreamTrack.enabled`。开关提示音为 C-E-G（1-3-5）和 G-E-C（5-3-1）。
+`index.ts` 通过 Electron `globalShortcut` 注册保存在 `AppSettingsStore` 的快捷键（默认 `F8`）；`microphone-shortcut.ts` 负责验证、按键录入格式化和冲突回滚。主进程是闸门状态的唯一来源，并向主窗口广播 `microphone:state`。API 直连默认不采集，收到开启状态且阶段为 `listening` 后才启动 `LocalSpeechAudioCapture`；ChatGPT 网页默认保持可输入，只有用户切换 SpeakSub 闸门后才切换已接管的 `MediaStreamTrack.enabled`。开关提示音为 C-E-G（1-3-5）和 G-E-C（5-3-1）。
 
 ### 主窗口与内嵌连接页
 

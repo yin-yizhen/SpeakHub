@@ -5,11 +5,11 @@ type GateResult = { ok: boolean; message?: string }
 const installGate = () => contextBridge.executeInMainWorld({
   func: () => {
     const page = window as Window & { __speaksubMicrophoneGate?: { setActive: (active: boolean) => GateResult } }
-    if (page.__speaksubMicrophoneGate) return page.__speaksubMicrophoneGate.setActive(false)
+    if (page.__speaksubMicrophoneGate) return page.__speaksubMicrophoneGate.setActive(true)
     const original = navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices)
     if (!original) return { ok: false, message: 'getUserMedia is unavailable.' }
     const tracks = new Set<MediaStreamTrack>()
-    let active = false
+    let active = true
     navigator.mediaDevices.getUserMedia = async (constraints) => {
       const stream = await original(constraints)
       if (constraints && constraints.audio !== false) for (const track of stream.getAudioTracks()) {
