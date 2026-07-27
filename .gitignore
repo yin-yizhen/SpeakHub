@@ -11,3 +11,5 @@ dist/
 coverage/
 .vite/
 .electron-vite/
+.playwright-cli/
+artifacts/

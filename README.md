@@ -89,7 +89,24 @@ pnpm run dev:electron
 pnpm package:win
 ```
 
-生成结果位于 `release/`。
+生成结果位于 `release/`，正式安装包命名为 `SpeakHub-版本号-Setup.exe`。安装时可以选择目录，并可创建桌面和开始菜单快捷方式。
+
+### 自动更新
+
+SpeakHub 启动约 5 秒后会检查公开的 [GitHub Releases](https://github.com/yin-yizhen/SpeakHub/releases)。如果发现比当前安装版本更高的正式版本，会显示 Release 标题、发布日期和正文更新说明；用户确认后，应用下载并校验安装包，再打开安装程序。
+
+更新不是静默替换。用户仍需在 Windows 安装程序中确认安装。应用不会保存 GitHub Token，也不会启动本地网页服务或占用固定端口。
+
+发布新版时必须完成以下步骤，仅推送源码不会触发客户端更新：
+
+1. 将 `package.json` 的 `version` 升级，例如从 `0.1.0` 改为 `0.1.1`。
+2. 运行 `pnpm lint`、`pnpm test` 和 `pnpm package:win`。
+3. 提交并推送源码。
+4. 在 GitHub 创建 tag 为 `v0.1.1` 的正式 Release。
+5. 在 Release 正文填写用户会看到的更新内容。
+6. 上传 `release/SpeakHub-0.1.1-Setup.exe`。
+
+Release tag 必须使用 `vX.Y.Z`，并与 `package.json` 版本一致。安装包必须是同一版本号的 `SpeakHub-X.Y.Z-Setup.exe`。
 
 ## 第一次使用
 

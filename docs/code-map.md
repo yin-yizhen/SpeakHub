@@ -7,7 +7,7 @@
 - Tests: `src/renderer/subtitle-overlay.test.tsx`.
 - Verify: `pnpm exec vitest run src/renderer/subtitle-overlay.test.tsx`; then start the app and drag the three bars only while unlocked. Confirm locking prevents movement and transparent subtitle areas still click through.
 
-本文件按“要改什么”定位入口、数据流、测试和验收方式。最近完整验收提交：`uncommitted working tree (2026-07-27)`。
+本文件按“要改什么”定位入口、数据流、测试和验收方式。最近完整验收提交：`unknown (v0.1.0 release validation, 2026-07-28)`。
 
 ## 先看这里
 
@@ -19,6 +19,7 @@
 | 改字幕、查词或窗口布局 | `src/renderer/subtitle-overlay.tsx`、`src/shared/transcript.ts`、`src/shared/subtitle-words.ts`、`src/main/window-layout.ts` | 同名测试 | `pnpm lint && pnpm test && pnpm build` |
 | 改归档、复盘、词汇或学习中心 | `src/main/store.ts`、`src/main/learning-service.ts`、`src/renderer/LearningCenter.tsx` | `store.test.ts`、`learning-service.test.ts`、`LearningCenter.test.tsx`、`practice-pipeline.integration.test.ts` | `pnpm lint && pnpm test && pnpm build` |
 | 改设置、默认值或密钥 | `src/shared/defaults.ts`、`src/main/app-settings.ts`、`src/main/secure-settings.ts`、`src/renderer/App.tsx` | `app-settings.test.ts`、`secure-settings.test.ts`、`App.voice.test.tsx` | `pnpm lint && pnpm test` |
+| 改自动更新或 Windows 发布 | `src/main/update-service.ts`、`src/main/index.ts`、`src/main/preload.ts`、`src/renderer/use-app-updates.ts` | `update-service.test.ts`、`update-prompt.test.ts`、`App.voice.test.tsx` | `pnpm lint && pnpm test && pnpm package:win` |
 
 ## End-To-End Flow
 
@@ -66,6 +67,18 @@ App 选择的场景/难度/纠错提示词与本次重点
 -> OpenAI-compatible /chat/completions（SSE 优先）
 ```
 
+应用更新链路：
+
+```text
+App 启动 5 秒 / 设置页手动检查
+-> preload IPC
+-> UpdateService 读取 yin-yizhen/SpeakHub 最新 GitHub Release
+-> App 显示版本和 Release 正文
+-> 主进程下载到 userData/updates/downloads
+-> 校验大小、SHA-256（存在时）和 Windows MZ 文件头
+-> shell.openPath 打开 NSIS 安装器
+```
+
 ## Code Map
 
 ### 主进程与 IPC
@@ -73,6 +86,7 @@ App 选择的场景/难度/纠错提示词与本次重点
 - `src/main/index.ts`：Electron 生命周期、窗口、IPC、练习状态与各服务编排。文件较大；修改时应沿具体 IPC 链路定位，不要只看 UI。
 - `src/main/preload.ts`：渲染进程 API 白名单；所有持续事件统一经 `onIpc()` 注册并返回解绑函数。
 - `src/main/practice-controller.ts`：开始/结束去重和生命周期状态。
+- `src/main/update-service.ts`：GitHub Release 解析、版本比较、安装包下载、镜像安全门控、进度、校验和安装器启动。
 
 ### 练习与语音
 
@@ -93,6 +107,8 @@ App 选择的场景/难度/纠错提示词与本次重点
 ### 渲染与共享配置
 
 - `src/renderer/App.tsx`：主界面组合与客户端交互状态。
+- `src/renderer/use-app-updates.ts`：启动延迟检查、手动检查、下载进度及更新弹窗状态。
+- `src/renderer/update-prompt.ts`：仅保存“跳过此版本”的本地偏好；手动检查不受它限制。
 - `src/renderer/app-state.ts`：可独立测试的界面状态派生和模板映射。
 - `src/renderer/subtitle-overlay.tsx`：字幕展示、选词、收藏、文本发送与缩放。
 - `src/shared/defaults.ts`：跨主进程和渲染进程共用的纯数据默认值；不得依赖 Electron 或 Node API。
@@ -111,6 +127,9 @@ App 选择的场景/难度/纠错提示词与本次重点
 | `src/renderer/app-state.test.ts` | 生命周期忙碌状态、下一次练习模板映射 |
 | `src/renderer/subtitle-overlay.test.tsx` | 字幕、查词、收藏和交互状态 |
 | `src/renderer/LearningCenter.test.tsx` | 历史详情、词汇列表和复习卡 |
+| `src/main/update-service.test.ts` | Release 解析、版本比较、下载通道、大小/SHA-256/MZ 校验与残留清理 |
+| `src/renderer/update-prompt.test.ts` | 跳过版本的持久化与新版本重新提示 |
+| `src/renderer/App.voice.test.tsx` | 启动检查、更新正文、手动检查、下载进度和失败回退 |
 
 ## Common Change Recipes
 
@@ -128,6 +147,14 @@ App 选择的场景/难度/纠错提示词与本次重点
 2. 不要在 UI 内复制解析或分段规则。
 3. 运行对应单元测试和集成测试。
 4. 本地启动后检查连续流式文本没有丢字、重复或提前入库。
+
+### 发布 Windows 新版本
+
+1. 按 `X.Y.Z` 提升 `package.json` 版本号。
+2. 更新代码和 Release 正文；正文会原样显示在更新弹窗中。
+3. 运行 `pnpm lint`、`pnpm test`、`pnpm build` 和 `pnpm package:win`。
+4. 推送源码后创建 `vX.Y.Z` 正式 Release，上传 `SpeakHub-X.Y.Z-Setup.exe`。
+5. 通过 GitHub API 确认 tag、正文、exe 资产及 `sha256` digest，再用旧版应用验收提示、下载和安装器启动。
 
 ## Subtitle Layout Rule
 
@@ -149,6 +176,7 @@ pnpm lint
 pnpm exec tsc --noEmit --noUnusedLocals --noUnusedParameters
 pnpm test
 pnpm build
+pnpm package:win
 pnpm dev
 ```
 
@@ -161,3 +189,5 @@ pnpm dev
 - `store.ts` 是学习索引和复习日期的唯一写入点；列表刷新不得触发 LLM 网络回退。
 - `main.tsx` 与 `overlay-main.tsx` 由两个 HTML 入口引用，静态未使用扫描可能误报，不能删除。
 - `.playwright-cli/` 与 `artifacts/` 是本地验收产物，除非明确纳入版本控制，否则视为用户工作区内容。
+- 正式版直接加载打包后的本地 HTML，不启动 localhost 服务，也不占用固定端口。
+- 自动更新只接受 `yin-yizhen/SpeakHub` 的正式 GitHub Release；第三方镜像仅在资产带 GitHub SHA-256 digest 时启用。

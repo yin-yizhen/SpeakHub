@@ -294,3 +294,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .studio-topbar > * { position: relative; z-index: 1; }
 .subtitle-toggle { border-color: rgba(62, 177, 170, .48); background: rgba(255,255,255,.64); box-shadow: inset 0 1px rgba(255,255,255,.94), 0 5px 14px rgba(25,121,115,.06); }
 .window-control { box-shadow: inset 0 1px rgba(255,255,255,.92), 0 3px 8px rgba(25,121,115,.04); }
+
+/* GitHub Release update prompt and settings status. */
+.app-update-card { gap: 10px; }
+.app-update-card small { display: block; color: var(--ink-soft); line-height: 1.55; }
+.app-update-card .quiet-action { width: max-content; }
+.update-dialog { z-index: 40; }
+.update-dialog > div { width: min(620px, 100%); max-height: calc(100dvh - 60px); overflow: auto; border-color: var(--line-strong); color: var(--ink); background: rgba(251, 255, 254, .98); }
+.update-dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.update-dialog-header h2 { margin: 7px 0 4px; }
+.update-dialog-header p { margin: 0; color: var(--ink-soft); }
+.update-release-summary { display: grid; gap: 4px; margin-top: 20px; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--accent-wash); }
+.update-release-summary strong { font-size: 13px; }
+.update-release-summary small { color: var(--ink-faint); }
+.update-notes { display: grid; gap: 8px; margin-top: 18px; }
+.update-notes > strong { color: var(--ink-soft); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.update-notes > div { max-height: 240px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 13px 14px; color: var(--ink-soft); background: rgba(244, 252, 250, .72); font-size: 12px; line-height: 1.7; white-space: pre-wrap; }
+.update-progress { display: grid; gap: 8px; margin-top: 16px; color: var(--ink-soft); font-size: 11px; }
+.update-progress progress { width: 100%; accent-color: var(--accent); }
+.update-dialog footer { flex-wrap: wrap; }

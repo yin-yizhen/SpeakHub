@@ -280,6 +280,44 @@ export interface GeneratedSpeechChunk {
   final: boolean
 }
 
+export interface UpdateReleaseInfo {
+  tagName: string
+  name: string
+  publishedAt: string
+  notes: string
+  htmlUrl: string
+}
+
+export interface UpdateAssetInfo {
+  name: string
+  size: number
+}
+
+export interface AvailableUpdateInfo {
+  configured: boolean
+  currentVersion: string
+  latestVersion: string
+  updateAvailable: boolean
+  message?: string
+  release?: UpdateReleaseInfo
+  asset?: UpdateAssetInfo
+}
+
+export interface UpdateDownloadProgress {
+  status: 'connecting' | 'downloading' | 'verifying' | 'ready' | 'failed'
+  channel: string
+  received: number
+  total: number
+  percent?: number
+  message?: string
+}
+
+export interface UpdateInstallResult {
+  ok: boolean
+  error?: string
+  releaseUrl?: string
+}
+
 export interface SpeakSubApi {
   startPractice: (topic: string, level: string, strength: CorrectionStrength, source: PracticeSource, mode: PracticeMode, focus?: string, prompt?: string) => Promise<PracticeStartResult>
   getPromptTemplates: () => Promise<PromptTemplates>
@@ -330,6 +368,9 @@ export interface SpeakSubApi {
   toggleMicrophoneGate: () => Promise<MicrophoneGateState>
   setMicrophoneGate: (active: boolean) => Promise<MicrophoneGateState>
   clearAllData: () => Promise<void>
+  checkForUpdates: () => Promise<AvailableUpdateInfo>
+  downloadAndInstallUpdate: () => Promise<UpdateInstallResult>
+  openUpdateRelease: () => Promise<UpdateInstallResult>
   onTranscript: (listener: (event: TranscriptEvent) => void) => () => void
   onSubtitleSettings: (listener: (settings: SubtitlePreferences) => void) => () => void
   onAutomationStatus: (listener: (status: AutomationStatus) => void) => () => void
@@ -341,6 +382,7 @@ export interface SpeakSubApi {
   onVoicePhase: (listener: (phase: VoiceTurnPhase) => void) => () => void
   onVoiceInterrupt: (listener: (generation: number) => void) => () => void
   onMicrophoneGateState: (listener: (state: MicrophoneGateState) => void) => () => void
+  onUpdateProgress: (listener: (progress: UpdateDownloadProgress) => void) => () => void
 }
 
 declare global {

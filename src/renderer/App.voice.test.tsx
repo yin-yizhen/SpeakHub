@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { PracticePreferences, ProviderSettings, SpeakSubApi, SpeechAssetState, SubtitlePreferences, VoiceTurnPhase } from '../shared/types'
+import type { PracticePreferences, ProviderSettings, SpeakSubApi, SpeechAssetState, SubtitlePreferences, UpdateDownloadProgress, VoiceTurnPhase } from '../shared/types'
 
 const audio = vi.hoisted(() => ({ captureStart: vi.fn(async () => ({ echoCancellation: true })), captureStop: vi.fn(), playTone: vi.fn(), playerPlay: vi.fn(), playerInterrupt: vi.fn(), playerStop: vi.fn() }))
 
@@ -33,9 +33,13 @@ let speechAssetState: SpeechAssetState
 let downloadSpeechAssets: ReturnType<typeof vi.fn>
 let practicePreferences: PracticePreferences
 let savePracticePreferences: ReturnType<typeof vi.fn>
+let checkForUpdates: ReturnType<typeof vi.fn>
+let downloadAndInstallUpdate: ReturnType<typeof vi.fn>
+let updateProgressListener: ((progress: UpdateDownloadProgress) => void) | undefined
 
 beforeEach(() => {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  localStorage.clear()
   audio.captureStart.mockClear(); audio.captureStop.mockClear(); audio.playTone.mockClear(); audio.playerPlay.mockClear(); audio.playerInterrupt.mockClear(); audio.playerStop.mockClear()
   container = document.createElement('div'); document.body.append(container); root = createRoot(container)
   startVoiceCapture = vi.fn(async () => undefined); stopVoiceCapture = vi.fn(async () => undefined)
@@ -45,6 +49,9 @@ beforeEach(() => {
   downloadSpeechAssets = vi.fn(async () => ({ vad: { status: 'ready' as const, downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready' as const, downloadedBytes: 1, totalBytes: 1, progress: 1 } }))
   practicePreferences = { source: practiceSource, mode: 'voice', scenarioTemplateId: 'daily', difficultyTemplateId: 'a1', correctionTemplateId: 'normal', focus: '', focusEnabled: false }
   savePracticePreferences = vi.fn(async (preferences: PracticePreferences) => { practicePreferences = preferences; return preferences })
+  checkForUpdates = vi.fn(async () => ({ configured: true, currentVersion: '0.1.0', latestVersion: '0.1.0', updateAvailable: false }))
+  downloadAndInstallUpdate = vi.fn(async () => ({ ok: true }))
+  updateProgressListener = undefined
   let microphone = { active: false, available: false, shortcut: 'F8' }
   toggleMicrophoneGate = vi.fn(async () => {
     microphone = { ...microphone, active: !microphone.active, available: true }
@@ -82,12 +89,16 @@ beforeEach(() => {
     toggleMicrophoneGate,
     setMicrophoneGate: vi.fn(async () => microphone),
     saveMicrophoneShortcut: vi.fn(async (shortcut: string) => shortcut),
-    downloadSpeechAssets
+    downloadSpeechAssets,
+    checkForUpdates,
+    downloadAndInstallUpdate,
+    openUpdateRelease: vi.fn(async () => ({ ok: true })),
+    onUpdateProgress: vi.fn((listener) => { updateProgressListener = listener; return () => { updateProgressListener = undefined } })
   } as unknown as SpeakSubApi
   window.speaksub = api
 })
 
-afterEach(() => { act(() => root.unmount()); container.remove() })
+afterEach(() => { act(() => root.unmount()); container.remove(); vi.useRealTimers() })
 
 const settle = async () => {
   await act(async () => { await Promise.resolve(); await Promise.resolve() })
@@ -281,5 +292,71 @@ describe('unified voice microphone gate', () => {
 
     await act(async () => { container.querySelector<HTMLButtonElement>('.template-editor-close')!.click(); await Promise.resolve() })
     expect(container.querySelector('.template-editor')).toBeNull()
+  })
+})
+
+describe('application updates', () => {
+  const nextRelease = {
+    configured: true,
+    currentVersion: '0.1.0',
+    latestVersion: '0.1.1',
+    updateAvailable: true,
+    release: {
+      tagName: 'v0.1.1',
+      name: 'SpeakHub v0.1.1',
+      publishedAt: '2026-07-28T00:00:00Z',
+      notes: '新增启动更新检测\n修复下载进度显示',
+      htmlUrl: 'https://github.com/yin-yizhen/SpeakHub/releases/tag/v0.1.1'
+    },
+    asset: { name: 'SpeakHub-0.1.1-Setup.exe', size: 100 }
+  }
+
+  it('checks five seconds after startup and shows the release notes for a newer version', async () => {
+    vi.useFakeTimers()
+    checkForUpdates.mockResolvedValueOnce(nextRelease)
+    act(() => root.render(<App/>)); await settle()
+    expect(checkForUpdates).not.toHaveBeenCalled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+
+    const dialog = container.querySelector<HTMLElement>('.update-dialog')!
+    expect(checkForUpdates).toHaveBeenCalledOnce()
+    expect(dialog.getAttribute('role')).toBe('dialog')
+    expect(dialog.textContent).toContain('当前 0.1.0 → 最新 0.1.1')
+    expect(dialog.textContent).toContain('新增启动更新检测')
+    expect(dialog.textContent).toContain('修复下载进度显示')
+  })
+
+  it('skips only the displayed version while manual checks still report the current version', async () => {
+    vi.useFakeTimers()
+    checkForUpdates.mockResolvedValueOnce(nextRelease)
+    act(() => root.render(<App/>)); await settle()
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    const skip = [...container.querySelectorAll<HTMLButtonElement>('.update-dialog button')].find((button) => button.textContent === '跳过此版本')!
+    await act(async () => { skip.click(); await Promise.resolve() })
+    expect(container.querySelector('.update-dialog')).toBeNull()
+    expect(localStorage.getItem('speakhub-skipped-update-version-v1')).toBe('0.1.1')
+
+    checkForUpdates.mockResolvedValueOnce({ configured: true, currentVersion: '0.1.0', latestVersion: '0.1.0', updateAvailable: false })
+    await act(async () => { container.querySelectorAll<HTMLButtonElement>('.studio-nav button')[2].click(); await Promise.resolve() })
+    const manualCheck = container.querySelector<HTMLButtonElement>('.app-update-card .quiet-action')!
+    await act(async () => { manualCheck.click(); await Promise.resolve(); await Promise.resolve() })
+    expect(container.querySelector('.app-update-card')?.textContent).toContain('当前已是最新版本 0.1.0')
+  })
+
+  it('shows progress and the official Release fallback when installation cannot start', async () => {
+    vi.useFakeTimers()
+    checkForUpdates.mockResolvedValueOnce(nextRelease)
+    downloadAndInstallUpdate.mockImplementationOnce(async () => {
+      updateProgressListener?.({ status: 'downloading', channel: 'GitHub', received: 50, total: 100, percent: 50 })
+      return { ok: false, error: 'GitHub 下载失败（HTTP 503）。', releaseUrl: nextRelease.release.htmlUrl }
+    })
+    act(() => root.render(<App/>)); await settle()
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    const download = [...container.querySelectorAll<HTMLButtonElement>('.update-dialog button')].find((button) => button.textContent === '立即更新')!
+    await act(async () => { download.click(); await Promise.resolve(); await Promise.resolve() })
+
+    expect(container.querySelector('.update-dialog')?.textContent).toContain('GitHub 下载失败（HTTP 503）。')
+    expect([...container.querySelectorAll<HTMLButtonElement>('.update-dialog button')].some((button) => button.textContent === '打开 GitHub Release')).toBe(true)
   })
 })

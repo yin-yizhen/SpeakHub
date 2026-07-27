@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Notification, screen, shell, WebContentsView, type OpenDialogOptions } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, net, Notification, screen, shell, WebContentsView, type OpenDialogOptions } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -27,6 +27,7 @@ import { AnonymousAnalytics } from './analytics'
 import { ALIYUN_FUN_ASR_CNY_PER_SECOND } from './aliyun-fun-asr'
 import { openAllowedHelpUrl } from './external-help-navigation'
 import { embeddedConnectionBounds, resizeBounds, subtitleBounds, subtitleHeight, type ResizeDirection } from './window-layout'
+import { UpdateService } from './update-service'
 import { mergeTranscriptEvent } from '../shared/transcript'
 import type { AutomationStatus, ConnectionState, CorrectionStrength, GeneratedSpeechChunk, MicrophoneGateState, PracticeMode, PracticeProfile, PracticeSession, PracticeSource, ReviewResult, SpeechUsageState, SubtitlePreferences, TranscriptEvent, VoiceAudioChunk, VoiceCaptureStatus, VoiceTurnPhase } from '../shared/types'
 
@@ -55,6 +56,7 @@ let activePrompt: string | undefined
 let events: TranscriptEvent[] = []
 let localSpeech: LocalSpeechService | undefined
 let speechModels: SpeechModelManager
+let updateService: UpdateService
 let voicePhase: VoiceTurnPhase = 'idle'
 let voiceGeneration = 0
 let voiceTurnFinishedGeneration: number | undefined
@@ -543,6 +545,20 @@ async function sendPracticeMessage(message: string): Promise<void> {
 
 function installIpc(): void {
   ipcMain.handle('app:state', () => state())
+  ipcMain.handle('update:check', (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('更新检查只能由主窗口发起。')
+    return updateService.check()
+  })
+  ipcMain.handle('update:download-and-install', (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('更新下载只能由主窗口发起。')
+    return updateService.downloadAndInstall((progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send('update:progress', progress)
+    })
+  })
+  ipcMain.handle('update:open-release', (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('更新页面只能由主窗口打开。')
+    return updateService.openRelease()
+  })
   ipcMain.handle('connection:complete', () => completeConnection())
   ipcMain.handle('connection:show', () => {
     activeSource = 'chatgpt-web'
@@ -693,7 +709,7 @@ function installIpc(): void {
 
 app.whenReady().then(() => {
   const workArea = screen.getPrimaryDisplay().workArea; studioBounds = { x: Math.round(workArea.x + (workArea.width - Math.min(1320, workArea.width)) / 2), y: Math.round(workArea.y + (workArea.height - Math.min(860, workArea.height)) / 2), width: Math.min(1320, workArea.width), height: Math.min(860, workArea.height) }
-  const userData = app.getPath('userData'); diagnostics = new DiagnosticLog(join(userData, 'speaksub-diagnostics.jsonl')); appSettings = new AppSettingsStore(join(userData, 'app-settings.json')); try { microphoneShortcut = normalizeMicrophoneShortcut(appSettings.microphoneShortcut()) } catch { microphoneShortcut = defaultMicrophoneShortcut; appSettings.setMicrophoneShortcut(microphoneShortcut) } connection = appSettings.connection('chatgpt-web', !appSettings.providerReady('chatgpt-web')); subtitle = appSettings.readSubtitle()
+  const userData = app.getPath('userData'); diagnostics = new DiagnosticLog(join(userData, 'speaksub-diagnostics.jsonl')); appSettings = new AppSettingsStore(join(userData, 'app-settings.json')); updateService = new UpdateService({ currentVersion: app.getVersion(), downloadDirectory: join(userData, 'updates', 'downloads'), fetcher: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, init), openPath: (filePath) => shell.openPath(filePath), openExternal: (url) => shell.openExternal(url) }); try { microphoneShortcut = normalizeMicrophoneShortcut(appSettings.microphoneShortcut()) } catch { microphoneShortcut = defaultMicrophoneShortcut; appSettings.setMicrophoneShortcut(microphoneShortcut) } connection = appSettings.connection('chatgpt-web', !appSettings.providerReady('chatgpt-web')); subtitle = appSettings.readSubtitle()
   archiveDirectory = appSettings.archiveDirectory(join(userData, 'learning-archive')); store = new SpeakSubStore(archiveDirectory); settings = new SecureSettings(join(userData, 'provider-settings.json')); chatMarker = new ChatGPTMarkerStore(join(userData, 'last-speaksub-chat.json')); learning = new LearningService(settings, join(app.getAppPath(), 'resources', 'dictionaries', 'ecdict-en-zh')); speechModels = new SpeechModelManager(speechModelRoot({ isPackaged: app.isPackaged, executablePath: process.execPath, userDataDirectory: userData })); speechModels.subscribe((assetState) => broadcast('speech-assets:state', assetState))
   const showPersistedOverlay = subtitle.visible
   try { registerMicrophoneShortcut(microphoneShortcut) } catch (error) { microphoneShortcutError = error instanceof Error ? error.message : 'The saved microphone shortcut is unavailable.' }

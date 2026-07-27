@@ -57,6 +57,9 @@ const api: SpeakSubApi = {
   toggleMicrophoneGate: () => ipcRenderer.invoke('microphone:toggle'),
   setMicrophoneGate: (active) => ipcRenderer.invoke('microphone:set', active),
   clearAllData: () => ipcRenderer.invoke('data:clear'),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  downloadAndInstallUpdate: () => ipcRenderer.invoke('update:download-and-install'),
+  openUpdateRelease: () => ipcRenderer.invoke('update:open-release'),
   onTranscript: (listener) => onIpc('transcript:event', listener),
   onSubtitleSettings: (listener) => onIpc('subtitle:settings', listener),
   onAutomationStatus: (listener) => onIpc('automation:status', listener),
@@ -67,7 +70,8 @@ const api: SpeakSubApi = {
   onSpeechUsage: (listener) => onIpc('speech:usage', listener),
   onVoicePhase: (listener) => onIpc('voice:phase', listener),
   onVoiceInterrupt: (listener) => onIpc('voice:interrupt', listener),
-  onMicrophoneGateState: (listener) => onIpc('microphone:state', listener)
+  onMicrophoneGateState: (listener) => onIpc('microphone:state', listener),
+  onUpdateProgress: (listener) => onIpc('update:progress', listener)
 }
 
 contextBridge.exposeInMainWorld('speaksub', api)
