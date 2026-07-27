@@ -3,7 +3,8 @@ export interface SubtitleToken {
   clickable: boolean
 }
 
-const wordPattern = /[A-Za-z]+(?:'[A-Za-z]+)*/g
+// Keep dictionary-style compounds intact so one click looks up the whole term.
+const wordPattern = /[A-Za-z]+(?:['’-][A-Za-z]+|-[A-Za-z0-9]+)*/g
 
 export function subtitleWordTokens(text: string): SubtitleToken[] {
   const tokens: SubtitleToken[] = []

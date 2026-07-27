@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
-    build: { lib: { entry: { index: resolve(__dirname, 'src/main/index.ts'), 'speech-worker': resolve(__dirname, 'src/main/speech-worker.ts') }, formats: ['cjs'], fileName: '[name]' } }
+    build: { lib: { entry: { index: resolve(__dirname, 'src/main/index.ts'), 'speech-asr-worker': resolve(__dirname, 'src/main/speech-asr-worker.ts'), 'speech-tts-worker': resolve(__dirname, 'src/main/speech-tts-worker.ts') }, formats: ['cjs'], fileName: '[name]' } }
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

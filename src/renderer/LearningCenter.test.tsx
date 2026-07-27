@@ -13,12 +13,14 @@ const dashboard: LearningDashboard = { period: 'week', from: '2026-07-04T00:00:0
 let container: HTMLDivElement
 let root: ReturnType<typeof createRoot>
 let updateVocabularyFamiliarity: ReturnType<typeof vi.fn>
+let reviewVocabulary: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   container = document.createElement('div'); document.body.append(container); root = createRoot(container)
   updateVocabularyFamiliarity = vi.fn(async () => ({ ...word, familiarity: 'learning' as const }))
-  const api = { getLearningDashboard: vi.fn(async () => dashboard), searchSessions: vi.fn(async () => [summary]), listVocabulary: vi.fn(async () => [word]), getSessionDetail: vi.fn(async () => detail), createNextPracticeDraft: vi.fn(), deleteSession: vi.fn(), updateVocabularyFamiliarity, getReviewQueue: vi.fn() } as unknown as SpeakSubApi
+  reviewVocabulary = vi.fn(async () => ({ ...word, familiarity: 'learning' as const }))
+  const api = { getLearningDashboard: vi.fn(async () => dashboard), searchSessions: vi.fn(async () => [summary]), listVocabulary: vi.fn(async () => [word]), getSessionDetail: vi.fn(async () => detail), createNextPracticeDraft: vi.fn(), deleteSession: vi.fn(), updateVocabularyFamiliarity, reviewVocabulary, getReviewQueue: vi.fn() } as unknown as SpeakSubApi
   window.speaksub = api
 })
 
@@ -36,13 +38,20 @@ describe('LearningCenter', () => {
     expect(container.textContent).toContain('完整对话')
   })
 
-  it('updates familiarity from the vocabulary review queue', async () => {
+  it('shows all saved vocabulary, then reveals the answer only after rating a review card', async () => {
     act(() => root.render(<LearningCenter onUseDraft={() => undefined}/>)); await settle()
     const vocabulary = [...container.querySelectorAll('button')].find((button) => button.textContent === '词汇')!
     act(() => vocabulary.click()); await settle()
     expect(container.textContent).toContain('坚持的')
-    const learning = [...container.querySelectorAll<HTMLButtonElement>('.familiarity-actions button')].find((button) => button.textContent === '学习中')!
-    await act(async () => learning.click())
-    expect(updateVocabularyFamiliarity).toHaveBeenCalledWith(word.id, 'learning')
+    const start = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '开始复习')!
+    await act(async () => start.click())
+    expect(container.textContent).not.toContain('坚持的')
+    const good = [...container.querySelectorAll<HTMLButtonElement>('.review-ratings button')].find((button) => button.textContent === '一般')!
+    await act(async () => good.click())
+    expect(reviewVocabulary).toHaveBeenCalledWith(word.id, 'good')
+    expect(container.textContent).toContain('坚持的')
+    const next = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '下一个单词')!
+    act(() => next.click())
+    expect(container.textContent).toContain('本轮复习完成')
   })
 })

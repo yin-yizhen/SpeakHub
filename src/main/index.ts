@@ -17,6 +17,7 @@ import { SessionCheckpoint } from './session-checkpoint'
 import { SecureSettings } from './secure-settings'
 import { SpeakSubStore } from './store'
 import { AppSettingsStore, defaultSubtitlePreferences, parseSubtitleUpdate } from './app-settings'
+import { discoverProviderModels } from './provider-model-probe'
 import { defaultMicrophoneShortcut, normalizeMicrophoneShortcut, replaceGlobalMicrophoneShortcut } from './microphone-shortcut'
 import { PracticeController } from './practice-controller'
 import { buildPracticePrompt, parsePracticeProfile } from './practice-profile'
@@ -24,7 +25,7 @@ import { DiagnosticLog } from './diagnostic-log'
 import { AnonymousAnalytics } from './analytics'
 import { embeddedConnectionBounds, resizeBounds, subtitleBounds, subtitleHeight, type ResizeDirection } from './window-layout'
 import { mergeTranscriptEvent } from '../shared/transcript'
-import type { AutomationStatus, ConnectionState, CorrectionStrength, GeneratedSpeechChunk, MicrophoneGateState, PracticeEndResult, PracticeMode, PracticeProfile, PracticeSession, PracticeSource, PracticeStartResult, ReviewResult, SubtitlePreferences, TranscriptEvent, VoiceAudioChunk, VoiceTurnPhase, WebPracticeSource } from '../shared/types'
+import type { AutomationStatus, ConnectionState, CorrectionStrength, GeneratedSpeechChunk, MicrophoneGateState, PracticeEndResult, PracticeMode, PracticeProfile, PracticeSession, PracticeSource, PracticeStartResult, ReviewResult, SubtitlePreferences, TranscriptEvent, VoiceAudioChunk, VoiceCaptureStatus, VoiceTurnPhase, WebPracticeSource } from '../shared/types'
 
 const CHATGPT_URL = 'https://chatgpt.com/'
 const CONNECTION_WIDTH = 420
@@ -46,13 +47,22 @@ let activeSource: PracticeSource = 'chatgpt-web'
 let activeMode: PracticeMode = 'voice'
 let activeTopic = '日常聊天'
 let activeLevel = 'A1'
+let activePrompt: string | undefined
 let events: TranscriptEvent[] = []
 let localSpeech: LocalSpeechService | undefined
 let speechModels: SpeechModelManager
 let voicePhase: VoiceTurnPhase = 'idle'
-let voiceRequest: AbortController | undefined
-let voiceTurnFinished = false
-const pendingPlayback = new Set<string>()
+let voiceGeneration = 0
+let voiceTurnFinishedGeneration: number | undefined
+let activeVoiceReply: { generation: number; controller: AbortController; messageId: string; reply: string } | undefined
+const pendingPlayback = new Map<string, number>()
+const voiceReplyPromises = new Set<Promise<void>>()
+let microphoneSpeechActive = false
+let microphoneSpeechStartedAt = 0
+let recentSpeechEligibleUntil = 0
+let pendingBargeTranscript: { utteranceId: string; text: string; final: boolean } | undefined
+let bargeTimer: ReturnType<typeof setTimeout> | undefined
+let echoCancellationAvailable = true
 let subtitle: SubtitlePreferences = defaultSubtitlePreferences
 let connection: ConnectionState = { ready: false, pageVisible: true, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': false } }
 let automationStatus: AutomationStatus = { phase: 'idle', message: 'Ready to practice.' }
@@ -143,7 +153,7 @@ function createChatHostView(): void {
 }
 
 function createMainWindow(): void {
-  mainWindow = new BrowserWindow({ ...studioBounds, show: false, backgroundColor: '#111513', title: 'SpeakSub', webPreferences: { preload: preloadPath(), contextIsolation: true, sandbox: true, nodeIntegration: false } })
+  mainWindow = new BrowserWindow({ ...studioBounds, show: false, backgroundColor: '#111513', title: 'SpeakHub', webPreferences: { preload: preloadPath(), contextIsolation: true, sandbox: true, nodeIntegration: false } })
   mainWindow.removeMenu(); mainWindow.loadURL(rendererUrl('index.html'))
   mainWindow.on('move', () => { studioBounds = mainWindow!.getBounds() })
   mainWindow.on('resize', () => { studioBounds = mainWindow!.getBounds(); if (connection.pageVisible) layoutChatHostView() })
@@ -153,13 +163,13 @@ function createMainWindow(): void {
 function createOverlayWindow(): void {
   const bounds = subtitleBounds(screen.getPrimaryDisplay().workArea, undefined, subtitleHeight(subtitle.fontSize, subtitle.maxLines))
   overlayWindow = new BrowserWindow({ ...bounds, transparent: true, frame: false, alwaysOnTop: true, resizable: false, minWidth: 420, minHeight: 150, skipTaskbar: true, hasShadow: false, webPreferences: { preload: preloadPath(), contextIsolation: true, sandbox: true, nodeIntegration: false } })
-  overlayWindow.setAlwaysOnTop(true, 'pop-up-menu'); overlayWindow.loadURL(rendererUrl('overlay.html')); overlayWindow.hide(); overlayWindow.webContents.once('did-finish-load', () => setOverlayInteractive(true)); overlayWindow.on('moved', persistOverlayBounds); overlayWindow.on('resized', persistOverlayBounds)
+  overlayWindow.setAlwaysOnTop(true, 'pop-up-menu'); overlayWindow.loadURL(rendererUrl('overlay.html')); overlayWindow.hide(); overlayWindow.webContents.once('did-finish-load', () => setOverlayInteractive(false)); overlayWindow.on('moved', persistOverlayBounds); overlayWindow.on('resized', persistOverlayBounds)
 }
 
 function persistOverlayBounds(): void { if (!overlayWindow || subtitle.locked || !subtitle.visible) return; subtitle = { ...subtitle, bounds: overlayWindow.getBounds() }; persistSubtitle(); broadcast('subtitle:settings', subtitle) }
 function setOverlayInteractive(interactive: boolean): void { overlayWindow?.setIgnoreMouseEvents(!interactive, { forward: true }) }
 function persistSubtitle(): void { appSettings?.saveSubtitle(subtitle) }
-function showOverlay(): SubtitlePreferences { if (!overlayWindow) return subtitle; const current = subtitle.bounds ?? overlayWindow.getBounds(); const bounds = subtitleBounds(screen.getPrimaryDisplay().workArea, current.width, Math.max(current.height, subtitleHeight(subtitle.fontSize, subtitle.maxLines))); overlayWindow.setBounds(bounds); subtitle = { ...subtitle, visible: true, bounds }; setOverlayInteractive(true); overlayWindow.show(); overlayWindow.moveTop(); mainWindow?.focus(); persistSubtitle(); broadcast('subtitle:settings', subtitle); return subtitle }
+function showOverlay(): SubtitlePreferences { if (!overlayWindow) return subtitle; const current = subtitle.bounds ?? overlayWindow.getBounds(); const bounds = subtitleBounds(screen.getPrimaryDisplay().workArea, current.width, Math.max(current.height, subtitleHeight(subtitle.fontSize, subtitle.maxLines))); overlayWindow.setBounds(bounds); subtitle = { ...subtitle, visible: true, bounds }; setOverlayInteractive(false); overlayWindow.show(); overlayWindow.moveTop(); mainWindow?.focus(); persistSubtitle(); broadcast('subtitle:settings', subtitle); return subtitle }
 
 function handleEvent(event: Omit<TranscriptEvent, 'id' | 'sessionId'>): void {
   if (!activeSession) return
@@ -209,14 +219,14 @@ function cleanPreviousInBackground(): void {
   })
 }
 
-async function prepareWebPractice(topic: string, level: string, strength: CorrectionStrength, mode: PracticeMode, focus?: string) {
+async function prepareWebPractice(topic: string, level: string, strength: CorrectionStrength, mode: PracticeMode, focus?: string, prompt?: string) {
   if (!connection.providers['chatgpt-web']) throw new Error('Please sign in to ChatGPT on the connection page first.')
   const automation = chatgptAutomation
   if (!automation) throw new Error('The web practice window is not ready.')
   cleanPreviousInBackground()
   announceAutomation({ phase: 'filling-prompt', message: 'Creating a new ChatGPT practice.' })
   const newChat = await automation.startNewChat(); if (!newChat.ok) throw new Error(newChat.message)
-  const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source: 'chatgpt-web', mode, focus })
+  const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source: 'chatgpt-web', mode, focus, prompt })
   const session = beginSession(profile); beginWebAdapter()
   let sent
   try { sent = await automation.fillAndSendPrompt(buildPracticePrompt(profile)) }
@@ -234,23 +244,22 @@ async function prepareWebPractice(topic: string, level: string, strength: Correc
   announceAutomation({ phase: 'voice-started', message: voice.message }); return { session, voiceStarted: true, source: 'chatgpt-web' as const, mode }
 }
 
-async function beginLocalVoicePractice(strength: CorrectionStrength, topic: string, level: string, focus?: string) {
+async function beginLocalVoicePractice(strength: CorrectionStrength, topic: string, level: string, focus?: string, prompt?: string) {
   const config = settings.get()
   if (!config.llmBaseUrl || !config.llmModel || !config.hasLlmKey) throw new Error('请先在设置中填写 DeepSeek 或其他 OpenAI-compatible 文本 API。')
   const assets = speechModels.state()
-  if (assets.asr.status !== 'ready' || assets.tts.status !== 'ready') throw new Error('请先到设置下载本地双语语音模型（约 265 MB）。')
+  if (assets.asr.status !== 'ready' || assets.tts.status !== 'ready') throw new Error('请先到设置下载当前缺失的本地双语语音模型。')
   announceAutomation({ phase: 'filling-prompt', message: '正在启动本地中英双语语音模型…' })
-  const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source: 'api-direct', mode: 'voice', focus })
+  const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source: 'api-direct', mode: 'voice', focus, prompt })
   const session = beginSession(profile)
+  microphoneSpeechActive = false
+  recentSpeechEligibleUntil = 0
+  pendingBargeTranscript = undefined
+  echoCancellationAvailable = true
+  clearBargeTimer()
   localSpeech = new LocalSpeechService(speechModels.paths)
-  localSpeech.onTranscript(({ utteranceId, text, final }) => {
-    if (!activeSession || activeSession.id !== session.id || voicePhase !== 'listening') return
-    handleEvent({ sourceMessageId: `${session.id}-${utteranceId}`, speaker: 'user', text, status: final ? 'complete' : 'streaming', receivedAt: new Date().toISOString() })
-    if (final && text.trim()) {
-      announceVoicePhase('thinking')
-      textMessagePromise = streamApiReply(false).finally(() => { textMessagePromise = undefined })
-    }
-  })
+  localSpeech.onSpeechActivity((active) => handleLocalSpeechActivity(active))
+  localSpeech.onTranscript((transcript) => acceptLocalTranscript(session.id, transcript))
   localSpeech.onError((error) => announceAutomation({ phase: 'failed', message: error.message, recoverable: true }))
   try { await localSpeech.start() } catch (error) { await localSpeech.stop().catch(() => undefined); localSpeech = undefined; stopSessionCheckpoint(true); store.abortSession(session.id); activeSession = undefined; throw error }
   announceVoicePhase('listening')
@@ -258,12 +267,101 @@ async function beginLocalVoicePractice(strength: CorrectionStrength, topic: stri
   return { session, voiceStarted: false, source: 'api-direct' as const, mode: 'voice' as const }
 }
 
-function maybeResumeListening(): void {
-  if (!voiceTurnFinished || pendingPlayback.size || !activeSession || practiceController.lifecycle !== 'active' || activeMode !== 'voice' || activeSource !== 'api-direct') return
-  voiceTurnFinished = false
-  localSpeech?.reset()
+function clearBargeTimer(): void {
+  if (bargeTimer) clearTimeout(bargeTimer)
+  bargeTimer = undefined
+}
+
+function handleLocalSpeechActivity(active: boolean): void {
+  microphoneSpeechActive = active
+  clearBargeTimer()
+  if (active) {
+    microphoneSpeechStartedAt = Date.now()
+    recentSpeechEligibleUntil = 0
+    return
+  }
+  recentSpeechEligibleUntil = Date.now() + 2_500
+}
+
+function interruptionDelay(): number {
+  const phaseDelay = voicePhase === 'thinking' ? 0 : 50
+  return phaseDelay + (echoCancellationAvailable ? 0 : 200)
+}
+
+function interruptVoiceResponse(): boolean {
+  const turn = activeVoiceReply
+  if (!turn) return false
+  voiceGeneration += 1
+  turn.controller.abort()
+  localSpeech?.cancelSynthesis(turn.generation)
+  for (const [id, generation] of pendingPlayback) if (generation <= turn.generation) pendingPlayback.delete(id)
+  mainWindow?.webContents.send('voice:interrupt', voiceGeneration)
+  if (turn.reply.trim()) {
+    handleEvent({
+      sourceMessageId: turn.messageId,
+      speaker: 'assistant',
+      text: turn.reply,
+      status: 'complete',
+      interrupted: true,
+      receivedAt: new Date().toISOString()
+    })
+  }
+  if (activeVoiceReply === turn) activeVoiceReply = undefined
+  voiceTurnFinishedGeneration = undefined
   announceVoicePhase('listening')
-  announceAutomation({ phase: 'idle', message: '可以继续说话。' })
+  announceAutomation({ phase: 'idle', message: '已打断 AI，正在听你说。' })
+  return true
+}
+
+function emitLocalTranscript(sessionId: string, transcript: { utteranceId: string; text: string; final: boolean }): void {
+  if (!activeSession || activeSession.id !== sessionId || !transcript.text.trim()) return
+  handleEvent({ sourceMessageId: `${sessionId}-${transcript.utteranceId}`, speaker: 'user', text: transcript.text, status: transcript.final ? 'complete' : 'streaming', receivedAt: new Date().toISOString() })
+  if (!transcript.final) return
+  announceVoicePhase('thinking')
+  const task = streamApiReply(false)
+  voiceReplyPromises.add(task)
+  void task.catch(() => undefined).finally(() => voiceReplyPromises.delete(task))
+}
+
+function tryBargeIn(sessionId: string): boolean {
+  const transcript = pendingBargeTranscript
+  if (!transcript || !activeVoiceReply || !transcript.text.trim()) return false
+  const speechRecentlyEnded = Date.now() <= recentSpeechEligibleUntil
+  if (!microphoneSpeechActive && !(transcript.final && speechRecentlyEnded)) return false
+  const elapsed = Date.now() - microphoneSpeechStartedAt
+  const delay = interruptionDelay()
+  if (!transcript.final && elapsed < delay) {
+    clearBargeTimer()
+    bargeTimer = setTimeout(() => {
+      bargeTimer = undefined
+      if (!microphoneSpeechActive || !pendingBargeTranscript || !interruptVoiceResponse()) return
+      const pending = pendingBargeTranscript
+      pendingBargeTranscript = undefined
+      emitLocalTranscript(sessionId, pending)
+    }, delay - elapsed)
+    return false
+  }
+  if (!interruptVoiceResponse()) return false
+  pendingBargeTranscript = undefined
+  return true
+}
+
+function acceptLocalTranscript(sessionId: string, transcript: { utteranceId: string; text: string; final: boolean }): void {
+  if (!activeSession || activeSession.id !== sessionId || !transcript.text.trim()) return
+  if (voicePhase !== 'listening') {
+    pendingBargeTranscript = transcript
+    if (!tryBargeIn(sessionId)) return
+  }
+  emitLocalTranscript(sessionId, transcript)
+}
+
+function maybeResumeListening(generation: number): void {
+  if (voiceTurnFinishedGeneration !== generation || [...pendingPlayback.values()].some((value) => value === generation) || !activeSession || practiceController.lifecycle !== 'active' || activeMode !== 'voice' || activeSource !== 'api-direct') return
+  voiceTurnFinishedGeneration = undefined
+  if (activeVoiceReply?.generation === generation) activeVoiceReply = undefined
+  if (!pendingBargeTranscript) localSpeech?.reset()
+  announceVoicePhase('listening')
+  announceAutomation({ phase: 'idle', message: '可以继续说话，也可以随时打断 AI。' })
 }
 
 async function streamApiReply(addUserMessage: boolean, userText?: string): Promise<void> {
@@ -275,20 +373,23 @@ async function streamApiReply(addUserMessage: boolean, userText?: string): Promi
   let reply = ''
   let segmentIndex = 0
   const synthesis = new SequentialTaskQueue()
-  voiceTurnFinished = false
-  voiceRequest = new AbortController()
+  const generation = shouldSpeak ? ++voiceGeneration : 0
+  const controller = new AbortController()
+  const turn = shouldSpeak ? { generation, controller, messageId, reply } : undefined
+  if (turn) activeVoiceReply = turn
+  voiceTurnFinishedGeneration = undefined
   const queueSpeech = (text: string): void => {
     if (!shouldSpeak || !localSpeech) return
     const index = segmentIndex++
     announceVoicePhase('synthesizing')
     synthesis.enqueue(async () => {
-      const audio = await localSpeech!.synthesize(text, messageId, index)
-      if (!activeSession || voiceRequest?.signal.aborted) return
+      const audio = await localSpeech!.synthesize(text, messageId, index, generation)
+      if (!activeSession || controller.signal.aborted || generation !== voiceGeneration) return
       if (audio.sampleRate !== 24000) throw new Error(`Kokoro returned unsupported sample rate ${audio.sampleRate}.`)
       const id = `${messageId}-${index}`
       const samples = audio.samples.slice()
-      const chunk: GeneratedSpeechChunk = { id, messageId, index, sampleRate: 24000, format: 'float32', samples: samples.buffer, final: true }
-      pendingPlayback.add(id)
+      const chunk: GeneratedSpeechChunk = { id, messageId, index, generation, sampleRate: 24000, format: 'float32', samples: samples.buffer, final: true }
+      pendingPlayback.set(id, generation)
       announceVoicePhase('speaking')
       mainWindow?.webContents.send('voice:audio', chunk)
     })
@@ -296,25 +397,30 @@ async function streamApiReply(addUserMessage: boolean, userText?: string): Promi
   announceAutomation({ phase: 'waiting-for-reply', message: 'DeepSeek 正在流式回复…' })
   try {
     await learning.streamChat(events, activeTopic, activeLevel, {
-      signal: voiceRequest.signal,
+      signal: controller.signal,
       onDelta: (delta) => {
+        if (controller.signal.aborted || (shouldSpeak && generation !== voiceGeneration)) return
         reply += delta
+        if (turn) turn.reply = reply
         handleEvent({ sourceMessageId: messageId, speaker: 'assistant', text: reply, status: 'streaming', receivedAt: new Date().toISOString() })
         for (const segment of segmenter.push(delta)) queueSpeech(segment)
       }
-    })
+    }, activePrompt)
     for (const segment of segmenter.flush()) queueSpeech(segment)
     if (reply) handleEvent({ sourceMessageId: messageId, speaker: 'assistant', text: reply, status: 'complete', receivedAt: new Date().toISOString() })
     await synthesis.done()
-    voiceTurnFinished = true
+    if (shouldSpeak && generation !== voiceGeneration) return
+    voiceTurnFinishedGeneration = shouldSpeak ? generation : undefined
     if (!shouldSpeak) announceAutomation({ phase: 'idle', message: 'API reply received. Continue when ready.' })
-    maybeResumeListening()
+    if (shouldSpeak) maybeResumeListening(generation)
   } catch (error) {
-    if (!voiceRequest.signal.aborted) announceAutomation({ phase: 'failed', message: error instanceof Error ? error.message : 'API reply failed.', recoverable: true })
-    if (shouldSpeak && activeSession) { voiceTurnFinished = true; maybeResumeListening() }
+    if (controller.signal.aborted || (shouldSpeak && generation !== voiceGeneration)) return
+    announceAutomation({ phase: 'failed', message: error instanceof Error ? error.message : 'API reply failed.', recoverable: true })
+    if (shouldSpeak && activeSession) {
+      voiceTurnFinishedGeneration = generation
+      maybeResumeListening(generation)
+    }
     throw error
-  } finally {
-    voiceRequest = undefined
   }
 }
 
@@ -385,48 +491,68 @@ function installIpc(): void {
     announceAutomation({ phase: 'idle', message: 'The previous practice record was cleared. You can start a new practice.' })
   })
   ipcMain.handle('connection:hide', () => setConnection({ pageVisible: false }))
-  ipcMain.handle('practice:start', (_event, topic: string, level: string, strength: CorrectionStrength, source: PracticeSource = 'chatgpt-web', mode: PracticeMode = 'text', focus?: string) => practiceController.start(async () => {
-    const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source, mode, focus })
-    activeSource = profile.source; activeMode = profile.mode; activeTopic = profile.topic; activeLevel = profile.level
-    microphoneActive = profile.source === 'chatgpt-web' && profile.mode === 'voice'
+  ipcMain.handle('practice:start', (_event, topic: string, level: string, strength: CorrectionStrength, source: PracticeSource = 'chatgpt-web', mode: PracticeMode = 'text', focus?: string, prompt?: string) => practiceController.start(async () => {
+    const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source, mode, focus, prompt })
+    activeSource = profile.source; activeMode = profile.mode; activeTopic = profile.topic; activeLevel = profile.level; activePrompt = profile.prompt
+    microphoneActive = profile.mode === 'voice'
     if (profile.source === 'chatgpt-web' && profile.mode === 'voice') chatHostView?.webContents.send('speaksub:microphone-gate', true)
     announceMicrophone()
     if (profile.source === 'api-direct') {
       const config = settings.get()
       if (!config.llmBaseUrl || !config.llmModel || !config.hasLlmKey) throw new Error('请先在设置中填写 DeepSeek 或其他 OpenAI-compatible 文本 API。')
-      if (profile.mode === 'voice') return beginLocalVoicePractice(profile.correctionStrength, profile.topic, profile.level, profile.focus)
+      if (profile.mode === 'voice') return beginLocalVoicePractice(profile.correctionStrength, profile.topic, profile.level, profile.focus, profile.prompt)
       const session = beginSession(profile); announceAutomation({ phase: 'idle', message: 'API direct text practice is ready. Type a message to begin.' }); return { session, voiceStarted: false, source: profile.source, mode: profile.mode }
     }
-    return prepareWebPractice(profile.topic, profile.level, profile.correctionStrength, profile.mode, profile.focus)
+    return prepareWebPractice(profile.topic, profile.level, profile.correctionStrength, profile.mode, profile.focus, profile.prompt)
   }, () => activeSession ? { session: activeSession, voiceStarted: automationStatus.phase === 'voice-started', source: activeSource, mode: activeMode } : undefined))
+  ipcMain.handle('practice:templates:get', () => appSettings.promptTemplates())
+  ipcMain.handle('practice:templates:save', (_event, templates) => appSettings.setPromptTemplates(templates))
+  ipcMain.handle('practice:preferences:get', () => appSettings.practicePreferences())
+  ipcMain.handle('practice:preferences:save', (_event, preferences) => appSettings.setPracticePreferences(preferences))
   ipcMain.handle('practice:sendMessage', (_event, message: string) => sendPracticeMessage(message))
   ipcMain.handle('api:sendMessage', (_event, message: string) => sendPracticeMessage(message))
   ipcMain.handle('voice:audio', (_event, input: VoiceAudioChunk) => {
     const chunk = z.object({ sampleRate: z.literal(16000), format: z.literal('float32'), samples: z.instanceof(ArrayBuffer) }).parse(input)
     if (chunk.samples.byteLength > 1_048_576 || chunk.samples.byteLength % 4 !== 0) throw new Error('Invalid voice audio chunk.')
-    if (activeSource === 'api-direct' && activeMode === 'voice' && microphoneActive && voicePhase === 'listening') localSpeech?.accept(new Float32Array(chunk.samples))
+    if (activeSource === 'api-direct' && activeMode === 'voice' && microphoneActive) localSpeech?.accept(new Float32Array(chunk.samples))
   })
-  ipcMain.handle('voice:playback:ended', (_event, chunkId: string) => { pendingPlayback.delete(z.string().min(1).max(300).parse(chunkId)); maybeResumeListening() })
+  ipcMain.handle('voice:playback:ended', (_event, chunkId: string) => {
+    const id = z.string().min(1).max(300).parse(chunkId)
+    const generation = pendingPlayback.get(id)
+    pendingPlayback.delete(id)
+    if (generation !== undefined) maybeResumeListening(generation)
+  })
   ipcMain.handle('voice:capture:start', () => { if (!activeSession || activeSource !== 'api-direct' || activeMode !== 'voice') throw new Error('Start an API voice practice first.') })
   ipcMain.handle('voice:capture:stop', () => undefined)
+  ipcMain.handle('voice:capture:status', (_event, input: VoiceCaptureStatus) => {
+    const status = z.object({ echoCancellation: z.boolean() }).parse(input)
+    echoCancellationAvailable = status.echoCancellation
+    diagnostics?.write('voice-capture', status)
+    if (!status.echoCancellation) announceAutomation({ phase: 'failed', message: '当前麦克风没有启用回声消除；仍可打断 AI，但建议使用耳机以减少误触发。', recoverable: true })
+  })
   ipcMain.handle('speech-assets:get', () => speechModels.state())
   ipcMain.handle('speech-assets:download', () => speechModels.ensureAll())
   ipcMain.handle('microphone:toggle', () => toggleMicrophoneGate())
   ipcMain.handle('microphone:set', (_event, active: boolean) => setMicrophoneGate(z.boolean().parse(active)))
   ipcMain.handle('microphone:shortcut:save', (_event, shortcut: string) => { const saved = registerMicrophoneShortcut(z.string().max(80).parse(shortcut)); appSettings.setMicrophoneShortcut(saved); return saved })
-  ipcMain.handle('practice:cancel-start', async () => { if (!activeSession || events.length) return; voiceRequest?.abort(); await localSpeech?.stop(); localSpeech = undefined; pendingPlayback.clear(); announceVoicePhase('idle'); adapter?.stop(); adapter = undefined; stopSessionCheckpoint(true); store.abortSession(activeSession.id); activeSession = undefined; microphoneActive = false; announceMicrophone(); practiceController.reset(); announceAutomation({ phase: 'failed', message: 'Practice startup was cancelled before any transcript was recorded.', recoverable: true }) })
+  ipcMain.handle('practice:cancel-start', async () => { if (!activeSession || events.length) return; activeVoiceReply?.controller.abort(); voiceGeneration += 1; clearBargeTimer(); await localSpeech?.stop(); localSpeech = undefined; activeVoiceReply = undefined; pendingPlayback.clear(); announceVoicePhase('idle'); adapter?.stop(); adapter = undefined; stopSessionCheckpoint(true); store.abortSession(activeSession.id); activeSession = undefined; microphoneActive = false; announceMicrophone(); practiceController.reset(); announceAutomation({ phase: 'failed', message: 'Practice startup was cancelled before any transcript was recorded.', recoverable: true }) })
   ipcMain.handle('practice:end', async () => {
     const result = await practiceController.end(async () => {
-      voiceRequest?.abort()
+      if (!interruptVoiceResponse()) {
+        activeVoiceReply?.controller.abort()
+        voiceGeneration += 1
+        mainWindow?.webContents.send('voice:interrupt', voiceGeneration)
+      }
+      clearBargeTimer()
       if (textMessagePromise) await textMessagePromise.catch(() => undefined)
+      if (voiceReplyPromises.size) await Promise.all([...voiceReplyPromises].map((task) => task.catch(() => undefined)))
       const session = activeSession!
       const reviewFavorites = store.favoriteWordsForSession(session.id)
       let voiceStopped = activeMode !== 'voice'; let voiceWarning: string | undefined
       if (activeSource === 'chatgpt-web' && activeMode === 'voice') { announceAutomation({ phase: 'stopping-voice', message: 'Ending ChatGPT voice…' }); const result = await chatgptAutomation?.stopVoice().catch(() => undefined); voiceStopped = result?.ok === true; voiceWarning = voiceStopped ? undefined : result?.message ?? 'Could not end ChatGPT voice automatically.' }
       if (activeSource === 'api-direct' && activeMode === 'voice') {
-        mainWindow?.webContents.send('voice:interrupt')
         await localSpeech?.stop().catch(() => undefined)
-        localSpeech = undefined; pendingPlayback.clear(); announceVoicePhase('idle'); voiceStopped = true
+        localSpeech = undefined; activeVoiceReply = undefined; pendingPlayback.clear(); announceVoicePhase('idle'); voiceStopped = true
       }
       adapter?.stop(); adapter = undefined
       stopSessionCheckpoint(true)
@@ -445,7 +571,7 @@ function installIpc(): void {
     broadcast('practice:ended', result)
     return result
   })
-  ipcMain.handle('subtitle:update', (_event, input: Partial<SubtitlePreferences>) => { subtitle = parseSubtitleUpdate(subtitle, input); if (overlayWindow) { setOverlayInteractive(true); if (!subtitle.visible) overlayWindow.hide() }; persistSubtitle(); broadcast('subtitle:settings', subtitle); return subtitle })
+  ipcMain.handle('subtitle:update', (_event, input: Partial<SubtitlePreferences>) => { const wasLocked = subtitle.locked; subtitle = parseSubtitleUpdate(subtitle, input); if (overlayWindow) { if (wasLocked !== subtitle.locked) setOverlayInteractive(false); if (!subtitle.visible) overlayWindow.hide() }; persistSubtitle(); broadcast('subtitle:settings', subtitle); return subtitle })
   ipcMain.handle('subtitle:toggle', () => { if (subtitle.visible) { subtitle = { ...subtitle, visible: false }; overlayWindow?.hide(); persistSubtitle(); broadcast('subtitle:settings', subtitle); return subtitle }; return showOverlay() })
   ipcMain.handle('subtitle:interactive', (_event, interactive: boolean) => setOverlayInteractive(z.boolean().parse(interactive)))
   ipcMain.handle('subtitle:resize', (_event, direction: ResizeDirection, origin, deltaX: number, deltaY: number) => { const parsedDirection = z.enum(['top', 'right', 'bottom', 'left', 'top-left', 'top-right', 'bottom-left', 'bottom-right']).parse(direction); const parsedOrigin = z.object({ x: z.number(), y: z.number(), width: z.number().min(320), height: z.number().min(100) }).parse(origin); const dx = z.number().min(-10_000).max(10_000).parse(deltaX); const dy = z.number().min(-10_000).max(10_000).parse(deltaY); if (!overlayWindow || subtitle.locked) return subtitle; const bounds = resizeBounds(parsedOrigin, parsedDirection, dx, dy, undefined, subtitleHeight(subtitle.fontSize, subtitle.maxLines)); overlayWindow.setBounds(bounds); subtitle = { ...subtitle, bounds }; persistSubtitle(); broadcast('subtitle:settings', subtitle); return subtitle })
@@ -455,8 +581,16 @@ function installIpc(): void {
   ipcMain.handle('learning:sessions:search', (_event, query) => store.searchSessions(historyQuerySchema.parse(query)))
   ipcMain.handle('learning:sessions:get', (_event, id) => store.getSessionDetail(z.string().uuid().parse(id)))
   ipcMain.handle('learning:sessions:delete', (_event, id) => store.deleteSession(z.string().uuid().parse(id)))
-  ipcMain.handle('learning:vocabulary:list', (_event, filter) => store.listVocabulary(z.object({ familiarity: z.enum(['unfamiliar', 'learning', 'mastered']).optional(), dueOnly: z.boolean().optional(), text: z.string().max(500).optional() }).optional().parse(filter)))
+  ipcMain.handle('learning:vocabulary:list', (_event, filter) => {
+    const vocabulary = store.listVocabulary(z.object({ familiarity: z.enum(['unfamiliar', 'learning', 'mastered']).optional(), dueOnly: z.boolean().optional(), text: z.string().max(500).optional() }).optional().parse(filter))
+    return vocabulary.map((item) => {
+      if (item.meaning) return item
+      const meaning = learning.lookupLocal(item.term)?.definitions.join('；')
+      return meaning ? store.saveVocabularyMeaning(item.id, meaning) : item
+    })
+  })
   ipcMain.handle('learning:vocabulary:update', (_event, id, familiarity) => store.updateVocabularyFamiliarity(z.string().uuid().parse(id), z.enum(['unfamiliar', 'learning', 'mastered']).parse(familiarity)))
+  ipcMain.handle('learning:vocabulary:review', (_event, id, rating) => store.reviewVocabulary(z.string().uuid().parse(id), z.enum(['again', 'hard', 'good', 'easy']).parse(rating)))
   ipcMain.handle('learning:vocabulary:queue', () => store.getReviewQueue())
   ipcMain.handle('learning:dashboard', (_event, period) => store.getLearningDashboard(z.enum(['week', 'month']).parse(period)))
   ipcMain.handle('learning:next-practice', (_event, id) => store.createNextPracticeDraft(z.string().uuid().parse(id)))
@@ -464,6 +598,10 @@ function installIpc(): void {
   ipcMain.handle('archive:choose-directory', () => chooseArchiveDirectory())
   ipcMain.handle('providers:get', () => settings.get())
   ipcMain.handle('providers:save', (_event, input) => settings.save(z.object({ llmBaseUrl: z.string().max(2_000).optional(), llmModel: z.string().max(200).optional(), llmApiKey: z.string().max(2_000).optional(), clearLlmApiKey: z.boolean().optional() }).parse(input)))
+  ipcMain.handle('providers:models', async (_event, input) => {
+    const parsed = z.object({ llmBaseUrl: z.string().trim().min(1).max(2_000), llmApiKey: z.string().max(2_000).optional() }).parse(input)
+    return discoverProviderModels(parsed.llmBaseUrl, parsed.llmApiKey || settings.getSecrets().llmApiKey || '')
+  })
   ipcMain.handle('data:clear', () => { if (activeSession) throw new Error('End the active practice before clearing data.'); store.clear(); settings.clear(); appSettings.clear(); subtitle = defaultSubtitlePreferences; events = []; practiceController.reset(); broadcast('subtitle:settings', subtitle); return setConnection(appSettings.connection('chatgpt-web', true)) })
 }
 

@@ -26,4 +26,21 @@ describe('subtitleWordTokens', () => {
       { text: '!', clickable: false }
     ])
   })
+
+  it('keeps hyphenated terms and versioned product names together for lookup', () => {
+    expect(subtitleWordTokens('Use well-known tools such as GPT-4.')).toEqual([
+      { text: 'Use', clickable: true },
+      { text: ' ', clickable: false },
+      { text: 'well-known', clickable: true },
+      { text: ' ', clickable: false },
+      { text: 'tools', clickable: true },
+      { text: ' ', clickable: false },
+      { text: 'such', clickable: true },
+      { text: ' ', clickable: false },
+      { text: 'as', clickable: true },
+      { text: ' ', clickable: false },
+      { text: 'GPT-4', clickable: true },
+      { text: '.', clickable: false }
+    ])
+  })
 })

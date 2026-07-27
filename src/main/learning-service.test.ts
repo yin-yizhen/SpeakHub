@@ -29,6 +29,12 @@ describe('review response boundary', () => {
 })
 
 describe('lookup response boundary', () => {
+  it('exposes built-in dictionary results for persisted vocabulary backfill without network fallback', () => {
+    const service = new LearningService(settings({ hasLlmKey: false }), 'resources/dictionaries/ecdict-en-zh')
+
+    expect(service.lookupLocal('word')).toMatchObject({ query: 'word', definitions: expect.any(Array) })
+  })
+
   it('uses the built-in dictionary without provider credentials', async () => {
     const service = new LearningService(settings({ hasLlmKey: false }), 'resources/dictionaries/ecdict-en-zh')
 

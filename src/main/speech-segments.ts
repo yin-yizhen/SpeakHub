@@ -1,8 +1,13 @@
 const sentenceBoundary = /[。！？.!?；;]/
-const softBoundary = /[，,、\s]/
+const clauseBoundary = /[，,、：:\r\n]/
+const fallbackBoundary = /[，,、：:\s]/
+const minimumClauseLength = 10
+const firstSegmentMaxLength = 28
+const followingSegmentMaxLength = 52
 
 export class SpeechSegmenter {
   private pending = ''
+  private emittedSegments = 0
 
   push(delta: string): string[] {
     this.pending += delta
@@ -12,16 +17,25 @@ export class SpeechSegmenter {
       for (let index = 0; index < this.pending.length; index += 1) {
         if (sentenceBoundary.test(this.pending[index])) { boundary = index + 1; break }
       }
-      if (boundary < 0 && this.pending.length > 120) {
-        for (let index = 119; index >= 0; index -= 1) {
-          if (softBoundary.test(this.pending[index])) { boundary = index + 1; break }
+      if (boundary < 0) {
+        for (let index = minimumClauseLength - 1; index < this.pending.length; index += 1) {
+          if (clauseBoundary.test(this.pending[index])) { boundary = index + 1; break }
         }
-        if (boundary < 0) boundary = 120
+      }
+      const maximumLength = this.emittedSegments === 0 ? firstSegmentMaxLength : followingSegmentMaxLength
+      if (boundary < 0 && this.pending.length >= maximumLength) {
+        for (let index = maximumLength; index >= minimumClauseLength - 1; index -= 1) {
+          if (fallbackBoundary.test(this.pending[index])) { boundary = index + 1; break }
+        }
+        if (boundary < 0) boundary = maximumLength
       }
       if (boundary < 0) break
       const segment = this.pending.slice(0, boundary).trim()
       this.pending = this.pending.slice(boundary)
-      if (segment) segments.push(segment)
+      if (segment) {
+        segments.push(segment)
+        this.emittedSegments += 1
+      }
     }
     return segments
   }

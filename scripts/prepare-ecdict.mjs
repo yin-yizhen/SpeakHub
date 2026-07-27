@@ -54,7 +54,7 @@ for (const line of lines) {
   const cells = parseCsvLine(line)
   const word = cells[wordIndex]?.trim().toLowerCase()
   const translation = cells[translationIndex]?.trim()
-  if (!word || !/^[a-z][a-z' -]*$/.test(word) || !translation) continue
+  if (!word || !/^[a-z][a-z0-9' .-]*$/.test(word) || !translation) continue
   const phonetic = cells[phoneticIndex]?.trim() ?? ''
   const exchange = cells[exchangeIndex]?.trim() ?? ''
   const bucket = bucketName(word)

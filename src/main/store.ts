@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import type { CorrectionStrength, HistorySearchQuery, LearningDashboard, LearningPeriod, NextPracticeDraft, PracticeProfile, PracticeSession, ReviewResult, SessionArchiveDetail, SessionArchiveSummary, TranscriptEvent, VocabularyFamiliarity, VocabularyItem } from '../shared/types'
+import type { CorrectionStrength, HistorySearchQuery, LearningDashboard, LearningPeriod, NextPracticeDraft, PracticeProfile, PracticeSession, ReviewResult, SessionArchiveDetail, SessionArchiveSummary, TranscriptEvent, VocabularyFamiliarity, VocabularyItem, VocabularyReviewRating } from '../shared/types'
 
 type IndexedSession = { fileName: string; modifiedAt: number; detail: SessionArchiveDetail; searchText: string }
 type LearningIndex = { version: 1; sessions: IndexedSession[]; vocabulary: VocabularyItem[] }
@@ -169,6 +169,25 @@ export class SpeakSubStore {
     return structuredClone(item)
   }
 
+  reviewVocabulary(id: string, rating: VocabularyReviewRating): VocabularyItem {
+    const item = this.index.vocabulary.find((candidate) => candidate.id === id)
+    if (!item) throw new Error('The saved vocabulary item was not found.')
+    const schedule: Record<VocabularyReviewRating, { familiarity: VocabularyFamiliarity; days: number }> = {
+      again: { familiarity: 'unfamiliar', days: 0 }, hard: { familiarity: 'learning', days: 1 }, good: { familiarity: 'learning', days: 3 }, easy: { familiarity: 'mastered', days: 14 }
+    }
+    const next = schedule[rating]; const now = this.now()
+    item.familiarity = next.familiarity; item.lastReviewedAt = now.toISOString(); item.nextReviewAt = new Date(now.getTime() + next.days * 86_400_000).toISOString()
+    this.writeIndex()
+    return structuredClone(item)
+  }
+
+  saveVocabularyMeaning(id: string, meaning: string): VocabularyItem {
+    const item = this.index.vocabulary.find((candidate) => candidate.id === id)
+    if (!item) throw new Error('The saved vocabulary item was not found.')
+    if (item.meaning !== meaning) { item.meaning = meaning; this.writeIndex() }
+    return structuredClone(item)
+  }
+
   getReviewQueue(): VocabularyItem[] { return this.listVocabulary({ dueOnly: true }) }
 
   getLearningDashboard(period: LearningPeriod): LearningDashboard {
@@ -212,10 +231,10 @@ export class SpeakSubStore {
 
   private writeSession(session: PracticeSession, review?: ReviewResult): void {
     const events = this.eventsForSession(session.id).filter((event) => event.status === 'complete'); const favorites = this.favoriteWordsForSession(session.id)
-    const transcript = events.length ? events.map((event) => `### ${event.speaker === 'assistant' ? 'AI' : 'Me'} at ${event.receivedAt}\n\n${event.text}`).join('\n\n') : '_No supported page text was captured._'
+    const transcript = events.length ? events.map((event) => `### ${event.speaker === 'assistant' ? `AI${event.interrupted ? ' · 已打断' : ''}` : 'Me'} at ${event.receivedAt}\n\n${event.text}`).join('\n\n') : '_No supported page text was captured._'
     const favoritesSection = favorites.length ? `\n\n## Saved vocabulary\n\n${favorites.map((word) => `- ${word}`).join('\n')}` : ''
     const reviewSection = review ? `\n\n## Review\n\n**Topic:** ${review.topic}\n\n${review.summary}\n\n### Corrections\n\n${review.issues.map((issue) => `- ${issue.original} -> ${issue.improved}: ${issue.reason}`).join('\n')}\n\n### Vocabulary\n\n${review.vocabulary.map((item) => `- ${item.term}: ${item.meaning}${item.example ? `\n  - Example: ${item.example}` : ''}`).join('\n')}\n\n### Next practice\n\n${review.nextPractice}` : ''
-    const metadata = { ...session, favorites, events: events.map(({ speaker, text, receivedAt }) => ({ speaker, text, receivedAt })), review }
+    const metadata = { ...session, favorites, events: events.map(({ speaker, text, receivedAt, interrupted }) => ({ speaker, text, receivedAt, interrupted })), review }
     const markdown = `---\nid: ${session.id}\nstartedAt: ${session.startedAt}\nendedAt: ${session.endedAt ?? ''}\ncorrectionStrength: ${session.correctionStrength}\ntopic: ${JSON.stringify(session.topic ?? '口语练习')}\nlevel: ${session.level ?? ''}\nsource: ${session.source ?? ''}\nmode: ${session.mode ?? ''}\n---\n\n<!-- speaksub-session:${encodePayload(metadata)} -->\n\n# Speaking practice\n\n## Transcript\n\n${transcript}${favoritesSection}${reviewSection}\n`
     this.atomicWrite(this.currentPath, markdown)
   }
@@ -225,7 +244,7 @@ export class SpeakSubStore {
     const field = (name: string) => markdown.match(new RegExp(`^${name}:\\s*(.*)$`, 'm'))?.[1]?.trim()
     const stringField = (name: string, fallback = '') => { const value = field(name); if (!value) return fallback; try { return JSON.parse(value) as string } catch { return value } }
     const startedAt = embedded?.startedAt ?? field('startedAt') ?? statSync(path).birthtime.toISOString(); const endedAt = embedded?.endedAt || field('endedAt') || undefined
-    const transcript = embedded?.events ?? [...markdown.matchAll(/### (AI|Me) at ([^\n]+)\n\n([\s\S]*?)(?=\n\n### |\n\n## |$)/g)].map((match) => ({ speaker: match[1] === 'AI' ? 'assistant' as const : 'user' as const, receivedAt: match[2], text: match[3].trim() }))
+    const transcript = embedded?.events ?? [...markdown.matchAll(/### (AI|Me)( · 已打断)? at ([^\n]+)\n\n([\s\S]*?)(?=\n\n### |\n\n## |$)/g)].map((match) => ({ speaker: match[1] === 'AI' ? 'assistant' as const : 'user' as const, interrupted: Boolean(match[2]), receivedAt: match[3], text: match[4].trim() }))
     const favorites = embedded?.favorites ?? (markdown.match(/## Saved vocabulary\n\n([\s\S]*?)(?=\n\n## |$)/)?.[1]?.split('\n').filter((line) => line.startsWith('- ')).map((line) => line.slice(2).trim()) ?? [])
     const status = basename(path).startsWith('speaksub-interrupted-') ? 'interrupted' as const : 'completed' as const
     const review = embedded?.review

@@ -2,11 +2,16 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { SpeakSubApi } from '../shared/types'
 
 const api: SpeakSubApi = {
-  startPractice: (topic, level, strength, source, mode, focus) => ipcRenderer.invoke('practice:start', topic, level, strength, source, mode, focus),
+  startPractice: (topic, level, strength, source, mode, focus, prompt) => ipcRenderer.invoke('practice:start', topic, level, strength, source, mode, focus, prompt),
+  getPromptTemplates: () => ipcRenderer.invoke('practice:templates:get'),
+  savePromptTemplates: (templates) => ipcRenderer.invoke('practice:templates:save', templates),
+  getPracticePreferences: () => ipcRenderer.invoke('practice:preferences:get'),
+  savePracticePreferences: (preferences) => ipcRenderer.invoke('practice:preferences:save', preferences),
   sendPracticeMessage: (message) => ipcRenderer.invoke('practice:sendMessage', message),
   sendApiMessage: (message) => ipcRenderer.invoke('api:sendMessage', message),
   startVoiceCapture: () => ipcRenderer.invoke('voice:capture:start'),
   stopVoiceCapture: () => ipcRenderer.invoke('voice:capture:stop'),
+  reportVoiceCaptureStatus: (status) => ipcRenderer.invoke('voice:capture:status', status),
   sendVoiceAudio: (chunk) => ipcRenderer.invoke('voice:audio', chunk),
   notifyVoicePlaybackEnded: (chunkId) => ipcRenderer.invoke('voice:playback:ended', chunkId),
   getSpeechAssetState: () => ipcRenderer.invoke('speech-assets:get'),
@@ -29,6 +34,7 @@ const api: SpeakSubApi = {
   deleteSession: (id) => ipcRenderer.invoke('learning:sessions:delete', id),
   listVocabulary: (filter) => ipcRenderer.invoke('learning:vocabulary:list', filter),
   updateVocabularyFamiliarity: (id, familiarity) => ipcRenderer.invoke('learning:vocabulary:update', id, familiarity),
+  reviewVocabulary: (id, rating) => ipcRenderer.invoke('learning:vocabulary:review', id, rating),
   getReviewQueue: () => ipcRenderer.invoke('learning:vocabulary:queue'),
   getLearningDashboard: (period) => ipcRenderer.invoke('learning:dashboard', period),
   createNextPracticeDraft: (sessionId) => ipcRenderer.invoke('learning:next-practice', sessionId),
@@ -36,6 +42,7 @@ const api: SpeakSubApi = {
   chooseArchiveDirectory: () => ipcRenderer.invoke('archive:choose-directory'),
   getProviderSettings: () => ipcRenderer.invoke('providers:get'),
   saveProviderSettings: (settings) => ipcRenderer.invoke('providers:save', settings),
+  discoverProviderModels: (input) => ipcRenderer.invoke('providers:models', input),
   saveMicrophoneShortcut: (shortcut) => ipcRenderer.invoke('microphone:shortcut:save', shortcut),
   toggleMicrophoneGate: () => ipcRenderer.invoke('microphone:toggle'),
   setMicrophoneGate: (active) => ipcRenderer.invoke('microphone:set', active),
@@ -48,7 +55,7 @@ const api: SpeakSubApi = {
   onVoiceAudio: (listener) => { const handler = (_: Electron.IpcRendererEvent, chunk: Parameters<typeof listener>[0]) => listener(chunk); ipcRenderer.on('voice:audio', handler); return () => ipcRenderer.removeListener('voice:audio', handler) },
   onSpeechAssetState: (listener) => { const handler = (_: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state); ipcRenderer.on('speech-assets:state', handler); return () => ipcRenderer.removeListener('speech-assets:state', handler) },
   onVoicePhase: (listener) => { const handler = (_: Electron.IpcRendererEvent, phase: Parameters<typeof listener>[0]) => listener(phase); ipcRenderer.on('voice:phase', handler); return () => ipcRenderer.removeListener('voice:phase', handler) },
-  onVoiceInterrupt: (listener) => { const handler = () => listener(); ipcRenderer.on('voice:interrupt', handler); return () => ipcRenderer.removeListener('voice:interrupt', handler) },
+  onVoiceInterrupt: (listener) => { const handler = (_: Electron.IpcRendererEvent, generation: number) => listener(generation); ipcRenderer.on('voice:interrupt', handler); return () => ipcRenderer.removeListener('voice:interrupt', handler) },
   onMicrophoneGateState: (listener) => { const handler = (_: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state); ipcRenderer.on('microphone:state', handler); return () => ipcRenderer.removeListener('microphone:state', handler) }
 }
 

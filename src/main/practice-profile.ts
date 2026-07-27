@@ -2,12 +2,13 @@ import { z } from 'zod'
 import type { PracticeProfile } from '../shared/types'
 
 export const practiceProfileSchema = z.object({
-  topic: z.enum(['日常聊天', '旅行英语', '面试英语', '职场会议', '雅思口语', '自由闲聊', '情景角色扮演']),
+  topic: z.string().trim().min(1).max(80),
   level: z.enum(['A1', 'A2', 'B1', 'B2', 'C1']),
   correctionStrength: z.enum(['light', 'normal', 'strict']),
   source: z.enum(['chatgpt-web', 'api-direct']),
   mode: z.enum(['text', 'voice']),
-  focus: z.string().trim().max(2_000).optional()
+  focus: z.string().trim().max(2_000).optional(),
+  prompt: z.string().trim().min(1).max(8_000).optional()
 })
 
 const prompts: Record<PracticeProfile['topic'], string> = {
@@ -24,7 +25,8 @@ export function parsePracticeProfile(input: unknown): PracticeProfile {
   return practiceProfileSchema.parse(input)
 }
 
-export function buildPracticePrompt(profile: Pick<PracticeProfile, 'topic' | 'level' | 'correctionStrength' | 'focus'>): string {
+export function buildPracticePrompt(profile: Pick<PracticeProfile, 'topic' | 'level' | 'correctionStrength' | 'focus' | 'prompt'>): string {
+  if ('prompt' in profile && profile.prompt) return `${profile.prompt}${profile.focus ? `\n\n本次重点：\n${profile.focus}` : ''}`
   const correction = profile.correctionStrength === 'light'
     ? 'Correct only mistakes that block understanding.'
     : profile.correctionStrength === 'strict'

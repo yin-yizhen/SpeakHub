@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { CefrLevel, HistorySearchQuery, LearningDashboard, LearningPeriod, NextPracticeDraft, PracticeMode, PracticeSource, SessionArchiveDetail, SessionArchiveSummary, VocabularyFamiliarity, VocabularyItem } from '../shared/types'
+import type { CefrLevel, HistorySearchQuery, LearningDashboard, LearningPeriod, NextPracticeDraft, PracticeMode, PracticeSource, SessionArchiveDetail, SessionArchiveSummary, VocabularyFamiliarity, VocabularyItem, VocabularyReviewRating } from '../shared/types'
 
 type LearningView = 'overview' | 'history' | 'vocabulary'
 
@@ -36,6 +36,10 @@ export function LearningCenter({ onUseDraft }: { onUseDraft: (draft: NextPractic
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
   const [deleteTarget, setDeleteTarget] = useState<SessionArchiveSummary>()
+  const [reviewQueue, setReviewQueue] = useState<VocabularyItem[]>()
+  const [reviewIndex, setReviewIndex] = useState(0)
+  const [reviewRevealed, setReviewRevealed] = useState(false)
+  const [reviewedCount, setReviewedCount] = useState(0)
 
   const refresh = async () => {
     setLoading(true); setError(undefined)
@@ -67,10 +71,18 @@ export function LearningCenter({ onUseDraft }: { onUseDraft: (draft: NextPractic
     try { await window.speaksub.deleteSession(deleteTarget.id); setDeleteTarget(undefined); setSelected(undefined); await refresh() }
     catch (reason) { setError(reason instanceof Error ? reason.message : '删除练习失败。') }
   }
-  const reviewWord = async (item: VocabularyItem, next: VocabularyFamiliarity) => {
-    try { await window.speaksub.updateVocabularyFamiliarity(item.id, next); await refresh() }
-    catch (reason) { setError(reason instanceof Error ? reason.message : '词汇状态更新失败。') }
+  const startReview = async () => {
+    try { const queue = await window.speaksub.listVocabulary({ dueOnly: true }); setReviewQueue(queue); setReviewIndex(0); setReviewRevealed(false); setReviewedCount(0); setError(undefined) }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '无法加载复习队列。') }
   }
+  const rateReview = async (rating: VocabularyReviewRating) => {
+    const item = reviewQueue?.[reviewIndex]
+    if (!item || reviewRevealed) return
+    try { await window.speaksub.reviewVocabulary(item.id, rating); setReviewRevealed(true); setReviewedCount((count) => count + 1); setError(undefined) }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '词汇复习结果保存失败。') }
+  }
+  const nextReviewCard = () => { setReviewIndex((index) => index + 1); setReviewRevealed(false) }
+  const exitReview = () => { setReviewQueue(undefined); setReviewIndex(0); setReviewRevealed(false); void refresh() }
 
   return <section className="learning-center">
     <header className="learning-header"><div><p className="kicker">LOCAL LEARNING LOOP</p><h1>学习中心</h1><p>把每次开口留下的错误、词汇和进步，变成下一次练习的起点。</p></div><nav aria-label="学习中心页面">{(['overview', 'history', 'vocabulary'] as LearningView[]).map((item) => <button key={item} className={view === item ? 'active' : ''} onClick={() => { setView(item); setQuery('') }}>{item === 'overview' ? '总览' : item === 'history' ? '历史' : '词汇'}</button>)}</nav></header>
@@ -92,7 +104,11 @@ export function LearningCenter({ onUseDraft }: { onUseDraft: (draft: NextPractic
       <section className="session-detail">{selected ? <><header><div><p className="kicker">FULL SESSION REVIEW</p><h2>{selected.topic}</h2><span>{new Date(selected.startedAt).toLocaleString()} · {selected.source ? sourceLabels[selected.source] : '旧记录'} · {selected.level ?? '未记录等级'}</span></div><button className="primary-action" onClick={() => void useDraft(selected.id)}>准备下一次练习</button></header>{selected.review?.assessment && <div className="assessment-line"><strong>{selected.review.assessment.estimatedCefr}</strong>{Object.entries(selected.review.assessment.scores).map(([key, value]) => <span key={key}>{key} {value}</span>)}</div>}<section><h3>复盘总结</h3><p>{selected.review?.summary ?? '这次练习没有生成模型复盘。'}</p></section>{selected.review?.issues.length ? <section><h3>全部纠错</h3>{selected.review.issues.map((issue, index) => <div className="review-issue" key={index}><span>{issue.original}</span><strong>{issue.improved}</strong><small>{issue.reason}</small></div>)}</section> : null}{selected.favoriteWords.length ? <section><h3>收藏词汇</h3><div className="word-chips">{selected.favoriteWords.map((word) => <span key={word}>{word}</span>)}</div></section> : null}<section><h3>完整对话</h3><div className="full-transcript">{selected.transcript.length ? selected.transcript.map((line, index) => <p className={line.speaker} key={index}><b>{line.speaker === 'assistant' ? 'AI' : 'Me'}</b><span>{line.text}</span></p>) : <p className="learning-empty">没有捕获到对话文本。</p>}</div></section>{selected.review?.nextPractice && <section className="next-practice-note"><h3>下一次重点</h3><p>{selected.review.nextPractice}</p></section>}</> : <div className="detail-placeholder"><span>选择一条练习</span><p>这里会显示完整对话、所有纠错、收藏词和下一次建议。</p></div>}</section>
     </div>}
 
-    {!loading && view === 'vocabulary' && <div className="vocabulary-view"><div className="vocabulary-toolbar"><input aria-label="搜索收藏词" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索单词或释义"/><div><button className={dueOnly ? 'active' : ''} onClick={() => setDueOnly(!dueOnly)}>待复习 {dashboard?.dueVocabulary ?? 0}</button>{(['unfamiliar', 'learning', 'mastered'] as VocabularyFamiliarity[]).map((item) => <button key={item} className={familiarity === item ? 'active' : ''} onClick={() => setFamiliarity(familiarity === item ? undefined : item)}>{familiarityLabels[item]}</button>)}</div></div>{vocabulary.length ? <div className="vocabulary-list">{vocabulary.map((item, index) => <article key={item.id} style={{ '--row-index': index } as React.CSSProperties}><div className="word-index">{String(index + 1).padStart(2, '0')}</div><div className="word-copy"><small>{familiarityLabels[item.familiarity]} · 收藏 {item.occurrenceCount} 次</small><h2>{item.term}</h2><p>{item.meaning ?? '完成带复盘的练习后补充释义。'}</p>{item.example && <blockquote>{item.example}</blockquote>}<span>下次复习：{new Date(item.nextReviewAt).toLocaleDateString()}</span></div><div className="familiarity-actions"><small>这次记得怎么样？</small>{(['unfamiliar', 'learning', 'mastered'] as VocabularyFamiliarity[]).map((next) => <button key={next} className={item.familiarity === next ? 'active' : ''} onClick={() => void reviewWord(item, next)}>{familiarityLabels[next]}</button>)}</div></article>)}</div> : <div className="vocabulary-empty"><h2>{dueOnly ? '今天没有待复习词汇' : '词汇本还是空的'}</h2><p>{dueOnly ? '继续练习，新的复习任务会按熟悉度自动安排。' : '在悬浮字幕里点击单词并收藏，它会出现在这里。'}</p></div>}</div>}
+    {!loading && view === 'vocabulary' && <div className="vocabulary-view">{reviewQueue ? (() => {
+      const item = reviewQueue[reviewIndex]
+      if (!item) return <div className="vocabulary-review-complete"><p className="kicker">REVIEW COMPLETE</p><h2>本轮复习完成</h2><p>你完成了 {reviewedCount} 个待复习词。</p><button className="primary-action" onClick={exitReview}>返回词汇列表</button></div>
+      return <section className="vocabulary-card" aria-label="词汇复习卡片"><header><button className="quiet-action" onClick={exitReview}>退出复习</button><span>{reviewIndex + 1} / {reviewQueue.length}</span></header><div className="vocabulary-card-body"><p className="kicker">RECALL THE WORD</p><h2>{item.term}</h2>{reviewRevealed ? <div className="vocabulary-answer"><p>{item.meaning ?? '暂无中文释义'}</p>{item.example && <blockquote>{item.example}</blockquote>}</div> : <p className="vocabulary-card-hint">先回忆中文意思，再选择你的记忆程度。</p>}</div>{reviewRevealed ? <footer><button className="primary-action" onClick={nextReviewCard}>下一个单词</button></footer> : <footer className="review-ratings">{([{ rating: 'again', label: '重来' }, { rating: 'hard', label: '困难' }, { rating: 'good', label: '一般' }, { rating: 'easy', label: '简单' }] as Array<{ rating: VocabularyReviewRating; label: string }>).map(({ rating, label }) => <button key={rating} onClick={() => void rateReview(rating)}>{label}</button>)}</footer>}</section>
+    })() : <><div className="vocabulary-toolbar"><input aria-label="搜索收藏词" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索单词或释义"/><div><button className={dueOnly ? 'active' : ''} onClick={() => setDueOnly(!dueOnly)}>待复习 {dashboard?.dueVocabulary ?? 0}</button><button className="primary-action vocabulary-start" disabled={!dashboard?.dueVocabulary} onClick={() => void startReview()}>开始复习</button>{(['unfamiliar', 'learning', 'mastered'] as VocabularyFamiliarity[]).map((item) => <button key={item} className={familiarity === item ? 'active' : ''} onClick={() => setFamiliarity(familiarity === item ? undefined : item)}>{familiarityLabels[item]}</button>)}</div></div>{vocabulary.length ? <div className="vocabulary-list">{vocabulary.map((item, index) => <article key={item.id} style={{ '--row-index': index } as React.CSSProperties}><div className="word-index">{String(index + 1).padStart(2, '0')}</div><div className="word-copy"><small>{familiarityLabels[item.familiarity]} · 收藏 {item.occurrenceCount} 次</small><h2>{item.term}</h2><p>{item.meaning ?? '暂无中文释义'}</p>{item.example && <blockquote>{item.example}</blockquote>}<span>下次复习：{new Date(item.nextReviewAt).toLocaleDateString()}</span></div></article>)}</div> : <div className="vocabulary-empty"><h2>{dueOnly ? '今天没有待复习词汇' : '词汇本还是空的'}</h2><p>{dueOnly ? '继续练习，新的复习任务会按熟悉度自动安排。' : '在悬浮字幕里点击单词并收藏，它会出现在这里。'}</p></div>}</>}</div>}
 
     {deleteTarget && <div className="confirm-layer" role="dialog" aria-modal="true" aria-labelledby="delete-title"><div><p className="kicker">PERMANENT DELETE</p><h2 id="delete-title">永久删除这次练习？</h2><p>{deleteTarget.topic} · {new Date(deleteTarget.startedAt).toLocaleString()}</p><small>对应 Markdown、复盘和词汇关联会被删除，此操作无法撤销。</small><footer><button className="quiet-action" onClick={() => setDeleteTarget(undefined)}>取消</button><button className="danger-action" onClick={() => void deleteSession()}>永久删除</button></footer></div></div>}
   </section>

@@ -75,9 +75,23 @@ body { margin: 0; background: transparent; }
 }
 
 .subtitle-shell.locked .subtitle-toolbar-zone {
-  width: auto;
-  height: 18px;
+  align-self: center;
+  width: 78px;
+  height: 48px;
   margin-bottom: 0;
+}
+
+.subtitle-lock-handle {
+  display: flex;
+  justify-content: center;
+  height: 18px;
+  cursor: pointer;
+  transform: translateY(8px);
+}
+
+.subtitle-lock-handle .subtitle-drag-bars {
+  -webkit-app-region: no-drag;
+  cursor: pointer;
 }
 
 .subtitle-drag-zone {
@@ -176,10 +190,13 @@ body { margin: 0; background: transparent; }
 
 .subtitle-unlock {
   position: absolute;
-  top: 2px;
+  top: 28px;
   left: 50%;
   z-index: 4;
-  padding: 1px 4px;
+  min-width: 58px;
+  min-height: 20px;
+  padding: 2px 6px;
+  border-radius: 6px;
   color: rgba(230, 240, 233, .46);
   background: transparent;
   font-size: 9px;
@@ -405,3 +422,39 @@ body { margin: 0; background: transparent; }
 .subtitle-text { background: rgba(144, 224, 210, .24); }.subtitle-line.user .subtitle-text { background: rgba(255, 202, 170, .25); }.subtitle-word:hover, .subtitle-word:focus-visible { color: #087f7a; background: rgba(21,156,147,.16); }
 .lookup-popover { border-color: rgba(255,255,255,.78); color: #163943; background: rgba(249, 254, 252, .98); box-shadow: 0 12px 32px rgba(21,105,99,.2); }.lookup-popover p { color: #54747a; }.lookup-popover small { color: #159c93; }.lookup-actions button { color: white; background: #159c93; }.lookup-actions small { color: #bd6950; }
 .subtitle-empty { color: #78979c; }.subtitle-composer { border-color: rgba(21,156,147,.36); background: rgba(221,245,240,.65); box-shadow: inset 0 1px rgba(255,255,255,.8); }.subtitle-composer input { color: #163943; background: rgba(255,255,255,.83); }.subtitle-composer input::placeholder { color: #78979c; }.subtitle-composer button { color: white; background: #159c93; transition: transform .2s cubic-bezier(.16,1,.3,1), background .2s ease, box-shadow .2s ease; }.subtitle-composer button:hover:not(:disabled) { background: #087f7a; box-shadow: 0 7px 15px rgba(11,127,122,.18); transform: translateY(-1px); }.subtitle-composer button:active { transform: translateY(1px) scale(.975); }
+
+/* Keep the subtitle panel's scrollable transcript and dictionary panel visible
+   and consistent with the sea-glass theme. */
+.subtitle-transcript,
+.lookup-popover {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(21, 156, 147, .7) rgba(221, 245, 240, .5);
+}
+
+.subtitle-transcript::-webkit-scrollbar,
+.lookup-popover::-webkit-scrollbar {
+  display: block;
+  width: 10px;
+}
+
+.subtitle-transcript::-webkit-scrollbar-track,
+.lookup-popover::-webkit-scrollbar-track {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(221, 245, 240, .5);
+  background-clip: padding-box;
+}
+
+.subtitle-transcript::-webkit-scrollbar-thumb,
+.lookup-popover::-webkit-scrollbar-thumb {
+  min-height: 30px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(21, 156, 147, .7);
+  background-clip: padding-box;
+}
+
+.subtitle-transcript::-webkit-scrollbar-thumb:hover,
+.lookup-popover::-webkit-scrollbar-thumb:hover {
+  background-color: #087f7a;
+}

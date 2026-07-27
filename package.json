@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Personal Windows speaking subtitle prototype",
-  "author": "SpeakSub",
+  "author": "SpeakHub",
   "main": "./out/main/index.js",
   "scripts": {
     "prepare:ecdict": "node scripts/prepare-ecdict.mjs",
@@ -18,7 +18,8 @@
   },
   "build": {
     "appId": "com.speaksub.app",
-    "productName": "SpeakSub",
+    "productName": "SpeakHub",
+    "icon": "resources/app-icon.ico",
     "directories": {
       "output": "release"
     },

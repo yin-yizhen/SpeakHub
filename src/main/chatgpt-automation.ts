@@ -15,11 +15,18 @@ const endVoiceSelector = [
 ].join(', ')
 const newChatSelector = 'a[href="/"], button[data-testid*="new-chat" i], button[aria-label*="new chat" i], button[aria-label*="新聊天"]'
 
+const deleteLabels = ['delete', '删除']
+const conversationMenuSelector = 'button[data-testid*="conversation-options" i], button[data-testid*="conversation-menu" i], button[aria-label*="more" i], button[aria-label*="options" i], button[aria-label*="menu" i], button[aria-label*="更多"], button[aria-label*="选项"]'
+
+function labelOf(element: Element): string {
+  return [element.textContent, element.getAttribute('aria-label'), element.getAttribute('title'), element.getAttribute('data-testid')].filter(Boolean).join(' ').trim().toLowerCase()
+}
+
 export function scoreComposer(element: HTMLElement): number {
   const attributes = [element.id, element.getAttribute('placeholder'), element.getAttribute('aria-label'), element.getAttribute('aria-placeholder'), element.getAttribute('data-placeholder')].filter(Boolean).join(' ').toLowerCase()
   let score = 0
   if (element.id === 'prompt-textarea') score += 200
-  if (/问问\s*chatgpt|message\s*chatgpt|chatgpt/.test(attributes)) score += 160
+  if (/询问\s*chatgpt|message\s*chatgpt|chatgpt/.test(attributes)) score += 160
   if (element.isContentEditable || element.getAttribute('contenteditable') != null) score += 40
   if (element.matches('textarea, input, [role="textbox"]')) score += 25
   return score
@@ -33,10 +40,31 @@ export function findStopButton(root: ParentNode): HTMLButtonElement | undefined 
 export function findVoiceButton(root: ParentNode): HTMLButtonElement | undefined { return root.querySelector<HTMLButtonElement>(voiceSelector) ?? undefined }
 export function findEndVoiceButton(root: ParentNode): HTMLButtonElement | undefined { return root.querySelector<HTMLButtonElement>(endVoiceSelector) ?? undefined }
 
+export function findConversationRow(root: ParentNode, conversationUrl: string): HTMLElement | undefined {
+  const targetPath = new URL(conversationUrl).pathname
+  const link = [...root.querySelectorAll<HTMLAnchorElement>('a[href*="/c/"]')].find((candidate) => {
+    try { return new URL(candidate.href, 'https://chatgpt.com').pathname === targetPath } catch { return false }
+  })
+  if (!link) return undefined
+  let row = link.parentElement
+  while (row && row !== (root instanceof Document ? root.body : root)) {
+    if (row.querySelector(conversationMenuSelector)) return row
+    row = row.parentElement
+  }
+  return undefined
+}
+
 export function findConversationMenuButton(row: ParentNode): HTMLButtonElement | undefined {
-  const buttons = [...row.querySelectorAll<HTMLButtonElement>('button:not([disabled])')]
-  const attributes = (button: HTMLButtonElement) => [button.textContent, button.getAttribute('aria-label'), button.getAttribute('title'), button.getAttribute('data-testid')].filter(Boolean).join(' ').toLowerCase()
-  return buttons.find((button) => /more|options|menu|ellipsis|更多|选项|…/.test(attributes(button))) ?? buttons.at(-1)
+  const buttons = [...row.querySelectorAll<HTMLButtonElement>(conversationMenuSelector)].filter((button) => !button.disabled)
+  return buttons.find((button) => /conversation-options|conversation-menu/.test(labelOf(button))) ?? buttons.find((button) => /more|options|menu|更多|选项/.test(labelOf(button)))
+}
+
+export function findDeleteMenuItem(menu: ParentNode): HTMLElement | undefined {
+  return [...menu.querySelectorAll<HTMLElement>('[role="menuitem"], button, [role="button"]')].find((item) => !('disabled' in item && Boolean((item as HTMLButtonElement).disabled)) && deleteLabels.includes(labelOf(item)))
+}
+
+export function findDeleteConfirmationButton(dialog: ParentNode): HTMLButtonElement | undefined {
+  return [...dialog.querySelectorAll<HTMLButtonElement>('button:not([disabled])')].find((button) => deleteLabels.includes(labelOf(button)))
 }
 
 export function fillComposer(composer: HTMLElement, prompt: string): void {
@@ -53,7 +81,7 @@ const pageComposerLocator = `(() => {
     const attributes = [element.id, element.getAttribute('placeholder'), element.getAttribute('aria-label'), element.getAttribute('aria-placeholder'), element.getAttribute('data-placeholder')].filter(Boolean).join(' ').toLowerCase();
     let value = 0;
     if (element.id === 'prompt-textarea') value += 200;
-    if (/问问\\s*chatgpt|message\\s*chatgpt|chatgpt/.test(attributes)) value += 160;
+    if (/询问\\s*chatgpt|message\\s*chatgpt|chatgpt/.test(attributes)) value += 160;
     if (element.isContentEditable || element.hasAttribute('contenteditable')) value += 40;
     if (element.matches('textarea, input, [role="textbox"]')) value += 25;
     return value;
@@ -115,40 +143,32 @@ const newChatScript = `(() => {
 })()`
 
 const deleteConversationScript = `(targetUrl => new Promise((resolve) => {
-  const target = new URL(targetUrl).pathname;
-  const deadline = Date.now() + 12000;
-  const textOf = element => (element.innerText || element.textContent || element.getAttribute('aria-label') || '').trim().toLowerCase();
+  const targetPath = new URL(targetUrl).pathname;
+  const deadline = Date.now() + 15000;
+  const deleteLabels = ['delete', '删除'];
   const isVisible = element => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none'; };
-  const menuButtonFor = link => {
-    const isMenuButton = button => /more|options|menu|ellipsis|更多|选项|…/i.test([button.innerText, button.textContent, button.getAttribute('aria-label'), button.getAttribute('title'), button.getAttribute('data-testid')].filter(Boolean).join(' '));
-    let ancestor = link.parentElement;
-    while (ancestor && ancestor !== document.body) {
-      const buttons = [...ancestor.querySelectorAll('button:not([disabled])')].filter(isVisible);
-      const named = buttons.find(isMenuButton);
-      if (named) return named;
-      if (buttons.length >= 2) return buttons.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0];
-      ancestor = ancestor.parentElement;
-    }
-    return undefined;
+  const labelOf = element => [element.textContent, element.getAttribute('aria-label'), element.getAttribute('title'), element.getAttribute('data-testid')].filter(Boolean).join(' ').trim().toLowerCase();
+  const targetLink = () => [...document.querySelectorAll('a[href*="/c/"]')].find(anchor => { try { return new URL(anchor.href).pathname === targetPath; } catch { return false; } });
+  const rowFor = link => { let row = link.parentElement; while (row && row !== document.body) { const menu = [...row.querySelectorAll('button[data-testid*="conversation-options" i], button[data-testid*="conversation-menu" i], button[aria-label*="more" i], button[aria-label*="options" i], button[aria-label*="menu" i], button[aria-label*="更多"], button[aria-label*="选项"]')].find(button => isVisible(button) && !button.disabled); if (menu) return { row, menu }; row = row.parentElement; } return undefined; };
+  const openDeleteMenu = () => [...document.querySelectorAll('[role="menu"]')].find(menu => isVisible(menu) && [...menu.querySelectorAll('[role="menuitem"], button, [role="button"]')].some(item => deleteLabels.includes(labelOf(item))));
+  const deleteItem = menu => [...menu.querySelectorAll('[role="menuitem"], button, [role="button"]')].find(item => isVisible(item) && !item.disabled && deleteLabels.includes(labelOf(item)));
+  const deleteDialog = () => [...document.querySelectorAll('[role="dialog"], [aria-modal="true"]')].find(dialog => isVisible(dialog) && [...dialog.querySelectorAll('button:not([disabled])')].some(button => deleteLabels.includes(labelOf(button))));
+  const confirmation = dialog => [...dialog.querySelectorAll('button:not([disabled])')].find(button => isVisible(button) && deleteLabels.includes(labelOf(button)));
+  const fail = message => resolve({ ok: false, message });
+  const wait = check => { const value = check(); if (value) return value; if (Date.now() >= deadline) return undefined; return null; };
+  const findTarget = () => {
+    const link = targetLink();
+    if (!link) return Date.now() >= deadline ? fail('未在 ChatGPT 侧边栏找到已记录的 SpeakSub 对话。') : setTimeout(findTarget, 200);
+    link.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true })); link.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    const target = rowFor(link);
+    if (!target) return Date.now() >= deadline ? fail('找到了目标对话，但未找到其专属更多菜单按钮。') : setTimeout(findTarget, 200);
+    target.row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true })); target.row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); target.menu.click();
+    waitForMenu();
   };
-  const clickNamed = names => {
-    const element = [...document.querySelectorAll('button, [role="menuitem"], [role="button"]')].find(item => isVisible(item) && names.some(name => textOf(item).includes(name)) && !item.disabled);
-    if (element) { element.click(); return true; }
-    return false;
-  };
-  const tick = () => {
-    const link = [...document.querySelectorAll('a[href*="/c/"]')].find(anchor => { try { return new URL(anchor.href).pathname === target; } catch { return false; } });
-    if (!link) { if (Date.now() > deadline) resolve({ ok: false, message: '未在 ChatGPT 侧栏找到上一轮 SpeakSub 对话。' }); else setTimeout(tick, 250); return; }
-    const menu = menuButtonFor(link);
-    if (menu && !menu.dataset.speaksubOpened) { menu.dataset.speaksubOpened = '1'; menu.click(); setTimeout(tick, 200); return; }
-    if (clickNamed(['delete', '删除'])) { setTimeout(() => {
-      if (!clickNamed(['delete', '删除', 'confirm'])) { resolve({ ok: false, message: '找到目标对话，但删除确认未完成。' }); return; }
-      const verifyDeadline = Date.now() + 8000;
-      const verify = () => { const remains = [...document.querySelectorAll('a[href*="/c/"]')].some(anchor => { try { return new URL(anchor.href).pathname === target; } catch { return false; } }); if (!remains) resolve({ ok: true, message: '已删除上一轮 SpeakSub ChatGPT 对话。' }); else if (Date.now() > verifyDeadline) resolve({ ok: false, message: 'ChatGPT 未确认目标对话已删除；记录将保留重试。' }); else setTimeout(verify, 250); }; verify();
-    }, 180); return; }
-    if (Date.now() > deadline) resolve({ ok: false, message: '找到了上一轮对话，但未找到 ChatGPT 删除菜单。' }); else setTimeout(tick, 250);
-  };
-  tick();
+  const waitForMenu = () => { const menu = wait(openDeleteMenu); if (menu === null) return setTimeout(waitForMenu, 150); if (!menu) return fail('目标对话的更多菜单未出现删除操作。'); const item = deleteItem(menu); if (!item) return fail('目标对话的菜单中未找到删除操作。'); item.click(); waitForDialog(); };
+  const waitForDialog = () => { const dialog = wait(deleteDialog); if (dialog === null) return setTimeout(waitForDialog, 150); if (!dialog) return fail('删除确认框未出现。'); const button = confirmation(dialog); if (!button) return fail('删除确认框中未找到确认删除按钮。'); button.click(); verify(); };
+  const verify = () => { if (!targetLink()) return resolve({ ok: true, message: '已删除上一轮 SpeakSub ChatGPT 对话。' }); if (Date.now() >= deadline) return fail('ChatGPT 未确认目标对话已删除；记录将保留重试。'); setTimeout(verify, 200); };
+  findTarget();
 }))`
 
 function pause(milliseconds: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, milliseconds)) }
@@ -160,7 +180,7 @@ export class ChatGPTAutomation {
 
   async fillAndSendPrompt(prompt: string): Promise<AutomationResult> {
     const result = await this.contents.executeJavaScript(focusComposerScript, true) as { focused: boolean; diagnostics: Array<Record<string, unknown>> }
-    if (!result.focused) return { ok: false, message: `未找到底部“问问 ChatGPT”输入框。候选：${JSON.stringify(result.diagnostics)}` }
+    if (!result.focused) return { ok: false, message: `未找到底部“询问 ChatGPT”输入框。候选：${JSON.stringify(result.diagnostics)}` }
     this.contents.insertText(prompt)
     await pause(280)
     const enteredText = await this.contents.executeJavaScript(readComposerScript) as string

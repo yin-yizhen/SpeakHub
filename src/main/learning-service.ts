@@ -37,6 +37,10 @@ export class LearningService {
     throw new Error('The built-in dictionary did not find this word. Configure an OpenAI-compatible LLM for fallback lookup.')
   }
 
+  lookupLocal(query: string): DictionaryResult | undefined {
+    return this.localDictionary?.lookup(query)
+  }
+
   async review(archiveMarkdown: string, strength: string, favorites: string[] = []): Promise<ReviewResult> {
     const savedVocabulary = favorites.length ? favorites.map((word) => `- ${word}`).join('\n') : '(none)'
     const result = await this.askLlm(`You are a concise English speaking coach. Analyze this complete practice archive at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]}}. Scores are integer-like values from 0 to 100 based only on language visible in the transcript; do not claim acoustic pronunciation analysis. Use Chinese for explanations. The vocabulary array must contain explanations only for the saved vocabulary below. Give each saved word a short English example sentence. Do not add other vocabulary; when none is saved, return an empty vocabulary array. Saved vocabulary:\n${savedVocabulary}\nPractice archive Markdown:\n${archiveMarkdown}`)
@@ -45,12 +49,12 @@ export class LearningService {
     return { ...review, vocabulary: review.vocabulary.filter((item) => saved.has(item.term.toLocaleLowerCase())) }
   }
 
-  async chat(events: TranscriptEvent[], topic: string, level: string): Promise<string> {
-    return this.requestLlm(this.chatMessages(events, topic, level))
+  async chat(events: TranscriptEvent[], topic: string, level: string, prompt?: string): Promise<string> {
+    return this.requestLlm(this.chatMessages(events, topic, level, prompt))
   }
 
-  async streamChat(events: TranscriptEvent[], topic: string, level: string, options: { onDelta: (delta: string) => void; signal?: AbortSignal }): Promise<string> {
-    const messages = this.chatMessages(events, topic, level)
+  async streamChat(events: TranscriptEvent[], topic: string, level: string, options: { onDelta: (delta: string) => void; signal?: AbortSignal }, prompt?: string): Promise<string> {
+    const messages = this.chatMessages(events, topic, level, prompt)
     const config = this.requireLlmConfig()
     const body = { model: config.model, messages, stream: true }
     let received = ''
@@ -85,9 +89,9 @@ export class LearningService {
     return this.readNonStreamingResponse(response)
   }
 
-  private chatMessages(events: TranscriptEvent[], topic: string, level: string): LlmMessage[] {
+  private chatMessages(events: TranscriptEvent[], topic: string, level: string, prompt?: string): LlmMessage[] {
     return [
-      { role: 'system', content: `You are a warm bilingual speaking partner. The learner selected ${topic} at CEFR ${level}. Reply naturally in Chinese, English, or a helpful mix matching the learner. Keep each turn concise, ask at most one question, and gently adapt to the learner's level.` },
+      { role: 'system', content: prompt ?? `You are a warm bilingual speaking partner. The learner selected ${topic} at CEFR ${level}. Reply naturally in Chinese, English, or a helpful mix matching the learner. Keep each turn concise, ask at most one question, and gently adapt to the learner's level.` },
       ...events.filter((event) => event.status === 'complete').map((event) => ({ role: event.speaker === 'assistant' ? 'assistant' as const : 'user' as const, content: event.text }))
     ]
   }

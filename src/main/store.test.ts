@@ -40,6 +40,21 @@ describe('Markdown learning archive', () => {
     } finally { rmSync(directory, { recursive: true, force: true }) }
   })
 
+  it('keeps an interrupted assistant reply marked in Markdown and archive metadata', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speaksub-barge-in-'))
+    try {
+      const store = new SpeakSubStore(directory)
+      const session = store.createSession('normal')
+      store.upsertEvent({ id: 'a1', sessionId: session.id, sourceMessageId: 'assistant-1', speaker: 'assistant', text: 'This reply was cut short.', status: 'complete', interrupted: true, receivedAt: '2026-01-01T00:00:00.000Z' })
+      store.endSession(session)
+      store.finalizeSession(session.id)
+
+      const file = readdirSync(directory).find((name) => name.startsWith('speaksub-practice-'))!
+      expect(readFileSync(join(directory, file), 'utf8')).toContain('### AI · 已打断 at')
+      expect(store.getSessionDetail(session.id).transcript).toMatchObject([{ text: 'This reply was cut short.', interrupted: true }])
+    } finally { rmSync(directory, { recursive: true, force: true }) }
+  })
+
   it('turns the active file into one final Markdown after the review is saved', () => {
     const directory = mkdtempSync(join(tmpdir(), 'speaksub-'))
     try {
@@ -83,7 +98,7 @@ describe('Markdown learning archive', () => {
     } finally { rmSync(directory, { recursive: true, force: true }) }
   })
 
-  it('deduplicates vocabulary and schedules the three familiarity levels', () => {
+  it('deduplicates vocabulary, persists dictionary meanings, and schedules four review ratings', () => {
     const directory = mkdtempSync(join(tmpdir(), 'speaksub-'))
     try {
       const now = new Date('2026-07-10T10:00:00.000Z'); const store = new SpeakSubStore(directory, () => now)
@@ -92,7 +107,12 @@ describe('Markdown learning archive', () => {
       const item = store.listVocabulary()[0]
       expect(item).toMatchObject({ normalizedTerm: 'persistent', occurrenceCount: 1, familiarity: 'unfamiliar', meaning: '坚持的' })
       expect(store.updateVocabularyFamiliarity(item.id, 'learning').nextReviewAt).toBe('2026-07-13T10:00:00.000Z')
-      expect(store.updateVocabularyFamiliarity(item.id, 'mastered').nextReviewAt).toBe('2026-07-24T10:00:00.000Z')
+      expect(store.reviewVocabulary(item.id, 'again')).toMatchObject({ familiarity: 'unfamiliar', nextReviewAt: '2026-07-10T10:00:00.000Z' })
+      expect(store.reviewVocabulary(item.id, 'hard')).toMatchObject({ familiarity: 'learning', nextReviewAt: '2026-07-11T10:00:00.000Z' })
+      expect(store.reviewVocabulary(item.id, 'good')).toMatchObject({ familiarity: 'learning', nextReviewAt: '2026-07-13T10:00:00.000Z' })
+      expect(store.reviewVocabulary(item.id, 'easy')).toMatchObject({ familiarity: 'mastered', nextReviewAt: '2026-07-24T10:00:00.000Z' })
+      store.saveVocabularyMeaning(item.id, '坚持不懈的')
+      expect(new SpeakSubStore(directory).listVocabulary()).toMatchObject([{ meaning: '坚持不懈的' }])
     } finally { rmSync(directory, { recursive: true, force: true }) }
   })
 

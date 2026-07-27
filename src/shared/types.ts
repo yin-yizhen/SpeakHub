@@ -4,12 +4,14 @@ export type SubtitleMode = 'assistant' | 'user' | 'both'
 export type SubtitleLayout = 'same-side' | 'split'
 export type SubtitleBackground = 'transparent' | 'glass' | 'solid'
 export type CorrectionStrength = 'light' | 'normal' | 'strict'
+export type PromptTemplateCategory = 'scenario' | 'difficulty' | 'correction'
 export type PracticeSource = 'chatgpt-web' | 'api-direct'
 export type PracticeMode = 'text' | 'voice'
 export type PracticeLifecycle = 'idle' | 'starting' | 'active' | 'ending' | 'error'
 export type WebPracticeSource = Extract<PracticeSource, 'chatgpt-web'>
 export type CefrLevel = 'A1' | 'A2' | 'B1' | 'B2' | 'C1'
 export type VocabularyFamiliarity = 'unfamiliar' | 'learning' | 'mastered'
+export type VocabularyReviewRating = 'again' | 'hard' | 'good' | 'easy'
 export type LearningPeriod = 'week' | 'month'
 export type SessionArchiveStatus = 'completed' | 'interrupted'
 export type ErrorCategory = 'grammar' | 'word-choice' | 'tense' | 'articles' | 'prepositions' | 'fluency' | 'coherence' | 'interaction' | 'other'
@@ -22,6 +24,7 @@ export interface TranscriptEvent {
   text: string
   status: TranscriptStatus
   receivedAt: string
+  interrupted?: boolean
 }
 
 export interface PracticeSession {
@@ -43,9 +46,23 @@ export interface PracticeSessionProfile {
   source: PracticeSource
   mode: PracticeMode
   focus?: string
+  prompt?: string
 }
 
 export interface PracticeProfile extends PracticeSessionProfile {}
+
+export interface PromptTemplate { id: string; name: string; prompt: string }
+export interface PromptTemplates { scenario: PromptTemplate[]; difficulty: PromptTemplate[]; correction: PromptTemplate[] }
+
+export interface PracticePreferences {
+  source: PracticeSource
+  mode: PracticeMode
+  scenarioTemplateId: string
+  difficultyTemplateId: string
+  correctionTemplateId: string
+  focus: string
+  focusEnabled: boolean
+}
 
 export interface ConnectionState {
   ready: boolean
@@ -142,7 +159,7 @@ export interface SessionArchiveSummary {
 }
 
 export interface SessionArchiveDetail extends SessionArchiveSummary {
-  transcript: Array<{ speaker: Speaker; text: string; receivedAt?: string }>
+  transcript: Array<{ speaker: Speaker; text: string; receivedAt?: string; interrupted?: boolean }>
   review?: ReviewResult
   focus?: string
 }
@@ -206,6 +223,11 @@ export interface ProviderSettingsInput {
   clearLlmApiKey?: boolean
 }
 
+export interface ProviderModelProbeInput {
+  llmBaseUrl: string
+  llmApiKey?: string
+}
+
 export interface MicrophoneGateState {
   active: boolean
   available: boolean
@@ -234,10 +256,15 @@ export interface VoiceAudioChunk {
   samples: ArrayBuffer
 }
 
+export interface VoiceCaptureStatus {
+  echoCancellation: boolean
+}
+
 export interface GeneratedSpeechChunk {
   id: string
   messageId: string
   index: number
+  generation: number
   sampleRate: 24000
   format: 'float32'
   samples: ArrayBuffer
@@ -245,11 +272,16 @@ export interface GeneratedSpeechChunk {
 }
 
 export interface SpeakSubApi {
-  startPractice: (topic: string, level: string, strength: CorrectionStrength, source: PracticeSource, mode: PracticeMode, focus?: string) => Promise<PracticeStartResult>
+  startPractice: (topic: string, level: string, strength: CorrectionStrength, source: PracticeSource, mode: PracticeMode, focus?: string, prompt?: string) => Promise<PracticeStartResult>
+  getPromptTemplates: () => Promise<PromptTemplates>
+  savePromptTemplates: (templates: PromptTemplates) => Promise<PromptTemplates>
+  getPracticePreferences: () => Promise<PracticePreferences>
+  savePracticePreferences: (preferences: PracticePreferences) => Promise<PracticePreferences>
   sendPracticeMessage: (message: string) => Promise<void>
   sendApiMessage: (message: string) => Promise<void>
   startVoiceCapture: () => Promise<void>
   stopVoiceCapture: () => Promise<void>
+  reportVoiceCaptureStatus: (status: VoiceCaptureStatus) => Promise<void>
   sendVoiceAudio: (chunk: VoiceAudioChunk) => Promise<void>
   notifyVoicePlaybackEnded: (chunkId: string) => Promise<void>
   getSpeechAssetState: () => Promise<SpeechAssetState>
@@ -272,6 +304,7 @@ export interface SpeakSubApi {
   deleteSession: (id: string) => Promise<void>
   listVocabulary: (filter?: { familiarity?: VocabularyFamiliarity; dueOnly?: boolean; text?: string }) => Promise<VocabularyItem[]>
   updateVocabularyFamiliarity: (id: string, familiarity: VocabularyFamiliarity) => Promise<VocabularyItem>
+  reviewVocabulary: (id: string, rating: VocabularyReviewRating) => Promise<VocabularyItem>
   getReviewQueue: () => Promise<VocabularyItem[]>
   getLearningDashboard: (period: LearningPeriod) => Promise<LearningDashboard>
   createNextPracticeDraft: (sessionId: string) => Promise<NextPracticeDraft>
@@ -279,6 +312,7 @@ export interface SpeakSubApi {
   chooseArchiveDirectory: () => Promise<string | undefined>
   getProviderSettings: () => Promise<ProviderSettings>
   saveProviderSettings: (settings: ProviderSettingsInput) => Promise<ProviderSettings>
+  discoverProviderModels: (input: ProviderModelProbeInput) => Promise<string[]>
   saveMicrophoneShortcut: (shortcut: string) => Promise<string>
   toggleMicrophoneGate: () => Promise<MicrophoneGateState>
   setMicrophoneGate: (active: boolean) => Promise<MicrophoneGateState>
@@ -291,7 +325,7 @@ export interface SpeakSubApi {
   onVoiceAudio: (listener: (chunk: GeneratedSpeechChunk) => void) => () => void
   onSpeechAssetState: (listener: (state: SpeechAssetState) => void) => () => void
   onVoicePhase: (listener: (phase: VoiceTurnPhase) => void) => () => void
-  onVoiceInterrupt: (listener: () => void) => () => void
+  onVoiceInterrupt: (listener: (generation: number) => void) => () => void
   onMicrophoneGateState: (listener: (state: MicrophoneGateState) => void) => () => void
 }
 

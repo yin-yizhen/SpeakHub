@@ -1,4 +1,6 @@
-import type { GeneratedSpeechChunk, VoiceAudioChunk } from '../shared/types'
+import type { GeneratedSpeechChunk, VoiceAudioChunk, VoiceCaptureStatus } from '../shared/types'
+
+export const captureChunkFrames = 2048
 
 export class LocalSpeechAudioCapture {
   private stream: MediaStream | undefined
@@ -8,12 +10,32 @@ export class LocalSpeechAudioCapture {
   private sink: GainNode | undefined
   private workletUrl: string | undefined
 
-  async start(onAudio: (chunk: VoiceAudioChunk) => void): Promise<void> {
+  async start(onAudio: (chunk: VoiceAudioChunk) => void): Promise<VoiceCaptureStatus> {
     this.stop()
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } })
+    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
     this.context = new AudioContext()
     this.source = this.context.createMediaStreamSource(this.stream)
-    const source = `class SpeakSubCapture extends AudioWorkletProcessor { process(inputs) { const channel = inputs[0]?.[0]; if (channel?.length) { const copy = channel.slice(); this.port.postMessage(copy.buffer, [copy.buffer]); } return true } } registerProcessor('speaksub-capture', SpeakSubCapture)`
+    const source = `class SpeakSubCapture extends AudioWorkletProcessor {
+      constructor() { super(); this.buffer = new Float32Array(${captureChunkFrames}); this.offset = 0; }
+      process(inputs) {
+        const channel = inputs[0]?.[0];
+        if (!channel?.length) return true;
+        let inputOffset = 0;
+        while (inputOffset < channel.length) {
+          const count = Math.min(channel.length - inputOffset, this.buffer.length - this.offset);
+          this.buffer.set(channel.subarray(inputOffset, inputOffset + count), this.offset);
+          this.offset += count;
+          inputOffset += count;
+          if (this.offset === this.buffer.length) {
+            const output = this.buffer;
+            this.port.postMessage(output.buffer, [output.buffer]);
+            this.buffer = new Float32Array(${captureChunkFrames});
+            this.offset = 0;
+          }
+        }
+        return true;
+      }
+    } registerProcessor('speaksub-capture', SpeakSubCapture)`
     this.workletUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
     await this.context.audioWorklet.addModule(this.workletUrl)
     this.processor = new AudioWorkletNode(this.context, 'speaksub-capture', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] })
@@ -23,6 +45,8 @@ export class LocalSpeechAudioCapture {
     }
     this.sink = this.context.createGain(); this.sink.gain.value = 0
     this.source.connect(this.processor); this.processor.connect(this.sink); this.sink.connect(this.context.destination)
+    const settings = this.stream.getAudioTracks()[0]?.getSettings()
+    return { echoCancellation: settings?.echoCancellation !== false }
   }
 
   stop(): void {
@@ -35,9 +59,12 @@ export class LocalSpeechAudioCapture {
 export class LocalSpeechAudioPlayer {
   private context: AudioContext | undefined
   private scheduledAt = 0
+  private generation = 0
   private readonly nodes = new Set<AudioBufferSourceNode>()
 
   play(chunk: GeneratedSpeechChunk, onEnded?: () => void): void {
+    if (!isPlayableSpeechGeneration(this.generation, chunk.generation)) return
+    if (chunk.generation > this.generation) this.generation = chunk.generation
     this.context ??= new AudioContext()
     void this.context.resume()
     const samples = new Float32Array(chunk.samples); const buffer = this.context.createBuffer(1, samples.length, chunk.sampleRate)
@@ -46,8 +73,12 @@ export class LocalSpeechAudioPlayer {
     const at = Math.max(this.context.currentTime, this.scheduledAt); node.start(at); this.scheduledAt = at + buffer.duration
   }
 
-  interrupt(): void { for (const node of this.nodes) { try { node.stop() } catch { /* already stopped */ } }; this.nodes.clear(); this.scheduledAt = this.context?.currentTime ?? 0 }
-  stop(): void { this.interrupt(); this.scheduledAt = 0; void this.context?.close(); this.context = undefined }
+  interrupt(generation = this.generation + 1): void { this.generation = Math.max(this.generation, generation); for (const node of this.nodes) { try { node.stop() } catch { /* already stopped */ } }; this.nodes.clear(); this.scheduledAt = this.context?.currentTime ?? 0 }
+  stop(): void { this.interrupt(); this.generation = 0; this.scheduledAt = 0; void this.context?.close(); this.context = undefined }
+}
+
+export function isPlayableSpeechGeneration(current: number, incoming: number): boolean {
+  return incoming >= current
 }
 
 const microphoneOnTones = [261.63, 329.63, 392] as const

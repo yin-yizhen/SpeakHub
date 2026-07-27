@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent } from 'react'
 import { subtitleWordTokens } from '../shared/subtitle-words'
 import { subtitleEvents } from '../shared/transcript'
 import type { DictionaryResult, SubtitlePreferences, TranscriptEvent } from '../shared/types'
@@ -40,6 +40,11 @@ interface LookupAnchor {
   maxHeight: number
 }
 
+// AI responses may contain paragraph breaks intended for chat, not for the compact overlay.
+function subtitleDisplayText(text: string): string {
+  return text.replace(/[\t ]*\r?\n+[\t ]*/g, ' ')
+}
+
 export function SubtitleOverlay() {
   const [settings, setSettings] = useState<SubtitlePreferences>(defaultSettings)
   const [events, setEvents] = useState<TranscriptEvent[]>([])
@@ -52,8 +57,18 @@ export function SubtitleOverlay() {
   const [hoveredToolbar, setHoveredToolbar] = useState(false)
   const [lookupState, setLookupState] = useState<LookupState>()
   const lookupRequest = useRef(0)
+  const overlayInteractive = useRef<boolean | undefined>(undefined)
   const transcriptRef = useRef<HTMLDivElement>(null)
   const resizeStart = useRef<{ direction: ResizeDirection; origin: NonNullable<SubtitlePreferences['bounds']>; screenX: number; screenY: number } | undefined>(undefined)
+  const setOverlayInteractivity = (interactive: boolean) => {
+    if (overlayInteractive.current === interactive) return
+    overlayInteractive.current = interactive
+    void window.speaksub.setOverlayInteractive(interactive)
+  }
+  const syncOverlayInteractivity = (target: EventTarget | null) => {
+    const interactive = target instanceof Element && Boolean(target.closest(settings.locked ? '[data-subtitle-lock-access]' : '[data-subtitle-interactive]'))
+    setOverlayInteractivity(interactive)
+  }
 
   useEffect(() => {
     const refreshPracticeState = () => void window.speaksub.getState().then((state) => {
@@ -84,7 +99,11 @@ export function SubtitleOverlay() {
     const transcript = transcriptRef.current
     if (transcript) transcript.scrollTop = transcript.scrollHeight
   }, [displayed, settings.fontSize, settings.layout])
-  const toolbarOpen = !settings.locked && hoveredToolbar
+  useEffect(() => {
+    overlayInteractive.current = undefined
+    syncOverlayInteractivity(null)
+  }, [settings.locked])
+  const toolbarOpen = hoveredToolbar
   const shellClass = ['subtitle-shell', settings.locked ? 'locked' : '', toolbarOpen ? 'toolbar-open' : '', `layout-${settings.layout}`, `background-${settings.background}`].filter(Boolean).join(' ')
   const style = {
     opacity: settings.opacity,
@@ -190,12 +209,10 @@ export function SubtitleOverlay() {
     catch { setEndingPractice(false) }
   }
 
-  return <div className={shellClass} style={style} onPointerDown={closePinnedLookup}>
-    {!settings.locked && (['top', 'right', 'bottom', 'left', 'top-left', 'top-right', 'bottom-left', 'bottom-right'] as ResizeDirection[]).map((direction) => <div key={direction} className={`subtitle-resize-handle ${direction}`} onPointerDown={(event) => beginResize(direction, event)} onPointerMove={resize} onPointerUp={finishResize} onPointerCancel={finishResize}/>) }
-    <div className="subtitle-toolbar-zone" onMouseEnter={() => setHoveredToolbar(true)} onMouseLeave={() => setHoveredToolbar(false)}>
-      {settings.locked
-        ? <button className="subtitle-unlock" type="button" title="Unlock subtitles" onClick={() => update({ locked: false })}>Unlock</button>
-        : <><div className="subtitle-drag-zone" title="拖动字幕"><div className="subtitle-drag-bars"><span></span><span></span><span></span></div></div>
+  return <div className={shellClass} style={style} onMouseMove={(event: ReactMouseEvent<HTMLDivElement>) => syncOverlayInteractivity(event.target)} onMouseLeave={() => syncOverlayInteractivity(null)} onPointerDown={closePinnedLookup}>
+    {!settings.locked && (['top', 'right', 'bottom', 'left', 'top-left', 'top-right', 'bottom-left', 'bottom-right'] as ResizeDirection[]).map((direction) => <div key={direction} data-subtitle-interactive className={`subtitle-resize-handle ${direction}`} onPointerDown={(event) => beginResize(direction, event)} onPointerMove={resize} onPointerUp={finishResize} onPointerCancel={finishResize}/>) }
+    <div className="subtitle-toolbar-zone" data-subtitle-interactive data-subtitle-lock-access onMouseEnter={() => { setHoveredToolbar(true); setOverlayInteractivity(true) }} onMouseLeave={() => setHoveredToolbar(false)}>
+      {settings.locked ? <><div className="subtitle-lock-handle" title="Unlock subtitles"><div className="subtitle-drag-bars"><span></span><span></span><span></span></div></div>{toolbarOpen && <button className="subtitle-unlock" data-subtitle-interactive type="button" title="Unlock subtitles" onClick={() => update({ locked: false })}>Unlock</button>}</> : <><div className="subtitle-drag-zone" title="拖动字幕"><div className="subtitle-drag-bars"><span></span><span></span><span></span></div></div>
           <div className="subtitle-controls" onClick={(event) => event.stopPropagation()}>
             <div className="subtitle-settings-row"><label>Size<input aria-label="Subtitle size" type="range" min="18" max="38" value={settings.fontSize} onChange={(event) => update({ fontSize: Number(event.target.value) })}/></label><label>AI <input aria-label="AI subtitle color" type="color" value={settings.assistantColor} onChange={(event) => update({ assistantColor: event.target.value })}/></label><label>Me <input aria-label="My subtitle color" type="color" value={settings.userColor} onChange={(event) => update({ userColor: event.target.value })}/></label><button className="subtitle-lock" type="button" title="Lock subtitles" onClick={() => update({ locked: true })}>Lock</button></div>
             <div className="subtitle-action-row">{practiceActive ? <button className="subtitle-end-practice" type="button" disabled={endingPractice} onClick={() => void endPractice()}>{endingPractice ? '结束中…' : '结束对话'}</button> : <span/>}<button className="subtitle-close" type="button" title="Close subtitles" onClick={() => void window.speaksub.toggleOverlay()}>关闭字幕</button></div>
@@ -203,17 +220,17 @@ export function SubtitleOverlay() {
     </div>
     <div className="subtitle-transcript" ref={transcriptRef}>
       {displayed.length
-        ? displayed.map((event) => <p className={`subtitle-line ${event.speaker}`} key={event.id}><b>{event.speaker === 'assistant' ? 'AI' : 'Me'}</b><span className="subtitle-text">{subtitleWordTokens(event.text).map((token, index) => token.clickable
-          ? <button className="subtitle-word" key={index} onMouseEnter={(mouse) => void lookupWord(token.text, event.text, mouse.currentTarget)} onMouseLeave={dismissLookup} onFocus={(focus) => void lookupWord(token.text, event.text, focus.currentTarget)} onBlur={dismissLookup} onClick={(click) => { click.stopPropagation(); void lookupWord(token.text, event.text, click.currentTarget, true) }}>{token.text}</button>
+        ? displayed.map((event) => <p className={`subtitle-line ${event.speaker}${event.interrupted ? ' interrupted' : ''}`} key={event.id}><b>{event.speaker === 'assistant' ? `AI${event.interrupted ? ' · 已打断' : ''}` : 'Me'}</b><span className="subtitle-text">{subtitleWordTokens(subtitleDisplayText(event.text)).map((token, index) => token.clickable
+          ? <button className="subtitle-word" data-subtitle-interactive key={index} onMouseEnter={(mouse) => void lookupWord(token.text, event.text, mouse.currentTarget)} onMouseLeave={dismissLookup} onFocus={(focus) => void lookupWord(token.text, event.text, focus.currentTarget)} onBlur={dismissLookup} onClick={(click) => { click.stopPropagation(); void lookupWord(token.text, event.text, click.currentTarget, true) }}>{token.text}</button>
           : <span className="subtitle-fragment" key={index}>{token.text}</span>)}</span></p>)
         : <p className="subtitle-empty">Start practice to show recent page text here.</p>}
     </div>
-    {textPracticeActive && <form className="subtitle-composer" onSubmit={(event) => { event.preventDefault(); void sendTextMessage() }}>
+    {textPracticeActive && <form className="subtitle-composer" data-subtitle-interactive onSubmit={(event) => { event.preventDefault(); void sendTextMessage() }}>
       <input aria-label="输入文字消息" value={message} disabled={sending} onChange={(event) => setMessage(event.target.value)} placeholder="输入文字，按 Enter 发送" autoComplete="off" />
       <button type="submit" disabled={sending || !message.trim()}>{sending ? '发送中…' : '发送'}</button>
       {sendError && <p role="alert">{sendError}</p>}
     </form>}
-    {lookupState && <aside className={`lookup-popover ${lookupState.anchor.placement} ${lookupState.pinned ? 'pinned' : ''}`} style={{ left: lookupState.anchor.left, top: lookupState.anchor.top, maxHeight: lookupState.anchor.maxHeight }} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+    {lookupState && <aside className={`lookup-popover ${lookupState.anchor.placement} ${lookupState.pinned ? 'pinned' : ''}`} data-subtitle-interactive style={{ left: lookupState.anchor.left, top: lookupState.anchor.top, maxHeight: lookupState.anchor.maxHeight }} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
       {lookupState.status === 'loading' && <><div className="lookup-heading"><strong>{lookupState.query}</strong></div><p>Looking up...</p></>}
       {lookupState.status === 'error' && <><div className="lookup-heading"><strong>{lookupState.query}</strong></div><p>{lookupState.message}</p></>}
       {lookupState.status === 'ready' && <><div className="lookup-heading"><strong>{lookupState.result.query}</strong>{lookupState.result.phonetic && <small>/{lookupState.result.phonetic}/</small>}</div><p>{lookupState.result.definitions.join('; ') || lookupState.result.contextualMeaning || 'No definition returned.'}</p>{lookupState.result.naturalAlternative && <p>Natural: {lookupState.result.naturalAlternative}</p>}</>}

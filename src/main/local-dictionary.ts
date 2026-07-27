@@ -9,7 +9,7 @@ type Bucket = Record<string, PackedEntry>
 const maxCachedBuckets = 5
 
 function normalizeWord(query: string): string {
-  return query.trim().toLowerCase().replace(/^[^a-z]+|[^a-z]+$/g, '')
+  return query.trim().toLowerCase().replace(/[’‘]/g, "'").replace(/^[^a-z]+|[^a-z0-9]+$/g, '')
 }
 
 function bucketName(word: string): string {
