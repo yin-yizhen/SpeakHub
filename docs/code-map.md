@@ -11,10 +11,11 @@
 | 改练习状态、来源或模式 | `src/main/practice-controller.ts`, `src/main/practice-profile.ts`, `src/main/index.ts` | `practice-controller.test.ts`, `practice-profile.test.ts`, `practice-pipeline.integration.test.ts` | `pnpm lint && pnpm test` |
 | 改 ChatGPT 网页采集或清理 | `src/main/chatgpt-adapter.ts`, `src/main/chatgpt-automation.ts`, `src/main/chatgpt-marker.ts`, `src/main/background-cleanup.ts` | 对应 ChatGPT adapter/automation/marker 测试 | `pnpm test` 加网页手工验收 |
 | 改主窗口、内嵌连接页或菜单栏 | `src/main/index.ts`, `src/main/window-layout.ts`, `src/renderer/styles.css` | `window-layout.test.ts`、ChatGPT adapter/automation 测试 | `pnpm lint && pnpm test && pnpm build` |
+| 改全局配色、字体、控件状态或按钮动效 | `src/renderer/styles.css`, `src/renderer/overlay.css` | `App.voice.test.tsx`, `LearningCenter.test.tsx`, `subtitle-overlay.test.tsx` | `pnpm lint && pnpm test && pnpm build` |
 | 改本地 ASR/TTS、模型下载或半双工 | `src/main/speech-model-manager.ts`, `src/main/speech-worker.ts`, `src/main/local-speech-service.ts`, `src/main/index.ts`, `src/renderer/local-speech-audio.ts` | `speech-model-manager.test.ts`, `streaming-asr-session.test.ts`, `speech-segments.test.ts`, `App.voice.test.tsx`, `local-speech-audio.test.ts` | `pnpm lint && pnpm test && pnpm build && pnpm package:win` |
 | 改 DeepSeek/OpenAI-compatible 流式回复 | `src/main/learning-service.ts`, `src/main/index.ts`, `src/main/speech-segments.ts` | `learning-service.test.ts`, `speech-segments.test.ts`, `sequential-task-queue.test.ts`, `store.test.ts` | `pnpm lint && pnpm test` |
 | 改 ChatGPT 语音或统一麦克风闸门 | `src/main/index.ts`, `src/main/chatgpt-microphone-preload.ts`, `src/main/microphone-shortcut.ts`, `src/renderer/App.tsx` | `microphone-shortcut.test.ts`, `chatgpt-automation.test.ts`, `App.voice.test.tsx` | `pnpm lint && pnpm test && pnpm build` |
-| 改字幕、悬浮词汇卡或悬浮窗结束对话 | `src/renderer/subtitle-overlay.tsx`, `src/main/index.ts`, `src/main/preload.ts`, `src/renderer/App.tsx` | `subtitle-words.test.ts`, `subtitle-overlay.test.tsx`, `App.voice.test.tsx` | `pnpm lint && pnpm test && pnpm build` |
+| 改字幕、悬浮词汇卡或悬浮窗结束对话 | `src/renderer/subtitle-overlay.tsx`, `src/renderer/overlay.css`, `src/main/index.ts`, `src/main/preload.ts`, `src/renderer/App.tsx` | `subtitle-words.test.ts`, `subtitle-overlay.test.tsx`, `App.voice.test.tsx` | `pnpm lint && pnpm test && pnpm build` |
 | 改历史、词汇复习或趋势 | `src/main/store.ts`, `src/renderer/LearningCenter.tsx`, `src/shared/types.ts` | `store.test.ts`, `LearningCenter.test.tsx`, `practice-pipeline.integration.test.ts` | `pnpm lint && pnpm test && pnpm build` |
 
 ## End-to-End Flow
