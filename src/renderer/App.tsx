@@ -77,6 +77,9 @@ export function App() {
   const updateSubtitle = (input: Partial<SubtitlePreferences>) => void window.speaksub.updateSubtitle(input)
   const isWebSource = source !== 'api-direct'
   const transitionBusy = isPracticeTransitionBusy(lifecycle)
+  const apiConfigured = Boolean(providers?.llmBaseUrl?.trim() && providers.llmModel?.trim() && providers.hasLlmKey)
+  const speechModelsReady = speechAssets.asr.status === 'ready' && speechAssets.tts.status === 'ready'
+  const speechModelsDownloading = speechAssets.asr.status === 'downloading' || speechAssets.tts.status === 'downloading'
 
   useEffect(() => {
     if (!session || source !== 'api-direct' || mode !== 'voice' || lifecycle !== 'active') { capture.current.stop(); return }
@@ -97,10 +100,38 @@ export function App() {
 
   async function enterPractice(): Promise<void> { try { setConnection(await window.speaksub.completeConnection()) } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法确认登录状态。', recoverable: true }) } }
   async function openConnection(): Promise<void> { if (source === 'api-direct') return; await window.speaksub.showConnectionPage() }
-  async function skipWebConnection(): Promise<void> { setSource('api-direct'); setMode('text'); setConnection(await window.speaksub.hideConnectionPage()) }
+  async function skipWebConnection(): Promise<void> {
+    setSource('api-direct')
+    setMode('voice')
+    setConnection(await window.speaksub.hideConnectionPage())
+    requireApiVoiceSetup('api-direct', 'voice')
+  }
   async function clearPendingCleanup(): Promise<void> { if (source === 'api-direct') return; await window.speaksub.clearPendingCleanup(); setAutomation({ phase: 'idle', message: '已清除上一条练习记录；现在可以重新开始。' }) }
+  function requireApiVoiceSetup(nextSource: PracticeSource, nextMode: PracticeMode): boolean {
+    if (nextSource !== 'api-direct') return true
+    if (!apiConfigured) {
+      setTab('settings')
+      setAutomation({ phase: 'failed', message: '请先在设置中填写文本 API 的 Base URL、模型名和 API Key。', recoverable: true })
+      return false
+    }
+    if (nextMode === 'voice' && !speechModelsReady) {
+      setTab('settings')
+      setAutomation({ phase: 'failed', message: '文字 API 需要本地语音模型才能进行语音交流。请下载约 265 MB 模型。', recoverable: true })
+      return false
+    }
+    return true
+  }
+  function selectSource(next: PracticeSource): void {
+    setSource(next)
+    requireApiVoiceSetup(next, mode)
+  }
+  function selectMode(next: PracticeMode): void {
+    setMode(next)
+    requireApiVoiceSetup(source, next)
+  }
   async function startPractice(): Promise<void> {
     if (lifecycle === 'starting' || lifecycle === 'ending') return
+    if (!requireApiVoiceSetup(source, mode)) return
     setLifecycle('starting')
     try {
       setAutomation({ phase: 'filling-prompt', message: source === 'api-direct' ? '正在创建 API 直连练习…' : `正在启动 ${sourceLabels[source]} 练习…` })
@@ -123,7 +154,22 @@ export function App() {
     try { const saved = await window.speaksub.saveMicrophoneShortcut(shortcut); setShortcutDraft(saved); setShortcutError(undefined) }
     catch (error) { setShortcutError(error instanceof Error ? error.message : '该快捷键不可用。') }
   }
-  async function saveProviders(form: HTMLFormElement): Promise<void> { const data = new FormData(form); setProviders(await window.speaksub.saveProviderSettings({ llmBaseUrl: String(data.get('llmBaseUrl') || ''), llmModel: String(data.get('llmModel') || ''), llmApiKey: String(data.get('llmApiKey') || ''), clearLlmApiKey: data.get('clearLlmApiKey') === 'on' })) }
+  async function saveProviders(form: HTMLFormElement): Promise<void> {
+    const data = new FormData(form)
+    const saved = await window.speaksub.saveProviderSettings({ llmBaseUrl: String(data.get('llmBaseUrl') || ''), llmModel: String(data.get('llmModel') || ''), llmApiKey: String(data.get('llmApiKey') || ''), clearLlmApiKey: data.get('clearLlmApiKey') === 'on' })
+    setProviders(saved)
+    const configured = Boolean(saved.llmBaseUrl?.trim() && saved.llmModel?.trim() && saved.hasLlmKey)
+    if (configured && source === 'api-direct' && mode === 'voice' && !speechModelsReady) setAutomation({ phase: 'failed', message: '文本 API 已配置。继续点击上方按钮下载约 265 MB 本地语音模型。', recoverable: true })
+    else setAutomation({ phase: 'idle', message: configured ? '文本 API 已配置。' : 'API 设置已保存，但信息尚未填写完整。' })
+  }
+  async function downloadSpeechModels(): Promise<void> {
+    try {
+      setSpeechAssets(await window.speaksub.downloadSpeechAssets())
+      setAutomation({ phase: 'idle', message: '本地双语语音模型已下载完成，可以使用 API 语音交流。' })
+    } catch (error) {
+      setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '模型下载失败。', recoverable: true })
+    }
+  }
   async function chooseArchiveDirectory(): Promise<void> { try { const directory = await window.speaksub.chooseArchiveDirectory(); if (!directory) return; setArchiveDirectory(directory) } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法切换归档文件夹。', recoverable: true }) } }
   function useNextPracticeDraft(draft: NextPracticeDraft): void { setTopic(draft.topic); setLevel(draft.level); setStrength(draft.correctionStrength); setSource(draft.source); setMode(draft.mode); setFocus(draft.focus ?? ''); setTab('practice'); setAutomation({ phase: 'idle', message: '已根据上次薄弱点准备好练习，请确认后开始。' }) }
 
@@ -146,8 +192,8 @@ export function App() {
     {tab === 'practice' && <>
       <section className="practice-stage"><div className="stage-copy"><p className="kicker">SPEAKING SESSION</p><h1>{session ? '正在对话…' : '准备开口。'}</h1><p>{session ? (source === 'api-direct' ? '本地识别与朗读已接入流式 API、字幕和归档。' : `${sourceLabels[source]} 在后台保持运行，字幕可随时显示。`) : '选择来源、场景和难度，然后开始一次练习。'}</p></div><div className="automation-card"><span className={`status-dot ${automation.phase}`}></span><div><small>{source === 'api-direct' && mode === 'voice' ? voicePhase : automation.phase.replaceAll('-', ' ')}</small><strong>{automation.message}</strong></div>{automation.recoverable && isWebSource && <button onClick={() => void openConnection()}>打开连接页</button>}{automation.recoverable && isWebSource && <button onClick={() => void clearPendingCleanup()}>已处理旧对话</button>}</div></section>
       <section className="template-workbench"><div className="workbench-heading"><h2>选择一次对话</h2><span>{source === 'api-direct' ? '文本 API + 本地双语语音，双方进入同一字幕流' : `${sourceLabels[source]} 在后台执行`}</span></div>
-        <div className="source-picker">{(Object.keys(sourceLabels) as PracticeSource[]).map((item) => <button key={item} disabled={Boolean(session) || transitionBusy} className={source === item ? 'active' : ''} onClick={() => setSource(item)}>{sourceLabels[item]}</button>)}</div>
-        <div className="source-picker" aria-label="交流方式"><button disabled={Boolean(session) || transitionBusy} className={mode === 'voice' ? 'active' : ''} onClick={() => setMode('voice')}>语音交流</button><button disabled={Boolean(session) || transitionBusy} className={mode === 'text' ? 'active' : ''} onClick={() => setMode('text')}>文字交流</button></div>
+        <div className="source-picker">{(Object.keys(sourceLabels) as PracticeSource[]).map((item) => <button key={item} disabled={Boolean(session) || transitionBusy} className={source === item ? 'active' : ''} onClick={() => selectSource(item)}>{sourceLabels[item]}</button>)}</div>
+        <div className="source-picker" aria-label="交流方式"><button disabled={Boolean(session) || transitionBusy} className={mode === 'voice' ? 'active' : ''} onClick={() => selectMode('voice')}>语音交流</button><button disabled={Boolean(session) || transitionBusy} className={mode === 'text' ? 'active' : ''} onClick={() => selectMode('text')}>文字交流</button></div>
         <div className="topic-grid">{topics.map((item) => <button key={item} disabled={Boolean(session) || transitionBusy} className={topic === item ? 'topic active' : 'topic'} onClick={() => setTopic(item)}>{item}</button>)}</div>
         <div className="session-config"><div className="level-picker"><span>难度</span>{levels.map((item) => <button key={item} disabled={Boolean(session) || transitionBusy} className={level === item ? 'active' : ''} onClick={() => setLevel(item)}>{item}</button>)}</div><label>纠错<select value={strength} disabled={Boolean(session) || transitionBusy} onChange={(event) => setStrength(event.target.value as CorrectionStrength)}><option value="light">轻度</option><option value="normal">普通</option><option value="strict">严格</option></select></label>{session ? <button className="finish-action" disabled={transitionBusy} onClick={() => void endPractice()}>{lifecycle === 'ending' ? '正在生成复盘…' : '结束并生成复盘'}</button> : <button className="primary-action" disabled={transitionBusy} onClick={() => void startPractice()}>{lifecycle === 'starting' ? '正在启动…' : '确认并开始'}</button>}</div>
         {!session && focus && <label className="practice-focus">本次重点<textarea value={focus} onChange={(event) => setFocus(event.target.value)} rows={3}/><small>来自上次复盘，可在开始前修改。</small></label>}
@@ -158,10 +204,10 @@ export function App() {
       {review && <section className="review-panel"><p className="kicker">SESSION REVIEW</p><h2>{review.topic}</h2><p>{review.summary}</p>{review.issues.slice(0, 3).map((issue, index) => <div className="review-issue" key={index}><span>{issue.original}</span><strong>{issue.improved}</strong><small>{issue.reason}</small></div>)}</section>}
     </>}
     {tab === 'learning' && <LearningCenter onUseDraft={useNextPracticeDraft}/>}
-    {tab === 'settings' && <section className="utility-page settings-page"><p className="kicker">SPEAKSUB CONTROLS</p><h1>设置</h1><div className="settings-grid"><label>字幕内容<select value={settings.mode} onChange={(event) => updateSubtitle({ mode: event.target.value as SubtitlePreferences['mode'] })}><option value="assistant">只显示 AI</option><option value="user">只显示我</option><option value="both">显示双方</option></select></label><label>双方布局<select value={settings.layout} onChange={(event) => updateSubtitle({ layout: event.target.value as SubtitlePreferences['layout'] })}><option value="split">AI 左、我右</option><option value="same-side">同侧显示</option></select></label><label>背景<select value={settings.background} onChange={(event) => updateSubtitle({ background: event.target.value as SubtitlePreferences['background'] })}><option value="glass">半透明磨砂</option><option value="solid">纯色底板</option><option value="transparent">完全透明</option></select></label><label>背景颜色<input type="color" value={settings.backgroundColor} onChange={(event) => updateSubtitle({ backgroundColor: event.target.value })}/></label><label>背景透明度 <output>{Math.round(settings.backgroundOpacity * 100)}%</output><input type="range" min="0.1" max="1" step="0.05" value={settings.backgroundOpacity} onChange={(event) => updateSubtitle({ backgroundOpacity: Number(event.target.value) })}/></label><label>持续显示行数<select value={settings.maxLines} onChange={(event) => updateSubtitle({ maxLines: Number(event.target.value) })}>{[2, 3, 4, 5, 6].map((count) => <option key={count} value={count}>{count} 行</option>)}</select></label><label>字号 <output>{settings.fontSize}px</output><input type="range" min="18" max="38" value={settings.fontSize} onChange={(event) => updateSubtitle({ fontSize: Number(event.target.value) })}/></label><label>整体透明度 <output>{Math.round(settings.opacity * 100)}%</output><input type="range" min="0.55" max="1" step="0.05" value={settings.opacity} onChange={(event) => updateSubtitle({ opacity: Number(event.target.value) })}/></label><label>AI 字幕颜色<input type="color" value={settings.assistantColor} onChange={(event) => updateSubtitle({ assistantColor: event.target.value })}/></label><label>我的字幕颜色<input type="color" value={settings.userColor} onChange={(event) => updateSubtitle({ userColor: event.target.value })}/></label><label className="check-label"><input type="checkbox" checked={settings.locked} onChange={(event) => updateSubtitle({ locked: event.target.checked })}/>锁定字幕位置和操作</label></div>
+    {tab === 'settings' && <section className="utility-page settings-page"><p className="kicker">SPEAKSUB CONTROLS</p><h1>设置</h1>{automation.recoverable && <div className="settings-guidance" role="alert">{automation.message}</div>}<div className="settings-grid"><label>字幕内容<select value={settings.mode} onChange={(event) => updateSubtitle({ mode: event.target.value as SubtitlePreferences['mode'] })}><option value="assistant">只显示 AI</option><option value="user">只显示我</option><option value="both">显示双方</option></select></label><label>双方布局<select value={settings.layout} onChange={(event) => updateSubtitle({ layout: event.target.value as SubtitlePreferences['layout'] })}><option value="split">AI 左、我右</option><option value="same-side">同侧显示</option></select></label><label>背景<select value={settings.background} onChange={(event) => updateSubtitle({ background: event.target.value as SubtitlePreferences['background'] })}><option value="glass">半透明磨砂</option><option value="solid">纯色底板</option><option value="transparent">完全透明</option></select></label><label>背景颜色<input type="color" value={settings.backgroundColor} onChange={(event) => updateSubtitle({ backgroundColor: event.target.value })}/></label><label>背景透明度 <output>{Math.round(settings.backgroundOpacity * 100)}%</output><input type="range" min="0.1" max="1" step="0.05" value={settings.backgroundOpacity} onChange={(event) => updateSubtitle({ backgroundOpacity: Number(event.target.value) })}/></label><label>持续显示行数<select value={settings.maxLines} onChange={(event) => updateSubtitle({ maxLines: Number(event.target.value) })}>{[2, 3, 4, 5, 6].map((count) => <option key={count} value={count}>{count} 行</option>)}</select></label><label>字号 <output>{settings.fontSize}px</output><input type="range" min="18" max="38" value={settings.fontSize} onChange={(event) => updateSubtitle({ fontSize: Number(event.target.value) })}/></label><label>整体透明度 <output>{Math.round(settings.opacity * 100)}%</output><input type="range" min="0.55" max="1" step="0.05" value={settings.opacity} onChange={(event) => updateSubtitle({ opacity: Number(event.target.value) })}/></label><label>AI 字幕颜色<input type="color" value={settings.assistantColor} onChange={(event) => updateSubtitle({ assistantColor: event.target.value })}/></label><label>我的字幕颜色<input type="color" value={settings.userColor} onChange={(event) => updateSubtitle({ userColor: event.target.value })}/></label><label className="check-label"><input type="checkbox" checked={settings.locked} onChange={(event) => updateSubtitle({ locked: event.target.checked })}/>锁定字幕位置和操作</label></div>
       <section className="archive-directory"><h2>麦克风快捷键</h2><p>点击输入框后直接按下按键组合。它是系统全局快捷键，在 ChatGPT 网页获得焦点时也会生效。</p><input className="shortcut-input" aria-label="麦克风快捷键" value={shortcutDraft} readOnly onKeyDown={(event) => void recordMicrophoneShortcut(event)}/>{shortcutError && <small role="alert">{shortcutError}</small>}</section>
       <section className="archive-directory"><h2>本地归档</h2><p>练习中会持续写入此文件夹根目录的 current-practice.md；复盘完成后，它会改名为一份包含对话、收藏词和复盘的 Markdown。</p><output title={archiveDirectory}>{archiveDirectory || '正在读取…'}</output><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => void chooseArchiveDirectory()}>选择文件夹</button>{(session || transitionBusy) && <small>请先结束当前练习再切换。</small>}</section>
-      <section className="archive-directory speech-assets"><h2>本地双语语音模型</h2><p>首次准备约下载 197 MB，解压后模型约占 265 MB；之后可永久离线识别和朗读，不依赖 Windows 系统语音。</p>{(['asr', 'tts'] as const).map((asset) => <div key={asset}><strong>{asset === 'asr' ? '中英双语识别' : 'Kokoro 中英朗读'}</strong><span>{speechAssets[asset].status === 'downloading' ? `${Math.round(speechAssets[asset].progress * 100)}%` : speechAssets[asset].status}</span><progress max={1} value={speechAssets[asset].progress}/>{speechAssets[asset].error && <small role="alert">{speechAssets[asset].error}</small>}</div>)}{(speechAssets.asr.status === 'error' || speechAssets.tts.status === 'error') && <button className="quiet-action" onClick={() => void window.speaksub.downloadSpeechAssets().catch((error) => setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '模型下载失败。', recoverable: true }))}>重试下载</button>}</section>
+      <section className="archive-directory speech-assets"><h2>本地双语语音模型</h2><p>语音模型不会包含在安装包中。点击后约下载 197 MB，解压后在应用安装目录占用约 265 MB；下载完成后可永久离线识别和朗读。</p>{(['asr', 'tts'] as const).map((asset) => <div key={asset}><strong>{asset === 'asr' ? '中英双语识别' : 'Kokoro 中英朗读'}</strong><span>{speechAssets[asset].status === 'downloading' ? `${Math.round(speechAssets[asset].progress * 100)}%` : speechAssets[asset].status}</span><progress max={1} value={speechAssets[asset].progress}/>{speechAssets[asset].error && <small role="alert">{speechAssets[asset].error}</small>}</div>)}{speechModelsReady ? <small>模型已就绪，API 和模型配置完整后可以直接使用。</small> : <button className="quiet-action" disabled={speechModelsDownloading} onClick={() => void downloadSpeechModels()}>{speechModelsDownloading ? '正在下载语音模型…' : speechAssets.asr.status === 'error' || speechAssets.tts.status === 'error' ? '重试下载（约 265 MB）' : '下载语音模型（约 265 MB）'}</button>}</section>
       <form key={JSON.stringify(providers)} className="provider-form" onSubmit={(event) => { event.preventDefault(); void saveProviders(event.currentTarget) }}><h2>API 直连与复盘</h2><p>只需填写 DeepSeek 或其他 OpenAI-compatible 文本接口；本地语音识别与朗读不需要第二个云端账号。</p><label>兼容接口 Base URL<input name="llmBaseUrl" defaultValue={providers?.llmBaseUrl} placeholder="https://api.deepseek.com/v1"/></label><label>模型名<input name="llmModel" defaultValue={providers?.llmModel} placeholder="deepseek-chat"/></label><label>LLM API Key<input name="llmApiKey" type="password" placeholder={providers?.hasLlmKey ? '已保存' : '填写 API Key'}/></label><label className="check-label"><input name="clearLlmApiKey" type="checkbox"/>清除已保存的 API Key</label><button className="primary-action" type="submit">保存设置</button></form>
     </section>}
   </section></main>

@@ -23,6 +23,8 @@
 
 ```text
 App.tsx
+-> 默认 ChatGPT；选择 API 直连时检查文本 API 配置与本地模型
+-> 缺少配置或模型 -> 设置页 -> 用户点击下载约 265 MB 模型
 -> practice:start IPC -> PracticeController
 -> ChatGPT automation/adapter, or local ASR Worker
 -> 16 kHz Float32 chunks -> bilingual Zipformer partial/final transcript
@@ -50,7 +52,7 @@ App.tsx
 
 ### API 本地双语语音
 
-`speech-model-manager.ts` 把固定版本模型下载到 Electron `userData/speech-models`。ASR 是 `zipformer-small-bilingual-zh-en-32-int8` 的四个独立文件；TTS 是 `kokoro-int8-multi-lang-v1_1`。下载必须写 `.part`，验证固定字节数与 SHA-256 后原子改名；Kokoro 在已验证压缩包解压完成后原子移动。模型齐全后不能联网。
+`speech-model-manager.ts` 把固定版本模型下载到打包应用可执行文件旁的 `speech-models`，即安装目录内；开发环境没有安装目录，仍使用 `userData/speech-models`。ASR 是 `zipformer-small-bilingual-zh-en-32-int8` 的四个独立文件；TTS 是 `kokoro-int8-multi-lang-v1_1`。下载必须由设置页按钮显式触发，写入 `.part`，验证固定字节数与 SHA-256 后原子改名；Kokoro 在已验证压缩包解压完成后原子移动。开始 API 语音时只检查模型是否齐全，不能自动下载；模型齐全后不能联网。
 
 `speech-worker.ts` 是 electron-vite 的独立 main entry；`local-speech-service.ts` 管理 Worker 请求。`streaming-asr-session.ts` 保持同一轮临时/最终字幕 ID，endpoint rule 2 为 1.2 秒，空定稿不发送。`learning-service.ts` 解析任意网络分块的标准 SSE；只有尚未收到 delta 时允许一次非流式回退。`speech-segments.ts` 按中英文句末标点切分，超过 120 字时回退到最近逗号或空格。`sequential-task-queue.ts` 保证 TTS 与播放器入队顺序。
 
@@ -128,7 +130,7 @@ pnpm dev
 1. 打开连接页，确认只有一个 SpeakSub 窗口、没有 `File/Edit/View` 菜单，左侧连接说明与右侧 ChatGPT 网页紧贴；最小化和恢复后网页仍在同一窗口，返回练习台后后台网页仍可继续采集。
 2. 登录 ChatGPT，选择场景、难度和文字或语音模式；确认网页文本进入字幕和 `current-practice.md`。
 3. 结束练习，确认复盘写回并归档为 `speaksub-practice-*.md`；重启后确认只清理记录的 SpeakSub ChatGPT 会话。
-4. 配置 DeepSeek-compatible Base URL、model 和 key 后启动 API 语音；首次确认 ASR/TTS 各自进度、错误可重试，模型目录位于 `userData/speech-models`。
+4. 新安装后确认默认来源仍为 ChatGPT。选择 API 直连时，缺少 Base URL、model 或 key 应跳到设置页提示补全；文本 API 已配置但语音模型缺失时，应提示约 265 MB 并跳到设置页，且只有点击下载按钮后才开始下载。打包版模型目录位于安装目录的 `speech-models`，两项 ready 后再次选择 API 可直接使用。
 5. 中英混说时确认“我”字幕持续原位更新，停顿约 1.2 秒只提交一次；DeepSeek 回复逐步显示，第一句结束后即可发声，不等待全文完成。
 6. 确认中文、英文和混合短句均按顺序播放；AI 生成和播放时实际采集停止，全部文字及声音完成后自动恢复监听，扬声器内容不会成为下一轮输入。
 7. 退出重启并断网，确认两组本地模型仍能加载；结束练习后确认 Markdown 只含每轮最终用户/AI 文本，没有临时 ASR 或流式半句。

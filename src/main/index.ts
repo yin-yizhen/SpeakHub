@@ -10,7 +10,7 @@ import { cleanRecordedConversations } from './background-cleanup'
 import { isCurrentConnectionPage, loadConnectionUrl } from './connection-navigation'
 import { LearningService } from './learning-service'
 import { LocalSpeechService } from './local-speech-service'
-import { SpeechModelManager } from './speech-model-manager'
+import { SpeechModelManager, speechModelRoot } from './speech-model-manager'
 import { SpeechSegmenter } from './speech-segments'
 import { SequentialTaskQueue } from './sequential-task-queue'
 import { SessionCheckpoint } from './session-checkpoint'
@@ -237,8 +237,9 @@ async function prepareWebPractice(topic: string, level: string, strength: Correc
 async function beginLocalVoicePractice(strength: CorrectionStrength, topic: string, level: string, focus?: string) {
   const config = settings.get()
   if (!config.llmBaseUrl || !config.llmModel || !config.hasLlmKey) throw new Error('请先在设置中填写 DeepSeek 或其他 OpenAI-compatible 文本 API。')
-  announceAutomation({ phase: 'filling-prompt', message: '正在准备本地中英双语语音模型…' })
-  await speechModels.ensureAll()
+  const assets = speechModels.state()
+  if (assets.asr.status !== 'ready' || assets.tts.status !== 'ready') throw new Error('请先到设置下载本地双语语音模型（约 265 MB）。')
+  announceAutomation({ phase: 'filling-prompt', message: '正在启动本地中英双语语音模型…' })
   const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source: 'api-direct', mode: 'voice', focus })
   const session = beginSession(profile)
   localSpeech = new LocalSpeechService(speechModels.paths)
@@ -391,6 +392,8 @@ function installIpc(): void {
     if (profile.source === 'chatgpt-web' && profile.mode === 'voice') chatHostView?.webContents.send('speaksub:microphone-gate', true)
     announceMicrophone()
     if (profile.source === 'api-direct') {
+      const config = settings.get()
+      if (!config.llmBaseUrl || !config.llmModel || !config.hasLlmKey) throw new Error('请先在设置中填写 DeepSeek 或其他 OpenAI-compatible 文本 API。')
       if (profile.mode === 'voice') return beginLocalVoicePractice(profile.correctionStrength, profile.topic, profile.level, profile.focus)
       const session = beginSession(profile); announceAutomation({ phase: 'idle', message: 'API direct text practice is ready. Type a message to begin.' }); return { session, voiceStarted: false, source: profile.source, mode: profile.mode }
     }
@@ -467,7 +470,7 @@ function installIpc(): void {
 app.whenReady().then(() => {
   const workArea = screen.getPrimaryDisplay().workArea; studioBounds = { x: Math.round(workArea.x + (workArea.width - Math.min(1320, workArea.width)) / 2), y: Math.round(workArea.y + (workArea.height - Math.min(860, workArea.height)) / 2), width: Math.min(1320, workArea.width), height: Math.min(860, workArea.height) }
   const userData = app.getPath('userData'); diagnostics = new DiagnosticLog(join(userData, 'speaksub-diagnostics.jsonl')); appSettings = new AppSettingsStore(join(userData, 'app-settings.json')); try { microphoneShortcut = normalizeMicrophoneShortcut(appSettings.microphoneShortcut()) } catch { microphoneShortcut = defaultMicrophoneShortcut; appSettings.setMicrophoneShortcut(microphoneShortcut) } connection = appSettings.connection('chatgpt-web', !appSettings.providerReady('chatgpt-web')); subtitle = appSettings.readSubtitle()
-  archiveDirectory = appSettings.archiveDirectory(join(userData, 'learning-archive')); store = new SpeakSubStore(archiveDirectory); settings = new SecureSettings(join(userData, 'provider-settings.json')); chatMarker = new ChatGPTMarkerStore(join(userData, 'last-speaksub-chat.json')); learning = new LearningService(settings, join(app.getAppPath(), 'resources', 'dictionaries', 'ecdict-en-zh')); speechModels = new SpeechModelManager(join(userData, 'speech-models')); speechModels.subscribe((assetState) => broadcast('speech-assets:state', assetState))
+  archiveDirectory = appSettings.archiveDirectory(join(userData, 'learning-archive')); store = new SpeakSubStore(archiveDirectory); settings = new SecureSettings(join(userData, 'provider-settings.json')); chatMarker = new ChatGPTMarkerStore(join(userData, 'last-speaksub-chat.json')); learning = new LearningService(settings, join(app.getAppPath(), 'resources', 'dictionaries', 'ecdict-en-zh')); speechModels = new SpeechModelManager(speechModelRoot({ isPackaged: app.isPackaged, executablePath: process.execPath, userDataDirectory: userData })); speechModels.subscribe((assetState) => broadcast('speech-assets:state', assetState))
   const showPersistedOverlay = subtitle.visible
   try { registerMicrophoneShortcut(microphoneShortcut) } catch (error) { microphoneShortcutError = error instanceof Error ? error.message : 'The saved microphone shortcut is unavailable.' }
   createMainWindow(); createChatHostView(); createOverlayWindow(); installIpc(); applyWindowMode(); mainWindow?.webContents.once('did-finish-load', () => { analytics = new AnonymousAnalytics({ userDataDirectory: userData, appVersion: app.getVersion(), platform: process.platform, arch: process.arch }); void analytics.start() }); if (microphoneShortcutError) announceAutomation({ phase: 'failed', message: microphoneShortcutError, recoverable: true }); if (showPersistedOverlay) showOverlay()

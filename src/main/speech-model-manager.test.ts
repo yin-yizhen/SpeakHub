@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } f
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { SpeechModelManager, speechAssetManifest } from './speech-model-manager'
+import { SpeechModelManager, speechAssetManifest, speechModelRoot } from './speech-model-manager'
 
 const hash = (value: Uint8Array): string => createHash('sha256').update(value).digest('hex')
 const originals = {
@@ -39,6 +39,13 @@ function responseFor(url: string): Response {
 }
 
 describe('SpeechModelManager', () => {
+  it('stores packaged models beside the installed executable and keeps development models in userData', () => {
+    expect(speechModelRoot({ isPackaged: true, executablePath: 'C:\\Users\\test\\AppData\\Local\\Programs\\SpeakSub\\SpeakSub.exe', userDataDirectory: 'C:\\Users\\test\\AppData\\Roaming\\speaksub' }))
+      .toBe('C:\\Users\\test\\AppData\\Local\\Programs\\SpeakSub\\speech-models')
+    expect(speechModelRoot({ isPackaged: false, executablePath: 'D:\\tools\\electron.exe', userDataDirectory: 'C:\\Users\\test\\AppData\\Roaming\\speaksub' }))
+      .toBe('C:\\Users\\test\\AppData\\Roaming\\speaksub\\speech-models')
+  })
+
   it('downloads verified files, reports separate progress, atomically extracts, and reuses them offline', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'speaksub-models-'))
     try {

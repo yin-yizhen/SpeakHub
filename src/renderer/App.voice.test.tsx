@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { SpeakSubApi, SubtitlePreferences, VoiceTurnPhase } from '../shared/types'
+import type { ProviderSettings, SpeakSubApi, SpeechAssetState, SubtitlePreferences, VoiceTurnPhase } from '../shared/types'
 
 const audio = vi.hoisted(() => ({ captureStart: vi.fn(async () => undefined), captureStop: vi.fn(), playTone: vi.fn(), playerPlay: vi.fn(), playerInterrupt: vi.fn(), playerStop: vi.fn() }))
 
@@ -28,6 +28,9 @@ let microphoneListener: ((state: Parameters<SpeakSubApi['onMicrophoneGateState']
 let toggleMicrophoneGate: ReturnType<typeof vi.fn>
 let practiceSource: 'api-direct' | 'chatgpt-web'
 let voicePhaseListener: ((phase: VoiceTurnPhase) => void) | undefined
+let providerSettings: ProviderSettings
+let speechAssetState: SpeechAssetState
+let downloadSpeechAssets: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -35,6 +38,9 @@ beforeEach(() => {
   container = document.createElement('div'); document.body.append(container); root = createRoot(container)
   startVoiceCapture = vi.fn(async () => undefined); stopVoiceCapture = vi.fn(async () => undefined)
   practiceEndedListener = undefined; microphoneListener = undefined; voicePhaseListener = undefined; practiceSource = 'api-direct'
+  providerSettings = { llmBaseUrl: 'https://api.example.com/v1', llmModel: 'example-chat', hasLlmKey: true }
+  speechAssetState = { asr: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 } }
+  downloadSpeechAssets = vi.fn(async () => ({ asr: { status: 'ready' as const, downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready' as const, downloadedBytes: 1, totalBytes: 1, progress: 1 } }))
   let microphone = { active: false, available: false, shortcut: 'F8' }
   toggleMicrophoneGate = vi.fn(async () => {
     microphone = { ...microphone, active: !microphone.active, available: true }
@@ -42,8 +48,8 @@ beforeEach(() => {
     return microphone
   })
   const api = {
-    getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: true, pageVisible: false, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': true } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone, speechAssets: { asr: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 } }, voicePhase: 'listening' })),
-    getProviderSettings: vi.fn(async () => ({ hasLlmKey: true })),
+    getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: true, pageVisible: false, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': true } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone, speechAssets: speechAssetState, voicePhase: 'listening' })),
+    getProviderSettings: vi.fn(async () => providerSettings),
     getArchiveDirectory: vi.fn(async () => 'D:/archive'),
     startPractice: vi.fn(async () => ({ session: { id: 'session-1', startedAt: 'now', correctionStrength: 'normal' }, voiceStarted: false, source: practiceSource, mode: 'voice' as const })),
     startVoiceCapture,
@@ -61,7 +67,8 @@ beforeEach(() => {
     onMicrophoneGateState: vi.fn((listener) => { microphoneListener = listener; return () => { microphoneListener = undefined } }),
     toggleMicrophoneGate,
     setMicrophoneGate: vi.fn(async () => microphone),
-    saveMicrophoneShortcut: vi.fn(async (shortcut: string) => shortcut)
+    saveMicrophoneShortcut: vi.fn(async (shortcut: string) => shortcut),
+    downloadSpeechAssets
   } as unknown as SpeakSubApi
   window.speaksub = api
 })
@@ -73,6 +80,46 @@ const settle = async () => {
 }
 
 describe('unified voice microphone gate', () => {
+  it('keeps ChatGPT selected by default on a fresh launch', async () => {
+    practiceSource = 'chatgpt-web'
+    act(() => root.render(<App/>)); await settle()
+
+    expect(container.querySelector<HTMLButtonElement>('.source-picker button.active')?.textContent).toBe('ChatGPT 网页')
+  })
+
+  it('redirects a configured text API to settings when voice models are missing and downloads only after a click', async () => {
+    practiceSource = 'chatgpt-web'
+    speechAssetState = {
+      asr: { status: 'missing', downloadedBytes: 0, totalBytes: 50, progress: 0 },
+      tts: { status: 'missing', downloadedBytes: 0, totalBytes: 215, progress: 0 }
+    }
+    act(() => root.render(<App/>)); await settle()
+
+    const apiButton = [...container.querySelectorAll<HTMLButtonElement>('.source-picker button')].find((button) => button.textContent === 'API 直连')!
+    await act(async () => { apiButton.click(); await Promise.resolve() })
+
+    expect(container.querySelector('.settings-page')).not.toBeNull()
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('约 265 MB')
+    const download = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '下载语音模型（约 265 MB）')!
+    expect(downloadSpeechAssets).not.toHaveBeenCalled()
+    await act(async () => { download.click(); await Promise.resolve() })
+    expect(downloadSpeechAssets).toHaveBeenCalledOnce()
+    expect(container.textContent).toContain('模型已就绪')
+  })
+
+  it('redirects API direct to settings when the text API is not configured', async () => {
+    practiceSource = 'chatgpt-web'
+    providerSettings = { hasLlmKey: false }
+    act(() => root.render(<App/>)); await settle()
+
+    const apiButton = [...container.querySelectorAll<HTMLButtonElement>('.source-picker button')].find((button) => button.textContent === 'API 直连')!
+    await act(async () => { apiButton.click(); await Promise.resolve() })
+
+    expect(container.querySelector('.settings-page')).not.toBeNull()
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Base URL、模型名和 API Key')
+    expect(downloadSpeechAssets).not.toHaveBeenCalled()
+  })
+
   it('keeps the API microphone off until the shared button toggles the gate, with tones for both transitions', async () => {
     act(() => root.render(<App/>)); await settle()
     expect(container.querySelector('.connection-pill')).toBeNull()

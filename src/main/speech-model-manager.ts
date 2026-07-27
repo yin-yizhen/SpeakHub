@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { SpeechAssetProgress, SpeechAssetState } from '../shared/types'
 
@@ -34,6 +34,12 @@ export const speechAssetManifest = {
 
 type Fetcher = typeof fetch
 type Extractor = (archive: string, destination: string) => Promise<void>
+
+export function speechModelRoot(options: { isPackaged: boolean; executablePath: string; userDataDirectory: string }): string {
+  return options.isPackaged
+    ? join(dirname(options.executablePath), 'speech-models')
+    : join(options.userDataDirectory, 'speech-models')
+}
 
 export class SpeechModelManager {
   private current: SpeechAssetState
