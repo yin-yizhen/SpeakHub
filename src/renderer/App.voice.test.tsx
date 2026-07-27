@@ -40,9 +40,9 @@ beforeEach(() => {
   container = document.createElement('div'); document.body.append(container); root = createRoot(container)
   startVoiceCapture = vi.fn(async () => undefined); stopVoiceCapture = vi.fn(async () => undefined)
   practiceEndedListener = undefined; microphoneListener = undefined; voicePhaseListener = undefined; practiceSource = 'api-direct'
-  providerSettings = { llmBaseUrl: 'https://api.example.com/v1', llmModel: 'example-chat', hasLlmKey: true }
-  speechAssetState = { asr: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 } }
-  downloadSpeechAssets = vi.fn(async () => ({ asr: { status: 'ready' as const, downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready' as const, downloadedBytes: 1, totalBytes: 1, progress: 1 } }))
+  providerSettings = { llmBaseUrl: 'https://api.example.com/v1', llmModel: 'example-chat', hasLlmKey: true, hasAliyunAsrKey: true }
+  speechAssetState = { vad: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 } }
+  downloadSpeechAssets = vi.fn(async () => ({ vad: { status: 'ready' as const, downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready' as const, downloadedBytes: 1, totalBytes: 1, progress: 1 } }))
   practicePreferences = { source: practiceSource, mode: 'voice', scenarioTemplateId: 'daily', difficultyTemplateId: 'a1', correctionTemplateId: 'normal', focus: '', focusEnabled: false }
   savePracticePreferences = vi.fn(async (preferences: PracticePreferences) => { practicePreferences = preferences; return preferences })
   let microphone = { active: false, available: false, shortcut: 'F8' }
@@ -52,7 +52,7 @@ beforeEach(() => {
     return microphone
   })
   const api = {
-    getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: true, pageVisible: false, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': true } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone, speechAssets: speechAssetState, voicePhase: 'listening' })),
+    getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: true, pageVisible: false, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': true } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone, speechAssets: speechAssetState, speechUsage: { provider: 'aliyun-fun-asr', sessionSeconds: 0, month: '2026-07', monthlySeconds: 0, estimatedCny: 0 }, voicePhase: 'listening' })),
     getProviderSettings: vi.fn(async () => providerSettings),
     getArchiveDirectory: vi.fn(async () => 'D:/archive'),
     getPromptTemplates: vi.fn(async () => ({ scenario: [{ id: 'daily', name: '日常聊天', prompt: '场景提示词' }, { id: 'travel', name: '旅行英语', prompt: '旅行场景提示词' }], difficulty: [{ id: 'a1', name: 'A1', prompt: '难度提示词' }, { id: 'b1', name: 'B1', prompt: 'B1 难度提示词' }], correction: [{ id: 'normal', name: '普通', prompt: '纠错提示词' }, { id: 'strict', name: '严格', prompt: '严格纠错提示词' }] })),
@@ -76,6 +76,7 @@ beforeEach(() => {
     onVoiceAudio: vi.fn(() => () => undefined),
     onVoiceInterrupt: vi.fn(() => () => undefined),
     onSpeechAssetState: vi.fn(() => () => undefined),
+    onSpeechUsage: vi.fn(() => () => undefined),
     onVoicePhase: vi.fn((listener) => { voicePhaseListener = listener; return () => { voicePhaseListener = undefined } }),
     onMicrophoneGateState: vi.fn((listener) => { microphoneListener = listener; return () => { microphoneListener = undefined } }),
     toggleMicrophoneGate,
@@ -114,10 +115,10 @@ describe('unified voice microphone gate', () => {
     expect(savePracticePreferences).toHaveBeenLastCalledWith(expect.objectContaining({ scenarioTemplateId: 'daily', source: 'api-direct', mode: 'text', focus: '练习过去时。', focusEnabled: true }))
   })
 
-  it('redirects a configured text API to settings when voice models are missing and downloads only after a click', async () => {
+  it('redirects a configured text API to settings when Aliyun helper assets are missing and downloads only after a click', async () => {
     practiceSource = 'chatgpt-web'
     speechAssetState = {
-      asr: { status: 'missing', downloadedBytes: 0, totalBytes: 258_976_506, progress: 0 },
+      vad: { status: 'missing', downloadedBytes: 0, totalBytes: 643_854, progress: 0 },
       tts: { status: 'missing', downloadedBytes: 0, totalBytes: 147_031_220, progress: 0 }
     }
     act(() => root.render(<App/>)); await settle()
@@ -126,28 +127,64 @@ describe('unified voice microphone gate', () => {
     await act(async () => { apiButton.click(); await Promise.resolve() })
 
     expect(container.querySelector('.settings-page')).not.toBeNull()
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('约 406 MB')
-    const download = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '下载缺失语音模型（约 406 MB）')!
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('约 148 MB')
+    const download = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '下载VAD 与 Kokoro（约 148 MB）')!
     expect(downloadSpeechAssets).not.toHaveBeenCalled()
     await act(async () => { download.click(); await Promise.resolve() })
-    expect(downloadSpeechAssets).toHaveBeenCalledOnce()
-    expect(container.textContent).toContain('模型已就绪')
+    expect(downloadSpeechAssets).toHaveBeenCalledWith()
+    expect(container.textContent).toContain('阿里语音工作流所需组件已就绪')
   })
 
-  it('shows only the remaining Whisper download when Zipformer and Kokoro are already present', async () => {
+  it('requires a separate DashScope key before starting Aliyun recognition', async () => {
     practiceSource = 'chatgpt-web'
-    speechAssetState = {
-      asr: { status: 'missing', downloadedBytes: 97_723_362, totalBytes: 258_976_506, progress: 97_723_362 / 258_976_506 },
-      tts: { status: 'ready', downloadedBytes: 147_031_220, totalBytes: 147_031_220, progress: 1 }
-    }
+    providerSettings = { ...providerSettings, hasAliyunAsrKey: false }
     act(() => root.render(<App/>)); await settle()
 
     const apiButton = [...container.querySelectorAll<HTMLButtonElement>('.source-picker button')].find((button) => button.textContent === 'API 直连')!
     await act(async () => { apiButton.click(); await Promise.resolve() })
 
-    expect(container.textContent).toContain('本机还需下载约 161 MB')
-    expect(container.textContent).toContain('需补全 · 已有 38%')
-    expect([...container.querySelectorAll<HTMLButtonElement>('button')].some((button) => button.textContent === '补下载 Whisper 校正与 VAD（约 161 MB）')).toBe(true)
+    expect(container.querySelector('.settings-page')).not.toBeNull()
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('DashScope API Key')
+  })
+
+  it('shows the Aliyun registration guide and opens only its official pages', async () => {
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+
+    const helpButton = container.querySelector<HTMLButtonElement>('.aliyun-help-trigger')!
+    expect(helpButton.textContent).toBe('如何获取')
+    await act(async () => { helpButton.click(); await Promise.resolve() })
+
+    const dialog = container.querySelector<HTMLElement>('.aliyun-help-dialog')!
+    expect(dialog.getAttribute('role')).toBe('dialog')
+    expect(dialog.textContent).toContain('如何开通阿里语音识别')
+    expect(dialog.textContent).toContain('华北 2（北京）')
+    expect(dialog.textContent).toContain('sk-sp-')
+
+    const links = [...dialog.querySelectorAll<HTMLAnchorElement>('.aliyun-help-actions a')]
+    expect(links.map((link) => link.href)).toEqual([
+      'https://bailian.console.aliyun.com/',
+      'https://help.aliyun.com/zh/model-studio/get-api-key/',
+      'https://help.aliyun.com/zh/model-studio/new-free-quota/'
+    ])
+    expect(links.every((link) => link.target === '_blank')).toBe(true)
+
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('[aria-label="关闭阿里 API 帮助"]')!.click(); await Promise.resolve() })
+    expect(container.querySelector('.aliyun-help-dialog')).toBeNull()
+  })
+
+  it('shows only the Aliyun workflow and no local recognition option or model', async () => {
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+
+    expect(container.textContent).toContain('阿里语音识别')
+    expect(container.textContent).toContain('阿里语音辅助组件')
+    expect(container.textContent).not.toContain('本地识别')
+    expect(container.textContent).not.toContain('Zipformer')
+    expect(container.textContent).not.toContain('Whisper')
+    expect(container.querySelector('[name="speechRecognitionProvider"]')).toBeNull()
   })
 
   it('redirects API direct to settings when the text API is not configured', async () => {

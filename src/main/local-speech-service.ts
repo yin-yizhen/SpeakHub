@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
 import { join } from 'node:path'
+import { AliyunFunAsr } from './aliyun-fun-asr'
 
 type TranscriptListener = (event: { utteranceId: string; text: string; final: boolean }) => void
 type SpeechActivityListener = (active: boolean) => void
 type WorkerHandle = Pick<Worker, 'on' | 'postMessage' | 'terminate'>
 type WorkerFactory = (filename: string, options: ConstructorParameters<typeof Worker>[1]) => WorkerHandle
+type CloudRecognizer = Pick<AliyunFunAsr, 'onTranscript' | 'onUsage' | 'onError' | 'start' | 'accept' | 'stop'>
+type CloudFactory = (apiKey: string) => CloudRecognizer
 type SpeechRequest = {
   generation: number
   resolve: (audio: { samples: Float32Array; sampleRate: number }) => void
@@ -19,40 +22,46 @@ function aborted(): Error {
 }
 
 export class LocalSpeechService {
-  private asrWorker?: WorkerHandle
+  private vadWorker?: WorkerHandle
   private ttsWorker?: WorkerHandle
   private ready?: Promise<void>
   private transcriptListener?: TranscriptListener
   private speechActivityListener?: SpeechActivityListener
   private errorListener?: (error: Error) => void
+  private usageListener?: (cumulativeSeconds: number) => void
   private requests = new Map<string, SpeechRequest>()
+  private cloudRecognizer?: CloudRecognizer
 
   constructor(
-    private readonly paths: { asr: string; tts: string },
-    private readonly workerFactory: WorkerFactory = (filename, options) => new Worker(filename, options)
+    private readonly paths: { vad: string; tts: string },
+    private readonly options: { aliyunApiKey?: string } = {},
+    private readonly workerFactory: WorkerFactory = (filename, options) => new Worker(filename, options),
+    private readonly cloudFactory: CloudFactory = (apiKey) => new AliyunFunAsr(apiKey)
   ) {}
 
   onTranscript(listener: TranscriptListener): void { this.transcriptListener = listener }
   onSpeechActivity(listener: SpeechActivityListener): void { this.speechActivityListener = listener }
   onError(listener: (error: Error) => void): void { this.errorListener = listener }
+  onUsage(listener: (cumulativeSeconds: number) => void): void { this.usageListener = listener }
 
   start(): Promise<void> {
     if (this.ready) return this.ready
-    const asrWorker = this.workerFactory(join(__dirname, 'speech-asr-worker.js'), { workerData: { asr: this.paths.asr } })
+    const vadWorker = this.workerFactory(join(__dirname, 'speech-vad-worker.js'), { workerData: { vad: this.paths.vad } })
     const ttsWorker = this.workerFactory(join(__dirname, 'speech-tts-worker.js'), { workerData: { tts: this.paths.tts } })
-    this.asrWorker = asrWorker
+    this.vadWorker = vadWorker
     this.ttsWorker = ttsWorker
     this.ready = Promise.all([
-      this.waitUntilReady(asrWorker, 'ASR', (message) => this.handleAsrMessage(message)),
-      this.waitUntilReady(ttsWorker, 'TTS', (message) => this.handleTtsMessage(message))
+      this.waitUntilReady(vadWorker, 'VAD', (message) => this.handleVadMessage(message)),
+      this.waitUntilReady(ttsWorker, 'TTS', (message) => this.handleTtsMessage(message)),
+      this.startCloudRecognizer()
     ]).then(() => undefined)
     return this.ready
   }
 
   accept(samples: Float32Array): void {
-    if (!this.asrWorker) throw new Error('Local speech recognition is not running.')
+    if (!this.vadWorker) throw new Error('Voice activity detection is not running.')
     const copy = samples.slice()
-    this.asrWorker.postMessage({ type: 'audio', samples: copy }, [copy.buffer])
+    this.vadWorker.postMessage({ type: 'audio', samples: copy }, [copy.buffer])
   }
 
   async synthesize(text: string, messageId: string, index: number, generation: number): Promise<{ samples: Float32Array; sampleRate: number }> {
@@ -72,15 +81,17 @@ export class LocalSpeechService {
     }
   }
 
-  reset(): void { this.asrWorker?.postMessage({ type: 'reset' }) }
+  reset(): void { this.vadWorker?.postMessage({ type: 'reset' }) }
 
   async stop(): Promise<void> {
-    const workers = [this.asrWorker, this.ttsWorker].filter((worker): worker is WorkerHandle => Boolean(worker))
-    this.asrWorker = undefined
+    const workers = [this.vadWorker, this.ttsWorker].filter((worker): worker is WorkerHandle => Boolean(worker))
+    this.vadWorker = undefined
     this.ttsWorker = undefined
     this.ready = undefined
     for (const worker of workers) worker.postMessage({ type: 'stop' })
     await Promise.all(workers.map((worker) => worker.terminate()))
+    await this.cloudRecognizer?.stop()
+    this.cloudRecognizer = undefined
     this.failAll(new Error('Local speech stopped.'))
   }
 
@@ -102,16 +113,16 @@ export class LocalSpeechService {
     })
   }
 
-  private handleAsrMessage(message: unknown): void {
-    const value = message as { type?: string; utteranceId?: string; text?: string; final?: boolean; message?: string }
-    if (value.type === 'transcript' && value.utteranceId && value.text) {
-      this.transcriptListener?.({ utteranceId: value.utteranceId, text: value.text, final: value.final === true })
-    } else if (value.type === 'speech-started') {
+  private handleVadMessage(message: unknown): void {
+    const value = message as { type?: string; utteranceId?: string; text?: string; final?: boolean; samples?: Float32Array; message?: string }
+    if (value.type === 'speech-started') {
       this.speechActivityListener?.(true)
     } else if (value.type === 'speech-stopped') {
       this.speechActivityListener?.(false)
+    } else if (value.type === 'audio' && value.samples) {
+      this.cloudRecognizer?.accept(value.samples)
     } else if (value.type === 'error') {
-      this.errorListener?.(new Error(value.message ?? 'Local speech recognition failed.'))
+      this.errorListener?.(new Error(value.message ?? 'Voice activity detection failed.'))
     }
   }
 
@@ -136,5 +147,16 @@ export class LocalSpeechService {
     for (const request of this.requests.values()) request.reject(error)
     this.requests.clear()
     this.errorListener?.(error)
+  }
+
+  private startCloudRecognizer(): Promise<void> {
+    const apiKey = this.options.aliyunApiKey?.trim()
+    if (!apiKey) return Promise.reject(new Error('请先在设置中填写阿里云 DashScope API Key。'))
+    const recognizer = this.cloudFactory(apiKey)
+    this.cloudRecognizer = recognizer
+    recognizer.onTranscript((event) => this.transcriptListener?.(event))
+    recognizer.onUsage((seconds) => this.usageListener?.(seconds))
+    recognizer.onError((error) => this.errorListener?.(error))
+    return recognizer.start()
   }
 }

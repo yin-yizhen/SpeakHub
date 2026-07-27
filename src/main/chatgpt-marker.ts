@@ -2,6 +2,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 
 export interface ChatGPTConversationMarker {
   conversationUrl: string
+  conversationTitle?: string
   createdAt: string
 }
 
@@ -19,6 +20,11 @@ export class ChatGPTMarkerStore {
 
   read(): ChatGPTConversationMarker | undefined { return this.readAll()[0] }
   write(conversationUrl: string): void { this.writeAll([...this.readAll().filter((item) => item.conversationUrl !== conversationUrl), { conversationUrl, createdAt: new Date().toISOString() }]) }
+  setTitle(conversationUrl: string, conversationTitle: string): void {
+    const title = conversationTitle.trim()
+    if (!title) return
+    this.writeAll(this.readAll().map((item) => item.conversationUrl === conversationUrl ? { ...item, conversationTitle: title } : item))
+  }
   remove(conversationUrl: string): void { this.writeAll(this.readAll().filter((item) => item.conversationUrl !== conversationUrl)) }
   clear(): void { if (existsSync(this.path)) rmSync(this.path, { force: true }) }
   clearIfMatches(conversationUrl: string): void { this.remove(conversationUrl) }

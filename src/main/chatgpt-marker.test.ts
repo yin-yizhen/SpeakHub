@@ -25,6 +25,17 @@ describe('ChatGPT conversation marker', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ conversations: expect.any(Array) })
   })
 
+  it('keeps the ChatGPT-generated sidebar title with its conversation URL', () => {
+    const store = new ChatGPTMarkerStore(join(mkdtempSync(join(tmpdir(), 'speaksub-marker-')), 'last-chat.json'))
+    store.write('https://chatgpt.com/c/current')
+    store.setTitle('https://chatgpt.com/c/current', '英语口语练习')
+
+    expect(store.readAll()).toEqual([expect.objectContaining({
+      conversationUrl: 'https://chatgpt.com/c/current',
+      conversationTitle: '英语口语练习'
+    })])
+  })
+
   it('ignores a malformed or non-conversation marker', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'speaksub-marker-')), 'last-chat.json')
     writeFileSync(path, JSON.stringify({ conversationUrl: 'https://chatgpt.com/', createdAt: 'now' }), 'utf8')

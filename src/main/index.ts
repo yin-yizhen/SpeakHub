@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Notification, screen, WebContentsView, type OpenDialogOptions } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Notification, screen, shell, WebContentsView, type OpenDialogOptions } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -19,13 +19,16 @@ import { SpeakSubStore } from './store'
 import { AppSettingsStore, defaultSubtitlePreferences, parseSubtitleUpdate } from './app-settings'
 import { discoverProviderModels } from './provider-model-probe'
 import { defaultMicrophoneShortcut, normalizeMicrophoneShortcut, replaceGlobalMicrophoneShortcut } from './microphone-shortcut'
+import { bargeInDelayMs } from './barge-in-policy'
 import { PracticeController } from './practice-controller'
 import { buildPracticePrompt, parsePracticeProfile } from './practice-profile'
 import { DiagnosticLog } from './diagnostic-log'
 import { AnonymousAnalytics } from './analytics'
+import { ALIYUN_FUN_ASR_CNY_PER_SECOND } from './aliyun-fun-asr'
+import { openAllowedHelpUrl } from './external-help-navigation'
 import { embeddedConnectionBounds, resizeBounds, subtitleBounds, subtitleHeight, type ResizeDirection } from './window-layout'
 import { mergeTranscriptEvent } from '../shared/transcript'
-import type { AutomationStatus, ConnectionState, CorrectionStrength, GeneratedSpeechChunk, MicrophoneGateState, PracticeEndResult, PracticeMode, PracticeProfile, PracticeSession, PracticeSource, PracticeStartResult, ReviewResult, SubtitlePreferences, TranscriptEvent, VoiceAudioChunk, VoiceCaptureStatus, VoiceTurnPhase, WebPracticeSource } from '../shared/types'
+import type { AutomationStatus, ConnectionState, CorrectionStrength, GeneratedSpeechChunk, MicrophoneGateState, PracticeEndResult, PracticeMode, PracticeProfile, PracticeSession, PracticeSource, PracticeStartResult, ReviewResult, SpeechUsageState, SubtitlePreferences, TranscriptEvent, VoiceAudioChunk, VoiceCaptureStatus, VoiceTurnPhase, WebPracticeSource } from '../shared/types'
 
 const CHATGPT_URL = 'https://chatgpt.com/'
 const CONNECTION_WIDTH = 420
@@ -34,6 +37,7 @@ const WEB_PRACTICE_PARTITION = 'persist:speaksub-chatgpt'
 let mainWindow: BrowserWindow | undefined
 let chatHostView: WebContentsView | undefined
 let cleanupWindow: BrowserWindow | undefined
+let cleanupTask: Promise<void> | undefined
 let overlayWindow: BrowserWindow | undefined
 let adapter: SourceAdapter | undefined
 let chatgptAutomation: ChatGPTAutomation | undefined
@@ -77,13 +81,33 @@ let microphoneShortcut = defaultMicrophoneShortcut
 let microphoneShortcutError: string | undefined
 let chatgptMicrophoneGateReady = false
 let analytics: AnonymousAnalytics | undefined
+let sessionSpeechUsageSeconds = 0
+let aliyunTaskUsageSeconds = 0
 
 function rendererUrl(page: string): string { return process.env.ELECTRON_RENDERER_URL ? `${process.env.ELECTRON_RENDERER_URL}/${page}` : pathToFileURL(join(__dirname, `../renderer/${page}`)).toString() }
 function preloadPath(): string { return join(__dirname, '../preload/preload.js') }
 function chatgptMicrophonePreloadPath(): string { return join(__dirname, '../preload/chatgpt-microphone.js') }
 function broadcast(channel: string, payload: unknown): void { for (const window of [mainWindow, overlayWindow]) if (window && !window.isDestroyed()) window.webContents.send(channel, payload) }
 function microphoneGateState(): MicrophoneGateState { return { active: microphoneActive, available: Boolean(activeSession) && activeMode === 'voice', shortcut: microphoneShortcut } }
-function state() { return { session: activeSession, settings: subtitle, events, connection, automation: automationStatus, source: activeSource, mode: activeMode, lifecycle: practiceController.lifecycle, microphone: microphoneGateState(), speechAssets: speechModels.state(), voicePhase } }
+function usageMonth(): string {
+  const date = new Date()
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+function speechUsageState(): SpeechUsageState {
+  const month = usageMonth()
+  const monthlySeconds = appSettings?.speechUsageSeconds(month) ?? 0
+  return { provider: 'aliyun-fun-asr', sessionSeconds: sessionSpeechUsageSeconds, month, monthlySeconds, estimatedCny: monthlySeconds * ALIYUN_FUN_ASR_CNY_PER_SECOND }
+}
+function announceSpeechUsage(): void { broadcast('speech:usage', speechUsageState()) }
+function recordAliyunUsage(cumulativeSeconds: number): void {
+  const delta = Math.max(0, Math.floor(cumulativeSeconds) - aliyunTaskUsageSeconds)
+  if (!delta) return
+  aliyunTaskUsageSeconds += delta
+  sessionSpeechUsageSeconds += delta
+  appSettings.addSpeechUsageSeconds(usageMonth(), delta)
+  announceSpeechUsage()
+}
+function state() { return { session: activeSession, settings: subtitle, events, connection, automation: automationStatus, source: activeSource, mode: activeMode, lifecycle: practiceController.lifecycle, microphone: microphoneGateState(), speechAssets: speechModels.state(), speechUsage: speechUsageState(), voicePhase } }
 function announceAutomation(status: AutomationStatus): void { automationStatus = status; diagnostics?.write('automation', { phase: status.phase, recoverable: status.recoverable }); broadcast('automation:status', status) }
 function announceConnection(): void { broadcast('connection:state', connection) }
 function announceMicrophone(): void { broadcast('microphone:state', microphoneGateState()) }
@@ -153,7 +177,15 @@ function createChatHostView(): void {
 }
 
 function createMainWindow(): void {
-  mainWindow = new BrowserWindow({ ...studioBounds, show: false, backgroundColor: '#111513', title: 'SpeakHub', webPreferences: { preload: preloadPath(), contextIsolation: true, sandbox: true, nodeIntegration: false } })
+  mainWindow = new BrowserWindow({ ...studioBounds, show: false, frame: false, backgroundColor: '#f7fdfb', title: 'SpeakHub', webPreferences: { preload: preloadPath(), contextIsolation: true, sandbox: true, nodeIntegration: false } })
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openAllowedHelpUrl(
+      url,
+      (target) => shell.openExternal(target),
+      (message) => dialog.showErrorBox('无法打开网页', `${message}\n\n请检查 Windows 是否设置了默认浏览器。`)
+    )
+    return { action: 'deny' }
+  })
   mainWindow.removeMenu(); mainWindow.loadURL(rendererUrl('index.html'))
   mainWindow.on('move', () => { studioBounds = mainWindow!.getBounds() })
   mainWindow.on('resize', () => { studioBounds = mainWindow!.getBounds(); if (connection.pageVisible) layoutChatHostView() })
@@ -202,11 +234,14 @@ function createCleanupWindow(): BrowserWindow {
 }
 
 function cleanPreviousInBackground(): void {
+  if (cleanupTask) return
   const markerStore = chatMarker
   if (!markerStore.readAll().length) return
   const worker = createCleanupWindow()
   const automation = new ChatGPTAutomation(worker.webContents)
-  void cleanRecordedConversations(markerStore, (conversationUrl) => automation.deleteConversation(conversationUrl)).then((summary) => {
+  cleanupTask = cleanRecordedConversations(markerStore, (conversation) => conversation.conversationTitle
+    ? automation.deleteConversationByTitle(conversation.conversationTitle)
+    : automation.deleteConversation(conversation.conversationUrl)).then((summary) => {
     if (!summary.attempted) return
     if (summary.remainingRecordedUrls.length) {
       notify('SpeakSub cleanup needs attention', `${summary.remainingRecordedUrls.length} recorded ChatGPT chat${summary.remainingRecordedUrls.length === 1 ? '' : 's'} could not be deleted and will be retried later.`)
@@ -216,6 +251,7 @@ function cleanPreviousInBackground(): void {
   }).catch((error) => notify('SpeakSub cleanup needs attention', error instanceof Error ? error.message : 'Background cleanup failed.')).finally(() => {
     if (!worker.isDestroyed()) worker.destroy()
     if (cleanupWindow === worker) cleanupWindow = undefined
+    cleanupTask = undefined
   })
 }
 
@@ -236,34 +272,47 @@ async function prepareWebPractice(topic: string, level: string, strength: Correc
     announceAutomation({ phase: 'failed', message: sent.message, recoverable: true }); throw new Error(sent.message)
   }
   const capture = await automation.captureConversationUrl().catch(() => ({ ok: false, message: 'ChatGPT did not expose a conversation URL; automatic cleanup is unavailable for this turn.', conversationUrl: undefined }))
-  if (capture.ok && capture.conversationUrl) chatMarker.write(capture.conversationUrl)
+  if (capture.ok && capture.conversationUrl) {
+    chatMarker.write(capture.conversationUrl)
+    void automation.captureConversationTitle(capture.conversationUrl).then((conversationTitle) => {
+      if (conversationTitle) chatMarker.setTitle(capture.conversationUrl!, conversationTitle)
+    }).catch(() => undefined)
+  }
   announceAutomation({ phase: 'waiting-for-reply', message: 'Prompt sent. Waiting for ChatGPT.' })
   if (mode === 'text') { announceAutomation({ phase: 'idle', message: 'ChatGPT text practice is ready.' }); return { session, voiceStarted: false, source: 'chatgpt-web' as const, mode, warning: capture.ok ? undefined : capture.message } }
-  const voice = await chatgptAutomation!.waitForReplyAndStartVoice().catch((error) => ({ ok: false, message: error instanceof Error ? error.message : 'ChatGPT voice could not start.' }))
+  const voice = await automation.waitForReplyAndStartVoice().catch((error) => ({ ok: false, message: error instanceof Error ? error.message : 'ChatGPT voice could not start.' }))
   if (!voice.ok) { announceAutomation({ phase: 'failed', message: voice.message, recoverable: true }); return { session, voiceStarted: false, source: 'chatgpt-web' as const, mode, warning: voice.message } }
   announceAutomation({ phase: 'voice-started', message: voice.message }); return { session, voiceStarted: true, source: 'chatgpt-web' as const, mode }
 }
 
-async function beginLocalVoicePractice(strength: CorrectionStrength, topic: string, level: string, focus?: string, prompt?: string) {
+async function beginApiVoicePractice(strength: CorrectionStrength, topic: string, level: string, focus?: string, prompt?: string) {
   const config = settings.get()
   if (!config.llmBaseUrl || !config.llmModel || !config.hasLlmKey) throw new Error('请先在设置中填写 DeepSeek 或其他 OpenAI-compatible 文本 API。')
+  if (!config.hasAliyunAsrKey) throw new Error('请先在设置中填写阿里云 DashScope API Key。')
   const assets = speechModels.state()
-  if (assets.asr.status !== 'ready' || assets.tts.status !== 'ready') throw new Error('请先到设置下载当前缺失的本地双语语音模型。')
-  announceAutomation({ phase: 'filling-prompt', message: '正在启动本地中英双语语音模型…' })
+  const requiredReady = assets.vad.status === 'ready' && assets.tts.status === 'ready'
+  if (!requiredReady) throw new Error('请先到设置下载 VAD 与 Kokoro 语音组件。')
+  announceAutomation({ phase: 'filling-prompt', message: '正在连接阿里中英实时识别…' })
   const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source: 'api-direct', mode: 'voice', focus, prompt })
   const session = beginSession(profile)
   microphoneSpeechActive = false
   recentSpeechEligibleUntil = 0
   pendingBargeTranscript = undefined
+  sessionSpeechUsageSeconds = 0
+  aliyunTaskUsageSeconds = 0
+  announceSpeechUsage()
   echoCancellationAvailable = true
   clearBargeTimer()
-  localSpeech = new LocalSpeechService(speechModels.paths)
+  localSpeech = new LocalSpeechService(speechModels.paths, {
+    aliyunApiKey: settings.getSecrets().aliyunAsrApiKey
+  })
   localSpeech.onSpeechActivity((active) => handleLocalSpeechActivity(active))
   localSpeech.onTranscript((transcript) => acceptLocalTranscript(session.id, transcript))
+  localSpeech.onUsage(recordAliyunUsage)
   localSpeech.onError((error) => announceAutomation({ phase: 'failed', message: error.message, recoverable: true }))
   try { await localSpeech.start() } catch (error) { await localSpeech.stop().catch(() => undefined); localSpeech = undefined; stopSessionCheckpoint(true); store.abortSession(session.id); activeSession = undefined; throw error }
   announceVoicePhase('listening')
-  announceAutomation({ phase: 'idle', message: `本地双语语音已就绪。按 ${microphoneShortcut} 开始说话。` })
+  announceAutomation({ phase: 'idle', message: `阿里中英识别已就绪。按 ${microphoneShortcut} 开始说话。` })
   return { session, voiceStarted: false, source: 'api-direct' as const, mode: 'voice' as const }
 }
 
@@ -275,22 +324,41 @@ function clearBargeTimer(): void {
 function handleLocalSpeechActivity(active: boolean): void {
   microphoneSpeechActive = active
   clearBargeTimer()
+  diagnostics?.write('voice-speech-activity', {
+    active,
+    phase: voicePhase,
+    generation: activeVoiceReply?.generation
+  })
   if (active) {
     microphoneSpeechStartedAt = Date.now()
     recentSpeechEligibleUntil = 0
+    const sessionId = activeSession?.id
+    if (activeVoiceReply && sessionId) {
+      const generation = activeVoiceReply.generation
+      const delay = interruptionDelay()
+      bargeTimer = setTimeout(() => {
+        bargeTimer = undefined
+        if (!microphoneSpeechActive || activeVoiceReply?.generation !== generation) return
+        const pending = pendingBargeTranscript
+        const interrupted = interruptVoiceResponse('vad')
+        if (!interrupted || !pending) return
+        pendingBargeTranscript = undefined
+        emitLocalTranscript(sessionId, pending)
+      }, delay)
+    }
     return
   }
   recentSpeechEligibleUntil = Date.now() + 2_500
 }
 
 function interruptionDelay(): number {
-  const phaseDelay = voicePhase === 'thinking' ? 0 : 50
-  return phaseDelay + (echoCancellationAvailable ? 0 : 200)
+  return bargeInDelayMs(voicePhase, echoCancellationAvailable)
 }
 
-function interruptVoiceResponse(): boolean {
+function interruptVoiceResponse(trigger: 'vad' | 'transcript' | 'manual' = 'transcript'): boolean {
   const turn = activeVoiceReply
   if (!turn) return false
+  clearBargeTimer()
   voiceGeneration += 1
   turn.controller.abort()
   localSpeech?.cancelSynthesis(turn.generation)
@@ -308,6 +376,13 @@ function interruptVoiceResponse(): boolean {
   }
   if (activeVoiceReply === turn) activeVoiceReply = undefined
   voiceTurnFinishedGeneration = undefined
+  diagnostics?.write('voice-barge-in', {
+    trigger,
+    phase: voicePhase,
+    generation: turn.generation,
+    speechMs: Math.max(0, Date.now() - microphoneSpeechStartedAt),
+    recognizedCharacters: pendingBargeTranscript?.text.trim().length ?? 0
+  })
   announceVoicePhase('listening')
   announceAutomation({ phase: 'idle', message: '已打断 AI，正在听你说。' })
   return true
@@ -323,25 +398,15 @@ function emitLocalTranscript(sessionId: string, transcript: { utteranceId: strin
   void task.catch(() => undefined).finally(() => voiceReplyPromises.delete(task))
 }
 
-function tryBargeIn(sessionId: string): boolean {
+function tryBargeIn(): boolean {
   const transcript = pendingBargeTranscript
   if (!transcript || !activeVoiceReply || !transcript.text.trim()) return false
   const speechRecentlyEnded = Date.now() <= recentSpeechEligibleUntil
   if (!microphoneSpeechActive && !(transcript.final && speechRecentlyEnded)) return false
   const elapsed = Date.now() - microphoneSpeechStartedAt
   const delay = interruptionDelay()
-  if (!transcript.final && elapsed < delay) {
-    clearBargeTimer()
-    bargeTimer = setTimeout(() => {
-      bargeTimer = undefined
-      if (!microphoneSpeechActive || !pendingBargeTranscript || !interruptVoiceResponse()) return
-      const pending = pendingBargeTranscript
-      pendingBargeTranscript = undefined
-      emitLocalTranscript(sessionId, pending)
-    }, delay - elapsed)
-    return false
-  }
-  if (!interruptVoiceResponse()) return false
+  if (!transcript.final && elapsed < delay) return false
+  if (!interruptVoiceResponse('transcript')) return false
   pendingBargeTranscript = undefined
   return true
 }
@@ -350,7 +415,7 @@ function acceptLocalTranscript(sessionId: string, transcript: { utteranceId: str
   if (!activeSession || activeSession.id !== sessionId || !transcript.text.trim()) return
   if (voicePhase !== 'listening') {
     pendingBargeTranscript = transcript
-    if (!tryBargeIn(sessionId)) return
+    if (!tryBargeIn()) return
   }
   emitLocalTranscript(sessionId, transcript)
 }
@@ -491,6 +556,13 @@ function installIpc(): void {
     announceAutomation({ phase: 'idle', message: 'The previous practice record was cleared. You can start a new practice.' })
   })
   ipcMain.handle('connection:hide', () => setConnection({ pageVisible: false }))
+  ipcMain.handle('window:minimize', (event) => { if (event.sender === mainWindow?.webContents) mainWindow.minimize() })
+  ipcMain.handle('window:toggle-maximize', (event) => {
+    if (event.sender !== mainWindow?.webContents) return
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    else mainWindow.maximize()
+  })
+  ipcMain.handle('window:close', (event) => { if (event.sender === mainWindow?.webContents) mainWindow.close() })
   ipcMain.handle('practice:start', (_event, topic: string, level: string, strength: CorrectionStrength, source: PracticeSource = 'chatgpt-web', mode: PracticeMode = 'text', focus?: string, prompt?: string) => practiceController.start(async () => {
     const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source, mode, focus, prompt })
     activeSource = profile.source; activeMode = profile.mode; activeTopic = profile.topic; activeLevel = profile.level; activePrompt = profile.prompt
@@ -500,7 +572,7 @@ function installIpc(): void {
     if (profile.source === 'api-direct') {
       const config = settings.get()
       if (!config.llmBaseUrl || !config.llmModel || !config.hasLlmKey) throw new Error('请先在设置中填写 DeepSeek 或其他 OpenAI-compatible 文本 API。')
-      if (profile.mode === 'voice') return beginLocalVoicePractice(profile.correctionStrength, profile.topic, profile.level, profile.focus, profile.prompt)
+      if (profile.mode === 'voice') return beginApiVoicePractice(profile.correctionStrength, profile.topic, profile.level, profile.focus, profile.prompt)
       const session = beginSession(profile); announceAutomation({ phase: 'idle', message: 'API direct text practice is ready. Type a message to begin.' }); return { session, voiceStarted: false, source: profile.source, mode: profile.mode }
     }
     return prepareWebPractice(profile.topic, profile.level, profile.correctionStrength, profile.mode, profile.focus, profile.prompt)
@@ -597,7 +669,19 @@ function installIpc(): void {
   ipcMain.handle('archive:get-directory', () => archiveDirectory)
   ipcMain.handle('archive:choose-directory', () => chooseArchiveDirectory())
   ipcMain.handle('providers:get', () => settings.get())
-  ipcMain.handle('providers:save', (_event, input) => settings.save(z.object({ llmBaseUrl: z.string().max(2_000).optional(), llmModel: z.string().max(200).optional(), llmApiKey: z.string().max(2_000).optional(), clearLlmApiKey: z.boolean().optional() }).parse(input)))
+  ipcMain.handle('providers:save', (_event, input) => {
+    if (activeSession) throw new Error('请先结束当前练习，再切换 API 或语音识别设置。')
+    const saved = settings.save(z.object({
+      llmBaseUrl: z.string().max(2_000).optional(),
+      llmModel: z.string().max(200).optional(),
+      llmApiKey: z.string().max(2_000).optional(),
+      clearLlmApiKey: z.boolean().optional(),
+      aliyunAsrApiKey: z.string().max(2_000).optional(),
+      clearAliyunAsrApiKey: z.boolean().optional()
+    }).parse(input))
+    announceSpeechUsage()
+    return saved
+  })
   ipcMain.handle('providers:models', async (_event, input) => {
     const parsed = z.object({ llmBaseUrl: z.string().trim().min(1).max(2_000), llmApiKey: z.string().max(2_000).optional() }).parse(input)
     return discoverProviderModels(parsed.llmBaseUrl, parsed.llmApiKey || settings.getSecrets().llmApiKey || '')
@@ -611,7 +695,7 @@ app.whenReady().then(() => {
   archiveDirectory = appSettings.archiveDirectory(join(userData, 'learning-archive')); store = new SpeakSubStore(archiveDirectory); settings = new SecureSettings(join(userData, 'provider-settings.json')); chatMarker = new ChatGPTMarkerStore(join(userData, 'last-speaksub-chat.json')); learning = new LearningService(settings, join(app.getAppPath(), 'resources', 'dictionaries', 'ecdict-en-zh')); speechModels = new SpeechModelManager(speechModelRoot({ isPackaged: app.isPackaged, executablePath: process.execPath, userDataDirectory: userData })); speechModels.subscribe((assetState) => broadcast('speech-assets:state', assetState))
   const showPersistedOverlay = subtitle.visible
   try { registerMicrophoneShortcut(microphoneShortcut) } catch (error) { microphoneShortcutError = error instanceof Error ? error.message : 'The saved microphone shortcut is unavailable.' }
-  createMainWindow(); createChatHostView(); createOverlayWindow(); installIpc(); applyWindowMode(); mainWindow?.webContents.once('did-finish-load', () => { analytics = new AnonymousAnalytics({ userDataDirectory: userData, appVersion: app.getVersion(), platform: process.platform, arch: process.arch }); void analytics.start() }); if (microphoneShortcutError) announceAutomation({ phase: 'failed', message: microphoneShortcutError, recoverable: true }); if (showPersistedOverlay) showOverlay()
+  createMainWindow(); createChatHostView(); createOverlayWindow(); installIpc(); applyWindowMode(); cleanPreviousInBackground(); mainWindow?.webContents.once('did-finish-load', () => { analytics = new AnonymousAnalytics({ userDataDirectory: userData, appVersion: app.getVersion(), platform: process.platform, arch: process.arch }); void analytics.start() }); if (microphoneShortcutError) announceAutomation({ phase: 'failed', message: microphoneShortcutError, recoverable: true }); if (showPersistedOverlay) showOverlay()
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) { createMainWindow(); createChatHostView(); createOverlayWindow(); applyWindowMode() } })
 })
 

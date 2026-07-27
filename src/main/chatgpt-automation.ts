@@ -26,7 +26,7 @@ export function scoreComposer(element: HTMLElement): number {
   const attributes = [element.id, element.getAttribute('placeholder'), element.getAttribute('aria-label'), element.getAttribute('aria-placeholder'), element.getAttribute('data-placeholder')].filter(Boolean).join(' ').toLowerCase()
   let score = 0
   if (element.id === 'prompt-textarea') score += 200
-  if (/询问\s*chatgpt|message\s*chatgpt|chatgpt/.test(attributes)) score += 160
+  if (/问问\s*chatgpt|询问\s*chatgpt|message\s*chatgpt|chatgpt/.test(attributes)) score += 160
   if (element.isContentEditable || element.getAttribute('contenteditable') != null) score += 40
   if (element.matches('textarea, input, [role="textbox"]')) score += 25
   return score
@@ -81,7 +81,7 @@ const pageComposerLocator = `(() => {
     const attributes = [element.id, element.getAttribute('placeholder'), element.getAttribute('aria-label'), element.getAttribute('aria-placeholder'), element.getAttribute('data-placeholder')].filter(Boolean).join(' ').toLowerCase();
     let value = 0;
     if (element.id === 'prompt-textarea') value += 200;
-    if (/询问\\s*chatgpt|message\\s*chatgpt|chatgpt/.test(attributes)) value += 160;
+    if (/问问\\s*chatgpt|询问\\s*chatgpt|message\\s*chatgpt|chatgpt/.test(attributes)) value += 160;
     if (element.isContentEditable || element.hasAttribute('contenteditable')) value += 40;
     if (element.matches('textarea, input, [role="textbox"]')) value += 25;
     return value;
@@ -98,7 +98,7 @@ const focusComposerScript = `(() => {
 })()`
 
 const clickComposerSendScript = `(() => {
-  const composer = window.__speaksubComposer || (${pageComposerLocator}).composer;
+  const composer = (${pageComposerLocator}).composer;
   if (!composer) return false;
   const scope = composer.closest('form') || composer.parentElement?.parentElement || document;
   const explicit = scope.querySelector(${JSON.stringify(sendSelector)});
@@ -112,18 +112,59 @@ const clickComposerSendScript = `(() => {
   candidates[0].button.click(); return true;
 })()`
 
-const readComposerScript = `(() => { const composer = window.__speaksubComposer || (${pageComposerLocator}).composer; return composer?.innerText || composer?.value || composer?.textContent || ''; })()`
+const readComposerScript = `(() => { const composer = (${pageComposerLocator}).composer; return composer?.innerText || composer?.value || composer?.textContent || ''; })()`
 
-const waitAndVoiceScript = `(() => new Promise((resolve) => {
-  const stopSelector = ${JSON.stringify(stopSelector)}; const voiceSelector = ${JSON.stringify(voiceSelector)};
-  const startedAt = Date.now(); const deadline = startedAt + 45000; let lastBusyAt = startedAt; let sawBusy = false;
-  const isBusy = () => Boolean(document.querySelector(stopSelector)) || /正在思考|生成中|Thinking/i.test(document.body.innerText || '');
-  const tick = () => {
-    const now = Date.now(); const busy = isBusy(); if (busy) { sawBusy = true; lastBusyAt = now; }
-    const voice = document.querySelector(voiceSelector); const stable = now - lastBusyAt >= 900 && (sawBusy || now - startedAt >= 1600);
-    if (!busy && stable && voice && !voice.disabled) { voice.click(); resolve({ ok: true, message: 'ChatGPT 回复完成，已请求启动语音。' }); return; }
-    if (now >= deadline) resolve({ ok: false, message: busy ? 'ChatGPT 仍在回复，等待语音入口超时。' : 'ChatGPT 回复完成，但未找到语音按钮。' }); else setTimeout(tick, 250);
-  }; tick();
+const confirmPromptSentScript = `(prompt => new Promise((resolve) => {
+  const token = prompt.slice(0, 20);
+  const deadline = Date.now() + 5000;
+  const read = () => {
+    const composer = (${pageComposerLocator}).composer;
+    const text = composer?.innerText || composer?.value || composer?.textContent || '';
+    if (!text.includes(token)) return resolve(true);
+    if (Date.now() >= deadline) return resolve(false);
+    setTimeout(read, 120);
+  };
+  read();
+}))`
+
+const waitForReplyAndStartVoiceScript = `(() => new Promise((resolve) => {
+  const selector = ${JSON.stringify(voiceSelector)}; const endSelector = ${JSON.stringify(endVoiceSelector)};
+  const deadline = Date.now() + 45000; let sawBusy = false; let lastBusyAt = Date.now(); let assistantSeenAt = 0;
+  const isVisible = element => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 18 && rect.height > 18 && style.visibility !== 'hidden' && style.display !== 'none'; };
+  const isBusy = () => Boolean(document.querySelector(${JSON.stringify(stopSelector)})) || /正在思考|生成中|Thinking/i.test(document.body.innerText || '');
+  const hasAssistantReply = () => {
+    const turns = [...document.querySelectorAll('article[data-testid^="conversation-turn-"]')];
+    const nodes = turns.length ? turns : [...document.querySelectorAll('[data-message-author-role]')];
+    return nodes.some(node => {
+      const attributed = node.getAttribute('data-message-author-role') ? node : node.querySelector('[data-message-author-role]');
+      return attributed?.getAttribute('data-message-author-role') === 'assistant' && (node.innerText || node.textContent || '').trim().length > 0;
+    });
+  };
+  const findStart = () => [...document.querySelectorAll(selector)].find(button => isVisible(button) && !button.disabled && !button.matches(endSelector));
+  const attempt = () => {
+    const now = Date.now(); const busy = isBusy(); const hasReply = hasAssistantReply();
+    if (busy) { sawBusy = true; lastBusyAt = now; }
+    if (hasReply && !assistantSeenAt) assistantSeenAt = now;
+    const stableSince = Math.max(lastBusyAt, assistantSeenAt);
+    const replyComplete = !busy && hasReply && now - stableSince >= 900;
+    if (!replyComplete) {
+      if (now >= deadline) { resolve({ ok: false, message: busy ? 'ChatGPT 仍在回复，等待语音入口超时。' : 'ChatGPT 未确认首条回复完成，未启动语音。' }); return; }
+      setTimeout(attempt, 250); return;
+    }
+    const voice = findStart();
+    if (voice) {
+      voice.click();
+      const confirmStarted = () => {
+        if (!voice.isConnected || !isVisible(voice) || document.querySelector(endSelector)) { resolve({ ok: true, message: '已启动 ChatGPT 语音对话，正在发送练习提示词。' }); return; }
+        if (Date.now() >= deadline) { resolve({ ok: false, message: '已点击 ChatGPT 的语音按钮，但语音对话界面没有打开。请在连接页手动检查登录状态后重试。' }); return; }
+        setTimeout(confirmStarted, 150);
+      };
+      confirmStarted(); return;
+    }
+    if (Date.now() >= deadline) { resolve({ ok: false, message: 'ChatGPT 首条回复已完成，但未找到“启动语音功能”按钮。请打开连接页后重试。' }); return; }
+    setTimeout(attempt, 200);
+  };
+  attempt();
 }))()`
 
 const endVoiceScript = `(() => {
@@ -142,13 +183,31 @@ const newChatScript = `(() => {
   button.click(); return true;
 })()`
 
-const deleteConversationScript = `(targetUrl => new Promise((resolve) => {
-  const targetPath = new URL(targetUrl).pathname;
+const captureConversationTitleScript = `(conversationUrl => new Promise((resolve) => {
+  const targetPath = new URL(conversationUrl).pathname;
+  const deadline = Date.now() + 15000;
+  const findTitle = () => {
+    const link = [...document.querySelectorAll('a[href*="/c/"]')].find(anchor => { try { return new URL(anchor.href).pathname === targetPath; } catch { return false; } });
+    const title = link?.textContent?.trim();
+    if (title && !['新聊天', 'New chat'].includes(title)) return resolve({ ok: true, conversationTitle: title });
+    if (Date.now() >= deadline) return resolve({ ok: false });
+    setTimeout(findTitle, 250);
+  };
+  findTitle();
+}))`
+
+const deleteConversationScript = `(target => new Promise((resolve) => {
+  const targetIsTitle = target.startsWith('title:');
+  const targetTitle = targetIsTitle ? target.slice('title:'.length).trim() : undefined;
+  const targetPath = targetIsTitle ? undefined : new URL(target).pathname;
   const deadline = Date.now() + 15000;
   const deleteLabels = ['delete', '删除'];
   const isVisible = element => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none'; };
   const labelOf = element => [element.textContent, element.getAttribute('aria-label'), element.getAttribute('title'), element.getAttribute('data-testid')].filter(Boolean).join(' ').trim().toLowerCase();
-  const targetLink = () => [...document.querySelectorAll('a[href*="/c/"]')].find(anchor => { try { return new URL(anchor.href).pathname === targetPath; } catch { return false; } });
+  const targetLink = () => [...document.querySelectorAll('a[href*="/c/"]')].find(anchor => {
+    if (targetIsTitle) return anchor.textContent?.trim() === targetTitle;
+    try { return new URL(anchor.href).pathname === targetPath; } catch { return false; }
+  });
   const rowFor = link => { let row = link.parentElement; while (row && row !== document.body) { const menu = [...row.querySelectorAll('button[data-testid*="conversation-options" i], button[data-testid*="conversation-menu" i], button[aria-label*="more" i], button[aria-label*="options" i], button[aria-label*="menu" i], button[aria-label*="更多"], button[aria-label*="选项"]')].find(button => isVisible(button) && !button.disabled); if (menu) return { row, menu }; row = row.parentElement; } return undefined; };
   const openDeleteMenu = () => [...document.querySelectorAll('[role="menu"]')].find(menu => isVisible(menu) && [...menu.querySelectorAll('[role="menuitem"], button, [role="button"]')].some(item => deleteLabels.includes(labelOf(item))));
   const deleteItem = menu => [...menu.querySelectorAll('[role="menuitem"], button, [role="button"]')].find(item => isVisible(item) && !item.disabled && deleteLabels.includes(labelOf(item)));
@@ -179,22 +238,52 @@ export class ChatGPTAutomation {
   async isReady(): Promise<boolean> { return this.contents.executeJavaScript(`Boolean((${pageComposerLocator}).composer)`, true) as Promise<boolean> }
 
   async fillAndSendPrompt(prompt: string): Promise<AutomationResult> {
-    const result = await this.contents.executeJavaScript(focusComposerScript, true) as { focused: boolean; diagnostics: Array<Record<string, unknown>> }
-    if (!result.focused) return { ok: false, message: `未找到底部“询问 ChatGPT”输入框。候选：${JSON.stringify(result.diagnostics)}` }
-    this.contents.insertText(prompt)
-    await pause(280)
-    const enteredText = await this.contents.executeJavaScript(readComposerScript) as string
-    if (!enteredText.includes(prompt.slice(0, 20))) return { ok: false, message: '已定位输入框，但 ChatGPT 未接受文本输入。请打开连接页后重试。' }
+    let latest: { focused: boolean; diagnostics: Array<Record<string, unknown>> } | undefined
+    let enteredText = ''
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      latest = await this.waitForComposerFocus()
+      if (!latest.focused) { await pause(350); continue }
+      if (attempt > 0) {
+        this.contents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] })
+        this.contents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['control'] })
+        this.contents.sendInputEvent({ type: 'keyDown', keyCode: 'BACKSPACE' })
+        this.contents.sendInputEvent({ type: 'keyUp', keyCode: 'BACKSPACE' })
+        await pause(150)
+      }
+      this.contents.insertText(prompt)
+      await pause(280 + attempt * 250)
+      enteredText = await this.contents.executeJavaScript(readComposerScript) as string
+      if (enteredText.includes(prompt.slice(0, 20))) break
+      await pause(400 + attempt * 250)
+    }
+    if (!enteredText.includes(prompt.slice(0, 20))) return { ok: false, message: latest?.focused ? 'ChatGPT 输入框暂未接受文本，已自动重试 3 次仍失败。请打开连接页后重试。' : `ChatGPT 页面仍未准备好：等待输入框后仍未获得焦点。候选：${JSON.stringify(latest?.diagnostics ?? [])}` }
     const clicked = await this.contents.executeJavaScript(clickComposerSendScript, true) as boolean
     if (!clicked) { this.contents.sendInputEvent({ type: 'keyDown', keyCode: 'ENTER' }); this.contents.sendInputEvent({ type: 'keyUp', keyCode: 'ENTER' }) }
+    let sent = await this.contents.executeJavaScript(`(${confirmPromptSentScript})(${JSON.stringify(prompt)})`, true) as boolean
+    if (!sent && clicked) {
+      this.contents.sendInputEvent({ type: 'keyDown', keyCode: 'ENTER' }); this.contents.sendInputEvent({ type: 'keyUp', keyCode: 'ENTER' })
+      sent = await this.contents.executeJavaScript(`(${confirmPromptSentScript})(${JSON.stringify(prompt)})`, true) as boolean
+    }
+    if (!sent) return { ok: false, message: 'ChatGPT 未确认收到提示词：文本仍停留在输入框中。请打开连接页后重试。' }
     return { ok: true, message: clicked ? '提示词已发送，正在等待 ChatGPT 回复。' : '提示词已通过 Enter 发送，正在等待 ChatGPT 回复。' }
   }
 
   async startNewChat(): Promise<AutomationResult> {
     const clicked = await this.contents.executeJavaScript(newChatScript, true) as boolean
     if (!clicked) await this.contents.loadURL('https://chatgpt.com/')
-    await pause(500)
     return { ok: true, message: clicked ? '已新建 ChatGPT 聊天。' : '已回到 ChatGPT 新聊天页。' }
+  }
+
+  private async waitForComposerFocus(): Promise<{ focused: boolean; diagnostics: Array<Record<string, unknown>> }> {
+    const deadline = Date.now() + 8_000
+    let latest: { focused: boolean; diagnostics: Array<Record<string, unknown>> } = { focused: false, diagnostics: [] }
+    do {
+      latest = await this.contents.executeJavaScript(focusComposerScript, true) as typeof latest
+      if (latest.focused) return latest
+      if (Date.now() >= deadline) break
+      await pause(200)
+    } while (true)
+    return latest
   }
 
   async captureConversationUrl(): Promise<ConversationResult> {
@@ -207,12 +296,22 @@ export class ChatGPTAutomation {
     return { ok: false, message: 'ChatGPT 未提供会话地址；本轮不会在下次启动时自动清理。' }
   }
 
-  async deleteConversation(conversationUrl: string): Promise<AutomationResult> {
-    await this.contents.loadURL(conversationUrl)
-    return this.contents.executeJavaScript(`(${deleteConversationScript})(${JSON.stringify(conversationUrl)})`, true) as Promise<AutomationResult>
+  async captureConversationTitle(conversationUrl: string): Promise<string | undefined> {
+    const result = await this.contents.executeJavaScript(`(${captureConversationTitleScript})(${JSON.stringify(conversationUrl)})`, true) as { ok: boolean; conversationTitle?: string }
+    return result.ok && result.conversationTitle ? result.conversationTitle : undefined
   }
 
-  async waitForReplyAndStartVoice(): Promise<AutomationResult> { return this.contents.executeJavaScript(waitAndVoiceScript, true) as Promise<AutomationResult> }
+  async deleteConversation(conversationUrl: string): Promise<AutomationResult> {
+    const normalizedUrl = conversationUrl.replace('/c/WEB:', '/c/')
+    await this.contents.loadURL(normalizedUrl)
+    return this.contents.executeJavaScript(`(${deleteConversationScript})(${JSON.stringify(normalizedUrl)})`, true) as Promise<AutomationResult>
+  }
+
+  async deleteConversationByTitle(conversationTitle: string): Promise<AutomationResult> {
+    return this.contents.executeJavaScript(`(${deleteConversationScript})(${JSON.stringify(`title:${conversationTitle}`)})`, true) as Promise<AutomationResult>
+  }
+
+  async waitForReplyAndStartVoice(): Promise<AutomationResult> { return this.contents.executeJavaScript(waitForReplyAndStartVoiceScript, true) as Promise<AutomationResult> }
 
   async stopVoice(): Promise<AutomationResult> { return this.contents.executeJavaScript(endVoiceScript, true) as Promise<AutomationResult> }
 }

@@ -10,11 +10,19 @@ describe('SecureSettings', () => {
   let directory: string; let path: string
   beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'speaksub-provider-')); path = join(directory, 'provider.json') })
   it('recovers from corrupt JSON', () => {
-    try { writeFileSync(path, '{bad', 'utf8'); expect(new SecureSettings(path).get()).toEqual({ llmBaseUrl: undefined, llmModel: undefined, hasLlmKey: false }) }
+    try { writeFileSync(path, '{bad', 'utf8'); expect(new SecureSettings(path).get()).toEqual({ llmBaseUrl: undefined, llmModel: undefined, hasLlmKey: false, hasAliyunAsrKey: false }) }
     finally { rmSync(directory, { recursive: true, force: true }) }
   })
   it('can explicitly clear the encrypted API key', () => {
     try { const settings = new SecureSettings(path); expect(settings.save({ llmApiKey: 'secret' }).hasLlmKey).toBe(true); expect(settings.save({ clearLlmApiKey: true }).hasLlmKey).toBe(false) }
     finally { rmSync(directory, { recursive: true, force: true }) }
+  })
+  it('stores the Aliyun speech key separately from the text API', () => {
+    try {
+      const settings = new SecureSettings(path)
+      expect(settings.save({ aliyunAsrApiKey: 'dashscope-secret' })).toMatchObject({ hasAliyunAsrKey: true, hasLlmKey: false })
+      expect(settings.getSecrets()).toEqual({ llmApiKey: undefined, aliyunAsrApiKey: 'dashscope-secret' })
+      expect(settings.save({ clearAliyunAsrApiKey: true })).toMatchObject({ hasAliyunAsrKey: false })
+    } finally { rmSync(directory, { recursive: true, force: true }) }
   })
 })

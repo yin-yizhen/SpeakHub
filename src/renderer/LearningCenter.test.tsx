@@ -43,6 +43,7 @@ describe('LearningCenter', () => {
     const vocabulary = [...container.querySelectorAll('button')].find((button) => button.textContent === '词汇')!
     act(() => vocabulary.click()); await settle()
     expect(container.textContent).toContain('坚持的')
+    expect([...container.querySelectorAll('button')].some((button) => button.textContent === '所有收藏')).toBe(true)
     const start = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '开始复习')!
     await act(async () => start.click())
     expect(container.textContent).not.toContain('坚持的')

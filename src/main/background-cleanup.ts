@@ -1,5 +1,6 @@
 export interface RecordedConversation {
   conversationUrl: string
+  conversationTitle?: string
   createdAt: string
 }
 
@@ -22,7 +23,7 @@ export interface CleanupSummary {
 
 export async function cleanRecordedConversations(
   store: ConversationRecordStore,
-  deleteConversation: (conversationUrl: string) => Promise<ConversationDeletionResult>
+  deleteConversation: (conversation: RecordedConversation) => Promise<ConversationDeletionResult>
 ): Promise<CleanupSummary> {
   const targets = store.readAll()
   const failed: CleanupSummary['failed'] = []
@@ -30,7 +31,7 @@ export async function cleanRecordedConversations(
 
   for (const target of targets) {
     try {
-      const result = await deleteConversation(target.conversationUrl)
+      const result = await deleteConversation(target)
       if (result.ok) {
         store.remove(target.conversationUrl)
         deleted += 1

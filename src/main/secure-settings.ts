@@ -2,7 +2,7 @@ import { safeStorage } from 'electron'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import type { ProviderSettings, ProviderSettingsInput } from '../shared/types'
 
-type StoredSettings = Omit<ProviderSettings, 'hasLlmKey'> & {
+type StoredSettings = Omit<ProviderSettings, 'hasLlmKey' | 'hasAliyunAsrKey'> & {
   encrypted?: string
   realtimeEnabled?: boolean
   realtimeModel?: string
@@ -22,15 +22,25 @@ export class SecureSettings {
   get(): ProviderSettings {
     const value = this.removeLegacyDictionarySecrets(this.read())
     const secrets = this.secrets(value)
-    return { llmBaseUrl: value.llmBaseUrl, llmModel: value.llmModel, hasLlmKey: Boolean(secrets.llmApiKey) }
+    return {
+      llmBaseUrl: value.llmBaseUrl,
+      llmModel: value.llmModel,
+      hasLlmKey: Boolean(secrets.llmApiKey),
+      hasAliyunAsrKey: Boolean(secrets.aliyunAsrApiKey)
+    }
   }
 
-  getSecrets(): { llmApiKey?: string } { return this.secrets(this.read()) }
+  getSecrets(): { llmApiKey?: string; aliyunAsrApiKey?: string } { return this.secrets(this.read()) }
 
   save(input: ProviderSettingsInput): ProviderSettings {
     const current = this.read()
-    const previousSecrets = input.clearLlmApiKey ? {} : this.secrets(current)
-    const secrets = { ...previousSecrets, ...Object.fromEntries(Object.entries({ llmApiKey: input.llmApiKey }).filter(([, value]) => value)) }
+    const previousSecrets = this.secrets(current)
+    if (input.clearLlmApiKey) delete previousSecrets.llmApiKey
+    if (input.clearAliyunAsrApiKey) delete previousSecrets.aliyunAsrApiKey
+    const secrets = {
+      ...previousSecrets,
+      ...Object.fromEntries(Object.entries({ llmApiKey: input.llmApiKey, aliyunAsrApiKey: input.aliyunAsrApiKey }).filter(([, value]) => value))
+    }
     const encrypted = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(JSON.stringify(secrets)).toString('base64') : undefined
     this.write({
       llmBaseUrl: input.llmBaseUrl ?? current.llmBaseUrl,
@@ -42,11 +52,11 @@ export class SecureSettings {
 
   clear(): void { this.write({}) }
 
-  private secrets(value: StoredSettings): { llmApiKey?: string } {
+  private secrets(value: StoredSettings): { llmApiKey?: string; aliyunAsrApiKey?: string } {
     if (!value.encrypted || !safeStorage.isEncryptionAvailable()) return {}
     try {
-      const secrets = JSON.parse(safeStorage.decryptString(Buffer.from(value.encrypted, 'base64'))) as { llmApiKey?: string }
-      return { llmApiKey: secrets.llmApiKey }
+      const secrets = JSON.parse(safeStorage.decryptString(Buffer.from(value.encrypted, 'base64'))) as { llmApiKey?: string; aliyunAsrApiKey?: string }
+      return { llmApiKey: secrets.llmApiKey, aliyunAsrApiKey: secrets.aliyunAsrApiKey }
     } catch { return {} }
   }
 
@@ -54,8 +64,11 @@ export class SecureSettings {
     if (!value.encrypted || !safeStorage.isEncryptionAvailable()) return value
     try {
       const raw = JSON.parse(safeStorage.decryptString(Buffer.from(value.encrypted, 'base64'))) as Record<string, unknown>
-      const sanitized = typeof raw.llmApiKey === 'string' ? { llmApiKey: raw.llmApiKey } : {}
-      const hasLegacySecrets = Object.keys(raw).some((key) => key !== 'llmApiKey')
+      const sanitized = {
+        ...(typeof raw.llmApiKey === 'string' ? { llmApiKey: raw.llmApiKey } : {}),
+        ...(typeof raw.aliyunAsrApiKey === 'string' ? { aliyunAsrApiKey: raw.aliyunAsrApiKey } : {})
+      }
+      const hasLegacySecrets = Object.keys(raw).some((key) => !['llmApiKey', 'aliyunAsrApiKey'].includes(key))
       if (!hasLegacySecrets) return value
       const next = { ...value, encrypted: safeStorage.encryptString(JSON.stringify(sanitized)).toString('base64') }
       this.write(next)

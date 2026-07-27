@@ -19,7 +19,7 @@ describe('recorded conversation cleanup', () => {
 
     const summary = await cleanRecordedConversations(store, deleteConversation)
 
-    expect(deleteConversation.mock.calls.map(([url]) => url)).toEqual(['https://chatgpt.com/c/one', 'https://chatgpt.com/c/two'])
+    expect(deleteConversation.mock.calls.map(([record]) => record.conversationUrl)).toEqual(['https://chatgpt.com/c/one', 'https://chatgpt.com/c/two'])
     expect(summary).toEqual({ attempted: 2, deleted: 2, failed: [], remainingRecordedUrls: [] })
     expect(store.readAll()).toEqual([])
   })
@@ -30,7 +30,7 @@ describe('recorded conversation cleanup', () => {
       { conversationUrl: 'https://chatgpt.com/c/two', createdAt: 'two' }
     ])
 
-    const summary = await cleanRecordedConversations(store, async (url) => url.endsWith('/one') ? { ok: true, message: 'deleted' } : { ok: false, message: 'menu missing' })
+    const summary = await cleanRecordedConversations(store, async (record) => record.conversationUrl.endsWith('/one') ? { ok: true, message: 'deleted' } : { ok: false, message: 'menu missing' })
 
     expect(summary.deleted).toBe(1)
     expect(summary.failed).toEqual([{ conversationUrl: 'https://chatgpt.com/c/two', message: 'menu missing' }])

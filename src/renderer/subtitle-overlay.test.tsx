@@ -17,6 +17,7 @@ let settingsListener: ((next: SubtitlePreferences) => void) | undefined
 let transcriptListener: ((event: Parameters<SpeakSubApi['onTranscript']>[0] extends (event: infer Event) => void ? Event : never) => void) | undefined
 let updateSubtitle: ReturnType<typeof vi.fn>
 let setOverlayInteractive: ReturnType<typeof vi.fn>
+let lookup: ReturnType<typeof vi.fn>
 let practiceActive = false
 let endPractice: ReturnType<typeof vi.fn>
 let practiceEndedListener: ((result: Parameters<SpeakSubApi['onPracticeEnded']>[0] extends (result: infer Result) => void ? Result : never) => void) | undefined
@@ -28,6 +29,7 @@ beforeEach(() => {
   practiceActive = false
   endPractice = vi.fn(async () => undefined)
   setOverlayInteractive = vi.fn(async () => undefined)
+  lookup = vi.fn(async (query: string) => ({ query, definitions: ['definition'] }))
   updateSubtitle = vi.fn(async (input: Partial<SubtitlePreferences>) => {
     settings = { ...settings, ...input }
     settingsListener?.(settings)
@@ -37,6 +39,7 @@ beforeEach(() => {
     getState: vi.fn(async () => ({ session: practiceActive ? { id: 'session-1', startedAt: 'now', correctionStrength: 'normal' } : undefined, settings, events: [], connection: {}, automation: {}, source: 'api-direct', mode: 'text', lifecycle: practiceActive ? 'active' : 'idle' })),
     updateSubtitle,
     setOverlayInteractive,
+    lookup,
     endPractice,
     onTranscript: vi.fn((listener) => { transcriptListener = listener; return () => { transcriptListener = undefined } }),
     onSubtitleSettings: vi.fn((listener) => { settingsListener = listener; return () => { settingsListener = undefined } }),
@@ -128,6 +131,23 @@ describe('SubtitleOverlay mouse passthrough', () => {
     const lockHandle = container.querySelector<HTMLDivElement>('.subtitle-lock-handle')!
     await act(async () => { lockHandle.dispatchEvent(new MouseEvent('mousemove', { bubbles: true })); await Promise.resolve() })
     expect(setOverlayInteractive).toHaveBeenLastCalledWith(true)
+  })
+
+  it('dismisses a pinned word lookup after focus moves to another app', async () => {
+    await renderOverlay()
+    const event = { id: 'event-2', sessionId: 'session-1', sourceMessageId: 'message-2', speaker: 'assistant' as const, text: 'hello world', status: 'complete' as const, receivedAt: 'now' }
+    await act(async () => { transcriptListener?.(event); await Promise.resolve() })
+
+    const word = container.querySelector<HTMLButtonElement>('.subtitle-word')!
+    await act(async () => { word.click(); await Promise.resolve(); await Promise.resolve() })
+    expect(container.querySelector('.lookup-popover.pinned')).not.toBeNull()
+
+    const shell = container.querySelector<HTMLDivElement>('.subtitle-shell')!
+    await act(async () => { shell.dispatchEvent(new MouseEvent('mousemove', { bubbles: true })); await Promise.resolve() })
+    expect(container.querySelector('.lookup-popover.pinned')).not.toBeNull()
+
+    await act(async () => { window.dispatchEvent(new Event('blur')); await Promise.resolve() })
+    expect(container.querySelector('.lookup-popover')).toBeNull()
   })
 })
 

@@ -23,6 +23,9 @@ const api: SpeakSubApi = {
   showConnectionPage: () => ipcRenderer.invoke('connection:show'),
   clearPendingCleanup: () => ipcRenderer.invoke('connection:clear-pending-cleanup'),
   hideConnectionPage: () => ipcRenderer.invoke('connection:hide'),
+  minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
+  toggleMaximizeWindow: () => ipcRenderer.invoke('window:toggle-maximize'),
+  closeWindow: () => ipcRenderer.invoke('window:close'),
   updateSubtitle: (settings) => ipcRenderer.invoke('subtitle:update', settings),
   toggleOverlay: () => ipcRenderer.invoke('subtitle:toggle'),
   setOverlayInteractive: (interactive) => ipcRenderer.invoke('subtitle:interactive', interactive),
@@ -54,6 +57,7 @@ const api: SpeakSubApi = {
   onConnectionState: (listener) => { const handler = (_: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state); ipcRenderer.on('connection:state', handler); return () => ipcRenderer.removeListener('connection:state', handler) },
   onVoiceAudio: (listener) => { const handler = (_: Electron.IpcRendererEvent, chunk: Parameters<typeof listener>[0]) => listener(chunk); ipcRenderer.on('voice:audio', handler); return () => ipcRenderer.removeListener('voice:audio', handler) },
   onSpeechAssetState: (listener) => { const handler = (_: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state); ipcRenderer.on('speech-assets:state', handler); return () => ipcRenderer.removeListener('speech-assets:state', handler) },
+  onSpeechUsage: (listener) => { const handler = (_: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state); ipcRenderer.on('speech:usage', handler); return () => ipcRenderer.removeListener('speech:usage', handler) },
   onVoicePhase: (listener) => { const handler = (_: Electron.IpcRendererEvent, phase: Parameters<typeof listener>[0]) => listener(phase); ipcRenderer.on('voice:phase', handler); return () => ipcRenderer.removeListener('voice:phase', handler) },
   onVoiceInterrupt: (listener) => { const handler = (_: Electron.IpcRendererEvent, generation: number) => listener(generation); ipcRenderer.on('voice:interrupt', handler); return () => ipcRenderer.removeListener('voice:interrupt', handler) },
   onMicrophoneGateState: (listener) => { const handler = (_: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state); ipcRenderer.on('microphone:state', handler); return () => ipcRenderer.removeListener('microphone:state', handler) }

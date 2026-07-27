@@ -214,6 +214,7 @@ export interface ProviderSettings {
   llmBaseUrl?: string
   llmModel?: string
   hasLlmKey: boolean
+  hasAliyunAsrKey?: boolean
 }
 
 export interface ProviderSettingsInput {
@@ -221,6 +222,8 @@ export interface ProviderSettingsInput {
   llmModel?: string
   llmApiKey?: string
   clearLlmApiKey?: boolean
+  aliyunAsrApiKey?: string
+  clearAliyunAsrApiKey?: boolean
 }
 
 export interface ProviderModelProbeInput {
@@ -246,8 +249,16 @@ export interface SpeechAssetProgress {
 }
 
 export interface SpeechAssetState {
-  asr: SpeechAssetProgress
+  vad: SpeechAssetProgress
   tts: SpeechAssetProgress
+}
+
+export interface SpeechUsageState {
+  provider: 'aliyun-fun-asr'
+  sessionSeconds: number
+  month: string
+  monthlySeconds: number
+  estimatedCny: number
 }
 
 export interface VoiceAudioChunk {
@@ -288,11 +299,14 @@ export interface SpeakSubApi {
   downloadSpeechAssets: () => Promise<SpeechAssetState>
   endPractice: () => Promise<PracticeEndResult>
   cancelPracticeStart: () => Promise<void>
-  getState: () => Promise<{ session?: PracticeSession; settings: SubtitlePreferences; events: TranscriptEvent[]; connection: ConnectionState; automation: AutomationStatus; source: PracticeSource; mode: PracticeMode; lifecycle: PracticeLifecycle; microphone: MicrophoneGateState; speechAssets: SpeechAssetState; voicePhase: VoiceTurnPhase }>
+  getState: () => Promise<{ session?: PracticeSession; settings: SubtitlePreferences; events: TranscriptEvent[]; connection: ConnectionState; automation: AutomationStatus; source: PracticeSource; mode: PracticeMode; lifecycle: PracticeLifecycle; microphone: MicrophoneGateState; speechAssets: SpeechAssetState; speechUsage: SpeechUsageState; voicePhase: VoiceTurnPhase }>
   completeConnection: () => Promise<ConnectionState>
   showConnectionPage: () => Promise<ConnectionState>
   clearPendingCleanup: () => Promise<void>
   hideConnectionPage: () => Promise<ConnectionState>
+  minimizeWindow: () => Promise<void>
+  toggleMaximizeWindow: () => Promise<void>
+  closeWindow: () => Promise<void>
   updateSubtitle: (settings: Partial<SubtitlePreferences>) => Promise<SubtitlePreferences>
   toggleOverlay: () => Promise<SubtitlePreferences>
   setOverlayInteractive: (interactive: boolean) => Promise<void>
@@ -324,6 +338,7 @@ export interface SpeakSubApi {
   onConnectionState: (listener: (state: ConnectionState) => void) => () => void
   onVoiceAudio: (listener: (chunk: GeneratedSpeechChunk) => void) => () => void
   onSpeechAssetState: (listener: (state: SpeechAssetState) => void) => () => void
+  onSpeechUsage: (listener: (state: SpeechUsageState) => void) => () => void
   onVoicePhase: (listener: (phase: VoiceTurnPhase) => void) => () => void
   onVoiceInterrupt: (listener: (generation: number) => void) => () => void
   onMicrophoneGateState: (listener: (state: MicrophoneGateState) => void) => () => void

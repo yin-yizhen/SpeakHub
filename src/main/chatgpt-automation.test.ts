@@ -20,9 +20,48 @@ describe('ChatGPT page automation selectors', () => {
     expect(findVoiceButton(document)).toBeUndefined()
   })
 
-  it('prefers the visible ChatGPT placeholder over an unrelated editor', () => {
-    document.body.innerHTML = '<div contenteditable="true" aria-label="notes"></div><div contenteditable="plaintext-only" data-placeholder="询问 ChatGPT"></div>'
+  it('recognises the current Chinese and English ChatGPT composer labels', () => {
+    document.body.innerHTML = '<div contenteditable="true" aria-label="notes"></div><div contenteditable="plaintext-only" data-placeholder="问问 ChatGPT"></div>'
+    expect(findComposer(document)?.getAttribute('data-placeholder')).toBe('问问 ChatGPT')
+
+    document.body.innerHTML = '<div contenteditable="plaintext-only" data-placeholder="询问 ChatGPT"></div>'
     expect(findComposer(document)?.getAttribute('data-placeholder')).toBe('询问 ChatGPT')
+
+    document.body.innerHTML = '<div contenteditable="plaintext-only" aria-label="Message ChatGPT"></div>'
+    expect(findComposer(document)?.getAttribute('aria-label')).toBe('Message ChatGPT')
+
+  })
+
+  it('waits for the composer to appear after a new chat before sending', async () => {
+    const executeJavaScript = vi.fn()
+      .mockResolvedValueOnce({ focused: false, diagnostics: [{ id: 'loading' }] })
+      .mockResolvedValueOnce({ focused: true, diagnostics: [{ id: 'prompt-textarea' }] })
+      .mockResolvedValueOnce('Travel practice')
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+    const insertText = vi.fn()
+    const automation = new ChatGPTAutomation({ executeJavaScript, insertText } as never)
+
+    await expect(automation.fillAndSendPrompt('Travel practice')).resolves.toMatchObject({ ok: true })
+    expect(insertText).toHaveBeenCalledWith('Travel practice')
+    expect(executeJavaScript).toHaveBeenCalledTimes(5)
+  })
+
+  it('retries the first text entry after a new chat finishes hydrating', async () => {
+    const executeJavaScript = vi.fn()
+      .mockResolvedValueOnce({ focused: true, diagnostics: [{ id: 'prompt-textarea' }] })
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce({ focused: true, diagnostics: [{ id: 'prompt-textarea' }] })
+      .mockResolvedValueOnce('Travel practice')
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+    const insertText = vi.fn()
+    const sendInputEvent = vi.fn()
+    const automation = new ChatGPTAutomation({ executeJavaScript, insertText, sendInputEvent } as never)
+
+    await expect(automation.fillAndSendPrompt('Travel practice')).resolves.toMatchObject({ ok: true })
+    expect(insertText).toHaveBeenCalledTimes(2)
+    expect(sendInputEvent).toHaveBeenCalledWith({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] })
   })
 
   it('recognises the generation stop control separately from voice', () => {
@@ -78,7 +117,20 @@ describe('ChatGPT page automation selectors', () => {
     expect(script).toContain("if (!targetLink())")
   })
 
-  it('starts ChatGPT voice without injecting or ending the page microphone session', async () => {
+  it('captures the ChatGPT-generated sidebar title and can delete by that title', async () => {
+    const executeJavaScript = vi.fn()
+      .mockResolvedValueOnce({ ok: true, conversationTitle: '英语口语练习' })
+      .mockResolvedValueOnce({ ok: true, message: 'deleted' })
+    const automation = new ChatGPTAutomation({ executeJavaScript } as never)
+
+    await expect(automation.captureConversationTitle('https://chatgpt.com/c/target')).resolves.toBe('英语口语练习')
+    await expect(automation.deleteConversationByTitle('英语口语练习')).resolves.toMatchObject({ ok: true })
+
+    expect(executeJavaScript.mock.calls[0]?.[0]).toContain('conversationTitle')
+    expect(executeJavaScript.mock.calls[1]?.[0]).toContain('title:英语口语练习')
+  })
+
+  it('waits for ChatGPT to finish its first reply before starting voice', async () => {
     const executeJavaScript = vi.fn(async () => ({ ok: true, message: 'voice started' }))
     const automation = new ChatGPTAutomation({ executeJavaScript } as never)
 
@@ -86,6 +138,22 @@ describe('ChatGPT page automation selectors', () => {
     expect(executeJavaScript).toHaveBeenCalledOnce()
     const [script] = (executeJavaScript.mock.calls as unknown as Array<[string]>)[0]!
     expect(script).toContain('voice.click()')
-    expect(script).not.toContain('endVoiceSelector')
+    expect(script).toContain('endSelector')
+    expect(script).toContain('hasAssistantReply')
+    expect(script).toContain('conversation-turn-')
+    expect(script).toContain('45000')
+  })
+
+  it('re-reads the visible composer after sending instead of trusting a stale cached node', async () => {
+    const executeJavaScript = vi.fn()
+      .mockResolvedValueOnce({ focused: true, diagnostics: [{ id: 'prompt-textarea' }] })
+      .mockResolvedValueOnce('Travel practice')
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+    const automation = new ChatGPTAutomation({ executeJavaScript, insertText: vi.fn() } as never)
+
+    await expect(automation.fillAndSendPrompt('Travel practice')).resolves.toMatchObject({ ok: true })
+    const scripts = (executeJavaScript.mock.calls as unknown as Array<[string]>).map(([script]) => script)
+    expect(scripts.slice(1).some((script) => script.includes('window.__speaksubComposer ||'))).toBe(false)
   })
 })

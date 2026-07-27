@@ -1,92 +1,77 @@
-# SpeakSub Code Map
+# SpeakHub Code Map
 
-本文件按“要修改什么”索引主文件、调用链、测试和真实验收方式。
+本文件按“要改什么”定位主文件、数据链路、测试与验收方式。最近完整验收：`uncommitted working tree (2026-07-27)`。
 
-最近完整验收提交：`uncommitted working tree (2026-07-27)`
+ChatGPT 网页语音练习必须先向普通聊天输入框发送提示词，确认首条回复完成后，再点击语音按钮；不要在语音界面发送开场提示词。
+
+ChatGPT 发送后经常会替换输入框节点；发送确认必须重新定位当前可见输入框。首条回复检测要同时兼容 `article[data-testid^="conversation-turn-"]` 与旧版 `data-message-author-role` 结构。
+
+新建聊天后输入框可能先可见、后完成文本接收绑定；`fillAndSendPrompt()` 必须重新聚焦并自动重试最多 3 次，不能让用户手动再点一次开始。
 
 ## 先看这里
 
-| 目标 | 主要文件 | 配套测试 | 验证命令 |
+| 目标 | 主文件 | 配套测试 | 验证命令 |
 | --- | --- | --- | --- |
-| 改 API 本地语音、抢话或流式回复 | `src/main/index.ts`、`src/main/local-speech-service.ts` | `local-speech-service.test.ts`、`streaming-asr-session.test.ts`、`App.voice.test.tsx` | `pnpm lint && pnpm test && pnpm build` |
-| 改 ASR/VAD/TTS Worker | `src/main/speech-asr-worker.ts`、`src/main/speech-tts-worker.ts` | `audio-pre-roll.test.ts`、`streaming-asr-session.test.ts` | `pnpm test -- audio-pre-roll streaming-asr-session && pnpm build` |
-| 改模型下载或安装目录 | `src/main/speech-model-manager.ts` | `speech-model-manager.test.ts` | `pnpm test -- speech-model-manager` |
-| 改字幕或音频采集/播放 | `src/renderer/App.tsx`、`src/renderer/local-speech-audio.ts`、`src/renderer/subtitle-overlay.tsx` | `App.voice.test.tsx`、`local-speech-audio.test.ts`、`subtitle-overlay.test.tsx` | `pnpm test -- App.voice local-speech-audio subtitle-overlay` |
-| 改归档、历史或复盘 | `src/main/store.ts`、`src/main/learning-service.ts` | `store.test.ts`、`learning-service.test.ts` | `pnpm test -- store learning-service` |
-| 改 ChatGPT 网页自动化 | `src/main/chatgpt-automation.ts`、`src/main/chatgpt-adapter.ts` | 对应 `chatgpt-*.test.ts` | `pnpm lint && pnpm test && pnpm build` |
+| 改 ChatGPT 网页练习、提示词或网页语音 | `src/main/index.ts`、`src/main/chatgpt-automation.ts`、`src/main/chatgpt-adapter.ts` | `chatgpt-automation.test.ts`、`chatgpt-adapter.test.ts` | `pnpm lint && pnpm test && pnpm build` |
+| 改 ChatGPT 历史清理 | `src/main/index.ts`、`src/main/chatgpt-marker.ts`、`src/main/background-cleanup.ts`、`src/main/chatgpt-automation.ts` | `chatgpt-marker.test.ts`、`background-cleanup.test.ts`、`chatgpt-automation.test.ts` | `pnpm lint && pnpm test && pnpm build`，再做登录态验收 |
+| 改 API 语音、抢话或流式回复 | `src/main/index.ts`、`src/main/local-speech-service.ts`、`src/main/barge-in-policy.ts` | `local-speech-service.test.ts`、`barge-in-policy.test.ts`、`App.voice.test.tsx` | `pnpm test` |
+| 改归档、学习中心、收藏词或复习 | `src/main/store.ts`、`src/main/index.ts`、`src/main/learning-service.ts`、`src/renderer/LearningCenter.tsx` | `store.test.ts`、`learning-service.test.ts`、`LearningCenter.test.tsx` | `pnpm lint && pnpm test && pnpm build` |
+| 改设置、密钥或用量 | `src/main/secure-settings.ts`、`src/main/app-settings.ts`、`src/renderer/App.tsx` | `secure-settings.test.ts`、`app-settings.test.ts`、`App.voice.test.tsx` | `pnpm lint && pnpm test` |
+| 改顶部品牌图标或玻璃顶栏素材 | `src/renderer/assets/app-icon-transparent.png`、`src/renderer/App.tsx`、`src/renderer/styles.css` | `App.voice.test.tsx` | `pnpm lint && pnpm build`；在浅色玻璃顶栏检查图标无白色方底 |
 
-## End-To-End Flow
-
-```text
-API 语音练习
--> App.tsx 持续采集 16 kHz Float32（AI 思考/朗读时不停采）
--> voice:audio IPC
--> LocalSpeechService
--> 独立 ASR Worker：Silero VAD -> 400 ms pre-roll -> Zipformer 临时字幕 -> Whisper 最终校正
--> 用户有效抢话
--> main/index.ts 递增 generation，中止旧 SSE、废弃旧 TTS、清空播放器
--> 用户最终字幕入库
--> LearningService /chat/completions SSE
--> SpeechSegmenter
--> 独立 TTS Worker（Kokoro）
--> generation 校验
--> LocalSpeechAudioPlayer 顺序播放
--> 最终 TranscriptEvent 写入 Markdown
-```
-
-ChatGPT 网页模式仍使用：
+## 核心链路
 
 ```text
-startNewChat -> create session -> start observer -> send prompt -> capture conversation URL
+应用启动
+-> 读取 userData/last-speaksub-chat.json
+-> 隐藏的同登录态 ChatGPT 页面逐条删除 marker 中的会话
+-> 新会话优先按 ChatGPT 自动生成的侧边栏标题删除；旧 URL marker 兼容移除 WEB: 前缀
+-> 仅在网页确认会话消失后移除该 marker；失败保留供下次启动重试
 ```
 
-## Code Map
+启动清理与点击“确认并开始”的清理共用同一单飞任务，避免两个隐藏页面重复删除。清理只处理 SpeakHub 自己记录的会话 URL，不删除用户普通 ChatGPT 聊天。
 
-### 本地语音与抢话
+```text
+ChatGPT 网页语音练习
+-> `App.tsx` 组合场景、难度、纠错提示词并调用 `practice:start`
+-> `index.ts:prepareWebPractice()` 新建 ChatGPT 聊天
+-> `fillAndSendPrompt()` 在普通聊天输入框填入提示词、点击发送、确认文本已离开输入框
+-> `waitForReplyAndStartVoice()` 等待首条回复完成并稳定约 0.9 秒，再点击“启动语音功能”
+-> 记录会话 URL，`ChatGPTAdapter` 监听对话字幕
+```
 
-- `src/main/index.ts`：语音阶段、SSE、generation、抢话取消、播放队列和 IPC 的总编排。
-- `src/main/local-speech-service.ts`：分别启动 ASR/TTS Worker；ASR 不因 Kokoro 推理阻塞。
-- `src/main/speech-asr-worker.ts`：Silero VAD、400 ms 音频预留、Zipformer 和 Whisper。
-- `src/main/streaming-asr-session.ts`：稳定字幕 ID、异步最终校正和多轮重置。
-- `src/main/speech-tts-worker.ts`：Kokoro 队列与过期 generation 丢弃。
-- `src/renderer/local-speech-audio.ts`：Chromium 回声消除请求、采集重采样、过期音频拒绝和播放中止。
+风险：不能把“按钮 click 已调用”当作发送成功；必须确认输入框中的提示词已消失。网页结构或登录态变化时应显示可恢复的失败提示，不应继续进入练习。
 
-风险点：
+真实验收：在已登录 ChatGPT 的连接页选择“ChatGPT 网页 + 语音交流”，点击“确认并开始”。确认后台依次出现新聊天、已发送的提示词、ChatGPT 的首条完整回复，最后才点击语音按钮；若发送或语音启动失败，界面必须提示失败而不是显示“Prompt sent”。
 
-- 不得再用 `VoiceTurnPhase` 决定是否采集；它只描述 AI 阶段。
-- TTS 和 ASR 必须保持两个 Worker，否则原生合成会阻塞识别。
-- 被打断后，SSE delta、TTS 返回值和 playback-ended 都必须经过 generation 校验。
-- VAD 模型归入 ASR 资产；缺失时语音入口应引导用户到设置下载。
-- 无回声消除的扬声器模式可能误触发，应提示耳机并使用更高抢话门槛。
+```text
+练习文本 / 字幕收藏词
+-> current-practice.md
+-> review + store.finalizeSession()
+-> learning-index.json 中的 VocabularyItem
+-> learning:vocabulary:list IPC
+-> 学习中心「所有收藏」列表或待复习卡片
+-> 评分写回 familiarity / nextReviewAt
+```
 
-### 模型资产
+## ChatGPT 历史清理
 
-- `src/main/speech-model-manager.ts`：固定文件清单、大小/SHA 校验、`.part`、原子改名和离线复用。
-- 打包应用目录：`<安装目录>/speech-models`。
-- 开发目录：Electron `userData/speech-models`。
-- ASR 目录包含 Zipformer、Whisper 和 `silero_vad.onnx`；TTS 目录包含 Kokoro。
+- `index.ts`：应用初始化完成并读取 marker 后立即启动隐藏清理；开始新练习时若清理仍在运行则复用该任务。
+- `chatgpt-marker.ts`：保存会话 URL，并在 ChatGPT 自动生成侧边栏摘要标题后补写该标题。
+- `chatgpt-automation.ts`：新 marker 按精确摘要标题定位会话；旧 marker 按 URL 定位并兼容移除 `WEB:` 前缀。两种方式均限定到该会话行“…”、当前菜单的删除和当前确认框的删除，且确认目标会话已消失。
+- `background-cleanup.ts`：按 marker 顺序逐条处理。任何失败都不移除本地记录。
+- 风险：ChatGPT 页面结构改变或登录失效时必须保留 marker，不能猜测点击。
 
-### 字幕与归档
+真实验收：完成一轮 ChatGPT 练习后检查 marker 已包含 ChatGPT 自动生成的侧边栏摘要标题。重启应用且不点击“确认并开始”，确认隐藏清理页按顺序删除这条标题对应会话；旧 marker 仍可按 URL 删除。若网络或菜单异常，关闭再打开应用应继续重试。
 
-- `src/shared/types.ts`：`TranscriptEvent`、语音音频块和公共 IPC 类型。
-- `src/shared/transcript.ts`：按稳定 `sourceMessageId` 合并流式字幕。
-- `src/main/store.ts`：仅完整事件写 Markdown；被抢话的 AI 回复保留 `interrupted` 标记。
-- `src/renderer/subtitle-overlay.tsx`：主页面与悬浮字幕共用同一事件流。
+## 学习中心与词汇
 
-## Test Index
+- `LearningCenter.tsx`：词汇页默认可查看所有收藏词；“所有收藏”会清除待复习、熟悉度和搜索筛选。“待复习”只筛选到期词，“开始复习”进入卡片流程。
+- `store.ts`：学习索引与复习日期的唯一写入点。四档卡片评分 `again/hard/good/easy` 的间隔为 0/1/3/14 天。
+- `index.ts` + `learning-service.ts`：词汇列表返回前只使用离线词典补全缺失释义；列表刷新不得触发 LLM 网络回退。
+- 风险：不要只检查 UI。需验证 `listVocabulary` 的筛选参数、卡片评分后的 `nextReviewAt`，以及 `learning-index.json` 的持久化结果。
 
-| Test file | Covers |
-| --- | --- |
-| `src/main/audio-pre-roll.test.ts` | 400 ms 开口预留 |
-| `src/main/streaming-asr-session.test.ts` | 中英临时字幕、静音定稿、异步 Whisper、多轮 |
-| `src/main/local-speech-service.test.ts` | 双 Worker、合成期间持续 ASR、generation 取消 |
-| `src/main/speech-model-manager.test.ts` | 下载、进度、校验、重试、离线复用 |
-| `src/main/store.test.ts` | 最终字幕与被打断回复归档 |
-| `src/renderer/App.voice.test.tsx` | 持续采集、设置引导、麦克风 UI |
-| `src/renderer/local-speech-audio.test.ts` | Float32 重采样和采集块 |
-| `src/renderer/subtitle-overlay.test.tsx` | 共用字幕和已打断标记 |
-
-## Local Verification Commands
+## 本地验证与真实验收
 
 ```powershell
 pnpm lint
@@ -95,14 +80,4 @@ pnpm build
 pnpm dev
 ```
 
-按用户当前要求不运行 `pnpm package:win`。
-
-## 真实验收
-
-1. 设置中确认 ASR/TTS 已就绪；ASR 目录必须包含 `silero_vad.onnx`。
-2. 使用真实 OpenAI-compatible 文本 API 开始语音练习。
-3. 中英混说，确认临时字幕持续更新，停顿约 700 ms 后只提交一次。
-4. 分别在 AI 思考、生成字幕和朗读时开口；旧声音应在约 300–500 ms 内停止，新字幕不得丢首字。
-5. 被打断的 AI 回复应显示“已打断”，归档只保存最终用户文本和最终/被打断 AI 文本。
-6. 分别使用耳机和扬声器；扬声器内容不能成为下一轮用户输入。
-7. 断网重启，确认本地模型仍可加载。
+在学习中心收藏至少两个单词，先打开“待复习”筛选，再点击“所有收藏”，确认筛选被清除并展示全部收藏词；完成一张卡片的“英文 → 评分 → 中文释义 → 下一词”流程后，重启应用确认日期和释义仍保留。

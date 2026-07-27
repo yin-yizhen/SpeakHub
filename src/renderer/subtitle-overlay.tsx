@@ -175,6 +175,11 @@ export function SubtitleOverlay() {
       return undefined
     })
   }
+  useEffect(() => {
+    const dismissOnBlur = () => closePinnedLookup()
+    window.addEventListener('blur', dismissOnBlur)
+    return () => window.removeEventListener('blur', dismissOnBlur)
+  }, [])
   const saveLookup = async () => {
     const current = lookupState
     if (!current || current.saving || current.saved) return

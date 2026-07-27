@@ -17,23 +17,37 @@ const practicePreferencesSchema = z.object({
   scenarioTemplateId: z.string().min(1).max(80), difficultyTemplateId: z.string().min(1).max(80), correctionTemplateId: z.string().min(1).max(80),
   focus: z.string().max(2_000), focusEnabled: z.boolean()
 })
-const storedSchema = z.object({ providers: z.object({ 'chatgpt-web': z.boolean() }), subtitle: subtitleSchema.optional(), archiveDirectory: z.string().min(1).optional(), microphoneShortcut: z.string().min(1).max(80).optional(), promptTemplates: promptTemplatesSchema.optional(), practicePreferences: practicePreferencesSchema.optional() })
+const storedSchema = z.object({
+  providers: z.object({ 'chatgpt-web': z.boolean() }),
+  subtitle: subtitleSchema.optional(),
+  archiveDirectory: z.string().min(1).optional(),
+  microphoneShortcut: z.string().min(1).max(80).optional(),
+  promptTemplates: promptTemplatesSchema.optional(),
+  practicePreferences: practicePreferencesSchema.optional(),
+  speechUsageSeconds: z.record(z.string(), z.number().int().nonnegative()).optional()
+})
 
 export const defaultPromptTemplates: PromptTemplates = {
   scenario: [
-    { id: 'daily-chat', name: '日常聊天', prompt: '你是一位友好的英语口语伙伴。请与我进行自然的日常英语对话，每次只问一个问题，并根据我的回答继续。' },
-    { id: 'travel', name: '旅行英语', prompt: '请扮演友好的旅行伙伴或当地工作人员，与我练习实用旅行英语；每次只推进一个交流回合。' },
-    { id: 'interview', name: '面试英语', prompt: '请扮演英语面试官，提出真实的面试问题；等待我的回答后再继续。' },
-    { id: 'meeting', name: '职场会议', prompt: '请扮演职场会议中的同事，使用真实的商务情景与我轮流进行英语交流。' },
-    { id: 'ielts', name: '雅思口语', prompt: '请扮演雅思口语考官，按真实考试节奏逐题提问并等待我的回答。' },
-    { id: 'free-chat', name: '自由闲聊', prompt: '请开始一段友好的英语自由对话，回复简短，给我充分开口练习的机会。' },
-    { id: 'role-play', name: '情景角色扮演', prompt: '请先设定一个实用英语角色扮演情景，然后以角色身份开始对话。' }
+    { id: 'daily-chat', name: '日常聊天', prompt: '围绕生活、兴趣和近况自然聊天；主动追问，保持轻松。' },
+    { id: 'travel', name: '旅行英语', prompt: '扮演当地服务人员或旅伴，围绕出行、住宿、点餐、问路与突发情况交流。' },
+    { id: 'interview', name: '面试英语', prompt: '扮演面试官，围绕经历、能力与岗位匹配度提问；根据我的回答追问。' },
+    { id: 'meeting', name: '职场会议', prompt: '扮演同事或客户，围绕进度、方案、分工和异议展开讨论。' },
+    { id: 'ielts', name: '雅思口语', prompt: '扮演雅思口语考官，按 Part 1–3 提问；适时追问，不代替我作答。' },
+    { id: 'free-chat', name: '自由闲聊', prompt: '根据我的话题自然延展；不预设任务。' },
+    { id: 'role-play', name: '情景角色扮演', prompt: '扮演我指定的角色，在我指定的目标与约束下完成对话。若我未指定，请先提供一个实用情景。' }
   ],
-  difficulty: ['A1', 'A2', 'B1', 'B2', 'C1'].map((name) => ({ id: name.toLowerCase(), name, prompt: `我的英语水平为 ${name}。请使用符合该水平的词汇、语法和句子长度，并清晰、简短地表达。` })),
+  difficulty: [
+    { id: 'a1', name: 'A1', prompt: '使用高频词和短句；一次只问一个具体问题；必要时给选项或示例。' },
+    { id: 'a2', name: 'A2', prompt: '使用常见日常表达和简单复句；可谈经历、计划和偏好；语速清晰。' },
+    { id: 'b1', name: 'B1', prompt: '使用自然的常用表达；鼓励我连续说明、举例和表达理由。' },
+    { id: 'b2', name: 'B2', prompt: '使用较自然的语速与多样表达；可讨论工作、观点、比较和协商。' },
+    { id: 'c1', name: 'C1', prompt: '使用接近真实场景的自然表达；可讨论抽象或专业议题，关注语域、逻辑和细微差别。' }
+  ],
   correction: [
-    { id: 'light', name: '轻度', prompt: '仅在错误影响理解时纠正，并简短给出更自然的表达。' },
-    { id: 'normal', name: '普通', prompt: '温和地纠正重要错误，但不要打断正常对话。' },
-    { id: 'strict', name: '严格', prompt: '注意语法和用词错误，并简短示范更好的表达。' }
+    { id: 'light', name: '轻度', prompt: '以交流为先。仅在影响理解或错误重复时纠正；不打断。回复末尾给 1 个更自然的说法。不评价或纠正发音、语音、重音、语调。' },
+    { id: 'normal', name: '普通', prompt: '每次最多处理 1 个最重要的语法、用词或表达问题。先用简短提示引导我自我修正；若我未修正，再给正确表达和一句简短原因。不评价或纠正发音、语音、重音、语调。' },
+    { id: 'strict', name: '严格', prompt: '每轮最多指出 1 个最重要的语法、用词或表达问题。先要求我重说；未修正时按“原句 → 推荐说法 → 简短原因”反馈，并请我复述。不评价或纠正发音、语音、重音、语调。' }
   ]
 }
 
@@ -55,6 +69,14 @@ export class AppSettingsStore {
   setPromptTemplates(templates: PromptTemplates): PromptTemplates { const parsed = promptTemplatesSchema.parse(templates); this.write({ ...this.read(), promptTemplates: parsed }); return parsed }
   practicePreferences(): PracticePreferences { return this.read().practicePreferences ?? defaultPracticePreferences }
   setPracticePreferences(preferences: PracticePreferences): PracticePreferences { const parsed = practicePreferencesSchema.parse(preferences); this.write({ ...this.read(), practicePreferences: parsed }); return parsed }
+  speechUsageSeconds(month: string): number { return this.read().speechUsageSeconds?.[month] ?? 0 }
+  addSpeechUsageSeconds(month: string, seconds: number): number {
+    const value = this.read()
+    const usage = { ...value.speechUsageSeconds }
+    usage[month] = (usage[month] ?? 0) + z.number().int().nonnegative().parse(seconds)
+    this.write({ ...value, speechUsageSeconds: usage })
+    return usage[month]
+  }
   clear(): void { const archiveDirectory = this.read().archiveDirectory; this.write({ providers: { 'chatgpt-web': false }, subtitle: defaultSubtitlePreferences, archiveDirectory }) }
 
   private read(): z.infer<typeof storedSchema> {
