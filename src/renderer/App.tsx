@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AutomationStatus, ConnectionState, CorrectionStrength, MicrophoneGateState, NextPracticeDraft, PracticeLifecycle, PracticeMode, PracticePreferences, PracticeSource, PromptTemplateCategory, PromptTemplates, ProviderSettings, ReviewResult, SpeechAssetState, SpeechUsageState, SubtitlePreferences, TranscriptEvent, VoiceTurnPhase } from '../shared/types'
+import { defaultSubtitlePreferences } from '../shared/defaults'
 import { LocalSpeechAudioCapture, LocalSpeechAudioPlayer, playMicrophoneToggleTone } from './local-speech-audio'
-import { isPracticeTransitionBusy } from './app-state'
+import { isPracticeTransitionBusy, templateSelectionForDraft } from './app-state'
 import { LearningCenter } from './LearningCenter'
 import { shortcutFromKeyboardEvent } from '../main/microphone-shortcut'
 import { ALIYUN_HELP_LINKS } from '../shared/help-links'
@@ -17,7 +18,6 @@ function WindowControls() {
 }
 
 const sourceLabels: Record<PracticeSource, string> = { 'chatgpt-web': 'ChatGPT 网页', 'api-direct': 'API 直连' }
-const defaultSubtitleSettings: SubtitlePreferences = { mode: 'assistant', layout: 'split', background: 'glass', backgroundColor: '#0e1713', backgroundOpacity: 0.86, assistantColor: '#f1f6f3', userColor: '#fff1c9', fontSize: 25, opacity: 0.94, locked: false, visible: false, maxLines: 4 }
 const defaultMicrophone: MicrophoneGateState = { active: false, available: false, shortcut: 'F8' }
 const defaultSpeechAssets: SpeechAssetState = {
   vad: { status: 'missing', downloadedBytes: 0, totalBytes: 0, progress: 0 },
@@ -46,16 +46,13 @@ function speechAssetStatus(asset: SpeechAssetState[keyof SpeechAssetState]): str
 }
 
 export function App() {
-  const [settings, setSettings] = useState<SubtitlePreferences>(defaultSubtitleSettings)
+  const [settings, setSettings] = useState<SubtitlePreferences>(defaultSubtitlePreferences)
   const [connection, setConnection] = useState<ConnectionState>({ ready: false, pageVisible: true, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': false } })
   const [automation, setAutomation] = useState<AutomationStatus>({ phase: 'idle', message: '正在准备练习。' })
   const [session, setSession] = useState<string>()
   const [events, setEvents] = useState<TranscriptEvent[]>([])
   const [source, setSource] = useState<PracticeSource>('chatgpt-web')
   const [mode, setMode] = useState<PracticeMode>('voice')
-  const [strength, setStrength] = useState<CorrectionStrength>('normal')
-  const [topic, setTopic] = useState('日常聊天')
-  const [level, setLevel] = useState('A1')
   const [focus, setFocus] = useState('')
   const [focusEnabled, setFocusEnabled] = useState(false)
   const [templates, setTemplates] = useState<PromptTemplates>()
@@ -264,7 +261,32 @@ export function App() {
     }
   }
   async function chooseArchiveDirectory(): Promise<void> { try { const directory = await window.speaksub.chooseArchiveDirectory(); if (!directory) return; setArchiveDirectory(directory) } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法切换归档文件夹。', recoverable: true }) } }
-  function useNextPracticeDraft(draft: NextPracticeDraft): void { const nextFocus = draft.focus ?? ''; const nextFocusEnabled = Boolean(draft.focus); setTopic(draft.topic); setLevel(draft.level); setStrength(draft.correctionStrength); setSource(draft.source); setMode(draft.mode); setFocus(nextFocus); setFocusEnabled(nextFocusEnabled); savePracticePreferences({ source: draft.source, mode: draft.mode, focus: nextFocus, focusEnabled: nextFocusEnabled }); setTab('practice'); setAutomation({ phase: 'idle', message: '已根据上次薄弱点准备好练习，请确认后开始。' }) }
+  function useNextPracticeDraft(draft: NextPracticeDraft): void {
+    const nextFocus = draft.focus ?? ''
+    const nextFocusEnabled = Boolean(draft.focus)
+    const mapped = templates ? templateSelectionForDraft(draft, templates) : {}
+    const nextSelection = {
+      scenario: mapped.scenario ?? selectedTemplates.scenario,
+      difficulty: mapped.difficulty ?? selectedTemplates.difficulty,
+      correction: mapped.correction ?? selectedTemplates.correction
+    }
+    setSelectedTemplates(nextSelection)
+    setSource(draft.source)
+    setMode(draft.mode)
+    setFocus(nextFocus)
+    setFocusEnabled(nextFocusEnabled)
+    savePracticePreferences({
+      source: draft.source,
+      mode: draft.mode,
+      scenarioTemplateId: nextSelection.scenario,
+      difficultyTemplateId: nextSelection.difficulty,
+      correctionTemplateId: nextSelection.correction,
+      focus: nextFocus,
+      focusEnabled: nextFocusEnabled
+    })
+    setTab('practice')
+    setAutomation({ phase: 'idle', message: '已根据上次薄弱点准备好练习，请确认后开始。' })
+  }
   const selected = (category: PromptTemplateCategory) => templates?.[category].find((item) => item.id === selectedTemplates[category])
   const composedPrompt = templates ? [selected('scenario')?.prompt, selected('difficulty')?.prompt, selected('correction')?.prompt].filter(Boolean).join('\n\n') : ''
   function openTemplateEditor(category: PromptTemplateCategory): void { if (!templates) return; setTemplateDraft(structuredClone(templates)); setTemplateEditor(category) }

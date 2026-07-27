@@ -2,6 +2,9 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { z } from 'zod'
 import { defaultMicrophoneShortcut } from './microphone-shortcut'
 import type { ConnectionState, PracticePreferences, PromptTemplates, SubtitlePreferences, WebPracticeSource } from '../shared/types'
+import { defaultSubtitlePreferences } from '../shared/defaults'
+
+export { defaultSubtitlePreferences } from '../shared/defaults'
 
 const boundsSchema = z.object({ x: z.number().int(), y: z.number().int(), width: z.number().int().min(320).max(10000), height: z.number().int().min(100).max(10000) })
 const subtitleSchema = z.object({
@@ -51,7 +54,6 @@ export const defaultPromptTemplates: PromptTemplates = {
   ]
 }
 
-export const defaultSubtitlePreferences: SubtitlePreferences = { mode: 'assistant', layout: 'split', background: 'glass', backgroundColor: '#0e1713', backgroundOpacity: 0.86, assistantColor: '#f1f6f3', userColor: '#fff1c9', fontSize: 25, opacity: 0.94, locked: false, visible: false, maxLines: 4 }
 export const defaultPracticePreferences: PracticePreferences = { source: 'chatgpt-web', mode: 'voice', scenarioTemplateId: 'daily-chat', difficultyTemplateId: 'a1', correctionTemplateId: 'normal', focus: '', focusEnabled: false }
 
 export class AppSettingsStore {

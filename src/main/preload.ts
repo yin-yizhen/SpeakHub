@@ -1,6 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { SpeakSubApi } from '../shared/types'
 
+function onIpc<T>(channel: string, listener: (payload: T) => void): () => void {
+  const handler = (_: Electron.IpcRendererEvent, payload: T) => listener(payload)
+  ipcRenderer.on(channel, handler)
+  return () => ipcRenderer.removeListener(channel, handler)
+}
+
 const api: SpeakSubApi = {
   startPractice: (topic, level, strength, source, mode, focus, prompt) => ipcRenderer.invoke('practice:start', topic, level, strength, source, mode, focus, prompt),
   getPromptTemplates: () => ipcRenderer.invoke('practice:templates:get'),
@@ -50,17 +56,17 @@ const api: SpeakSubApi = {
   toggleMicrophoneGate: () => ipcRenderer.invoke('microphone:toggle'),
   setMicrophoneGate: (active) => ipcRenderer.invoke('microphone:set', active),
   clearAllData: () => ipcRenderer.invoke('data:clear'),
-  onTranscript: (listener) => { const handler = (_: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event); ipcRenderer.on('transcript:event', handler); return () => ipcRenderer.removeListener('transcript:event', handler) },
-  onSubtitleSettings: (listener) => { const handler = (_: Electron.IpcRendererEvent, settings: Parameters<typeof listener>[0]) => listener(settings); ipcRenderer.on('subtitle:settings', handler); return () => ipcRenderer.removeListener('subtitle:settings', handler) },
-  onAutomationStatus: (listener) => { const handler = (_: Electron.IpcRendererEvent, status: Parameters<typeof listener>[0]) => listener(status); ipcRenderer.on('automation:status', handler); return () => ipcRenderer.removeListener('automation:status', handler) },
-  onPracticeEnded: (listener) => { const handler = (_: Electron.IpcRendererEvent, result: Parameters<typeof listener>[0]) => listener(result); ipcRenderer.on('practice:ended', handler); return () => ipcRenderer.removeListener('practice:ended', handler) },
-  onConnectionState: (listener) => { const handler = (_: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state); ipcRenderer.on('connection:state', handler); return () => ipcRenderer.removeListener('connection:state', handler) },
-  onVoiceAudio: (listener) => { const handler = (_: Electron.IpcRendererEvent, chunk: Parameters<typeof listener>[0]) => listener(chunk); ipcRenderer.on('voice:audio', handler); return () => ipcRenderer.removeListener('voice:audio', handler) },
-  onSpeechAssetState: (listener) => { const handler = (_: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state); ipcRenderer.on('speech-assets:state', handler); return () => ipcRenderer.removeListener('speech-assets:state', handler) },
-  onSpeechUsage: (listener) => { const handler = (_: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state); ipcRenderer.on('speech:usage', handler); return () => ipcRenderer.removeListener('speech:usage', handler) },
-  onVoicePhase: (listener) => { const handler = (_: Electron.IpcRendererEvent, phase: Parameters<typeof listener>[0]) => listener(phase); ipcRenderer.on('voice:phase', handler); return () => ipcRenderer.removeListener('voice:phase', handler) },
-  onVoiceInterrupt: (listener) => { const handler = (_: Electron.IpcRendererEvent, generation: number) => listener(generation); ipcRenderer.on('voice:interrupt', handler); return () => ipcRenderer.removeListener('voice:interrupt', handler) },
-  onMicrophoneGateState: (listener) => { const handler = (_: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state); ipcRenderer.on('microphone:state', handler); return () => ipcRenderer.removeListener('microphone:state', handler) }
+  onTranscript: (listener) => onIpc('transcript:event', listener),
+  onSubtitleSettings: (listener) => onIpc('subtitle:settings', listener),
+  onAutomationStatus: (listener) => onIpc('automation:status', listener),
+  onPracticeEnded: (listener) => onIpc('practice:ended', listener),
+  onConnectionState: (listener) => onIpc('connection:state', listener),
+  onVoiceAudio: (listener) => onIpc('voice:audio', listener),
+  onSpeechAssetState: (listener) => onIpc('speech-assets:state', listener),
+  onSpeechUsage: (listener) => onIpc('speech:usage', listener),
+  onVoicePhase: (listener) => onIpc('voice:phase', listener),
+  onVoiceInterrupt: (listener) => onIpc('voice:interrupt', listener),
+  onMicrophoneGateState: (listener) => onIpc('microphone:state', listener)
 }
 
 contextBridge.exposeInMainWorld('speaksub', api)

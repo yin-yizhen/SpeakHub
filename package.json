@@ -8,7 +8,6 @@
   "scripts": {
     "prepare:ecdict": "node scripts/prepare-ecdict.mjs",
     "dev": "electron-vite dev",
-    "dev:electron": "electron-vite dev",
     "start": "electron-vite preview",
     "build": "electron-vite build",
     "package:win": "pnpm build && electron-builder --win --x64",

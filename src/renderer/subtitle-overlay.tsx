@@ -2,21 +2,14 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEve
 import { subtitleWordTokens } from '../shared/subtitle-words'
 import { subtitleEvents } from '../shared/transcript'
 import type { DictionaryResult, SubtitlePreferences, TranscriptEvent } from '../shared/types'
+import { defaultSubtitlePreferences } from '../shared/defaults'
 import type { ResizeDirection } from '../main/window-layout'
 
 const defaultSettings: SubtitlePreferences = {
-  mode: 'assistant',
-  layout: 'split',
-  background: 'glass',
-  backgroundColor: '#0e1713',
-  backgroundOpacity: 0.86,
-  assistantColor: '#f1f6f3',
-  userColor: '#fff1c9',
+  ...defaultSubtitlePreferences,
   fontSize: 24,
   opacity: 0.9,
-  locked: false,
-  visible: true,
-  maxLines: 4
+  visible: true
 }
 
 function hexToRgba(hex: string, opacity: number): string {

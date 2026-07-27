@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { PracticeProfile } from '../shared/types'
 
-export const practiceProfileSchema = z.object({
+const practiceProfileSchema = z.object({
   topic: z.string().trim().min(1).max(80),
   level: z.enum(['A1', 'A2', 'B1', 'B2', 'C1']),
   correctionStrength: z.enum(['light', 'normal', 'strict']),

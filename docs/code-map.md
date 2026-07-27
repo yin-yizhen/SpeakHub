@@ -1,83 +1,130 @@
 # SpeakHub Code Map
 
-本文件按“要改什么”定位主文件、数据链路、测试与验收方式。最近完整验收：`uncommitted working tree (2026-07-27)`。
-
-ChatGPT 网页语音练习必须先向普通聊天输入框发送提示词，确认首条回复完成后，再点击语音按钮；不要在语音界面发送开场提示词。
-
-ChatGPT 发送后经常会替换输入框节点；发送确认必须重新定位当前可见输入框。首条回复检测要同时兼容 `article[data-testid^="conversation-turn-"]` 与旧版 `data-message-author-role` 结构。
-
-新建聊天后输入框可能先可见、后完成文本接收绑定；`fillAndSendPrompt()` 必须重新聚焦并自动重试最多 3 次，不能让用户手动再点一次开始。
+本文件按“要改什么”定位入口、数据流、测试和验收方式。最近完整验收提交：`uncommitted working tree (2026-07-27)`。
 
 ## 先看这里
 
-| 目标 | 主文件 | 配套测试 | 验证命令 |
+| 目标 | 主要文件 | 配套测试 | 验证命令 |
 | --- | --- | --- | --- |
-| 改 ChatGPT 网页练习、提示词或网页语音 | `src/main/index.ts`、`src/main/chatgpt-automation.ts`、`src/main/chatgpt-adapter.ts` | `chatgpt-automation.test.ts`、`chatgpt-adapter.test.ts` | `pnpm lint && pnpm test && pnpm build` |
-| 改 ChatGPT 历史清理 | `src/main/index.ts`、`src/main/chatgpt-marker.ts`、`src/main/background-cleanup.ts`、`src/main/chatgpt-automation.ts` | `chatgpt-marker.test.ts`、`background-cleanup.test.ts`、`chatgpt-automation.test.ts` | `pnpm lint && pnpm test && pnpm build`，再做登录态验收 |
-| 改 API 语音、抢话或流式回复 | `src/main/index.ts`、`src/main/local-speech-service.ts`、`src/main/barge-in-policy.ts` | `local-speech-service.test.ts`、`barge-in-policy.test.ts`、`App.voice.test.tsx` | `pnpm test` |
-| 改归档、学习中心、收藏词或复习 | `src/main/store.ts`、`src/main/index.ts`、`src/main/learning-service.ts`、`src/renderer/LearningCenter.tsx` | `store.test.ts`、`learning-service.test.ts`、`LearningCenter.test.tsx` | `pnpm lint && pnpm test && pnpm build` |
-| 改设置、密钥或用量 | `src/main/secure-settings.ts`、`src/main/app-settings.ts`、`src/renderer/App.tsx` | `secure-settings.test.ts`、`app-settings.test.ts`、`App.voice.test.tsx` | `pnpm lint && pnpm test` |
-| 改顶部品牌图标或玻璃顶栏素材 | `src/renderer/assets/app-icon-transparent.png`、`src/renderer/App.tsx`、`src/renderer/styles.css` | `App.voice.test.tsx` | `pnpm lint && pnpm build`；在浅色玻璃顶栏检查图标无白色方底 |
+| 改练习入口、界面状态或 IPC | `src/renderer/App.tsx`、`src/renderer/app-state.ts`、`src/main/preload.ts`、`src/main/index.ts` | `App.voice.test.tsx`、`app-state.test.ts`、`practice-pipeline.integration.test.ts` | `pnpm lint && pnpm test && pnpm build` |
+| 改 ChatGPT 网页自动化 | `src/main/chatgpt-automation.ts`、`src/main/chatgpt-adapter.ts`、`src/main/index.ts` | `chatgpt-automation.test.ts`、`chatgpt-adapter.test.ts` | `pnpm test && pnpm build`，再做登录态验收 |
+| 改 API 对话、语音或抢话 | `src/main/index.ts`、`src/main/local-speech-service.ts`、`src/main/speech-segments.ts`、`src/main/barge-in-policy.ts` | 同名测试、`practice-pipeline.integration.test.ts`、`App.voice.test.tsx` | `pnpm test && pnpm build` |
+| 改字幕、查词或窗口布局 | `src/renderer/subtitle-overlay.tsx`、`src/shared/transcript.ts`、`src/shared/subtitle-words.ts`、`src/main/window-layout.ts` | 同名测试 | `pnpm lint && pnpm test && pnpm build` |
+| 改归档、复盘、词汇或学习中心 | `src/main/store.ts`、`src/main/learning-service.ts`、`src/renderer/LearningCenter.tsx` | `store.test.ts`、`learning-service.test.ts`、`LearningCenter.test.tsx`、`practice-pipeline.integration.test.ts` | `pnpm lint && pnpm test && pnpm build` |
+| 改设置、默认值或密钥 | `src/shared/defaults.ts`、`src/main/app-settings.ts`、`src/main/secure-settings.ts`、`src/renderer/App.tsx` | `app-settings.test.ts`、`secure-settings.test.ts`、`App.voice.test.tsx` | `pnpm lint && pnpm test` |
 
-## 核心链路
-
-```text
-应用启动
--> 读取 userData/last-speaksub-chat.json
--> 隐藏的同登录态 ChatGPT 页面逐条删除 marker 中的会话
--> 新会话优先按 ChatGPT 自动生成的侧边栏标题删除；旧 URL marker 兼容移除 WEB: 前缀
--> 仅在网页确认会话消失后移除该 marker；失败保留供下次启动重试
-```
-
-启动清理与点击“确认并开始”的清理共用同一单飞任务，避免两个隐藏页面重复删除。清理只处理 SpeakHub 自己记录的会话 URL，不删除用户普通 ChatGPT 聊天。
+## End-To-End Flow
 
 ```text
-ChatGPT 网页语音练习
--> `App.tsx` 组合场景、难度、纠错提示词并调用 `practice:start`
--> `index.ts:prepareWebPractice()` 新建 ChatGPT 聊天
--> `fillAndSendPrompt()` 在普通聊天输入框填入提示词、点击发送、确认文本已离开输入框
--> `waitForReplyAndStartVoice()` 等待首条回复完成并稳定约 0.9 秒，再点击“启动语音功能”
--> 记录会话 URL，`ChatGPTAdapter` 监听对话字幕
+App.tsx
+-> preload.ts（window.speaksub）
+-> index.ts（IPC 与运行状态）
+-> PracticeController
+-> ChatGPTAutomation / LearningService / LocalSpeechService
+-> transcript 合并与 SpeechSegmenter 分段
+-> SpeakSubStore checkpoint、归档、复盘和 learning-index.json
+-> IPC 事件返回 App / SubtitleOverlay / LearningCenter
 ```
 
-风险：不能把“按钮 click 已调用”当作发送成功；必须确认输入框中的提示词已消失。网页结构或登录态变化时应显示可恢复的失败提示，不应继续进入练习。
-
-真实验收：在已登录 ChatGPT 的连接页选择“ChatGPT 网页 + 语音交流”，点击“确认并开始”。确认后台依次出现新聊天、已发送的提示词、ChatGPT 的首条完整回复，最后才点击语音按钮；若发送或语音启动失败，界面必须提示失败而不是显示“Prompt sent”。
+学习中心“准备下一次练习”链路：
 
 ```text
-练习文本 / 字幕收藏词
--> current-practice.md
--> review + store.finalizeSession()
--> learning-index.json 中的 VocabularyItem
--> learning:vocabulary:list IPC
--> 学习中心「所有收藏」列表或待复习卡片
--> 评分写回 familiarity / nextReviewAt
+LearningCenter.createNextPracticeDraft()
+-> store.createNextPracticeDraft()
+-> App.useNextPracticeDraft()
+-> app-state.templateSelectionForDraft()
+-> savePracticePreferences()
+-> 下一次 practice:start 使用对应模板
 ```
 
-## ChatGPT 历史清理
+ChatGPT 网页语音链路：
 
-- `index.ts`：应用初始化完成并读取 marker 后立即启动隐藏清理；开始新练习时若清理仍在运行则复用该任务。
-- `chatgpt-marker.ts`：保存会话 URL，并在 ChatGPT 自动生成侧边栏摘要标题后补写该标题。
-- `chatgpt-automation.ts`：新 marker 按精确摘要标题定位会话；旧 marker 按 URL 定位并兼容移除 `WEB:` 前缀。两种方式均限定到该会话行“…”、当前菜单的删除和当前确认框的删除，且确认目标会话已消失。
-- `background-cleanup.ts`：按 marker 顺序逐条处理。任何失败都不移除本地记录。
-- 风险：ChatGPT 页面结构改变或登录失效时必须保留 marker，不能猜测点击。
+```text
+practice:start
+-> prepareWebPractice()
+-> 新建聊天并 fillAndSendPrompt()
+-> 确认输入框内容已离开
+-> 等待首条完整回复稳定
+-> 启动语音按钮
+-> ChatGPTAdapter 解析字幕并写入归档
+```
 
-真实验收：完成一轮 ChatGPT 练习后检查 marker 已包含 ChatGPT 自动生成的侧边栏摘要标题。重启应用且不点击“确认并开始”，确认隐藏清理页按顺序删除这条标题对应会话；旧 marker 仍可按 URL 删除。若网络或菜单异常，关闭再打开应用应继续重试。
+## Code Map
 
-## 学习中心与词汇
+### 主进程与 IPC
 
-- `LearningCenter.tsx`：词汇页默认可查看所有收藏词；“所有收藏”会清除待复习、熟悉度和搜索筛选。“待复习”只筛选到期词，“开始复习”进入卡片流程。
-- `store.ts`：学习索引与复习日期的唯一写入点。四档卡片评分 `again/hard/good/easy` 的间隔为 0/1/3/14 天。
-- `index.ts` + `learning-service.ts`：词汇列表返回前只使用离线词典补全缺失释义；列表刷新不得触发 LLM 网络回退。
-- 风险：不要只检查 UI。需验证 `listVocabulary` 的筛选参数、卡片评分后的 `nextReviewAt`，以及 `learning-index.json` 的持久化结果。
+- `src/main/index.ts`：Electron 生命周期、窗口、IPC、练习状态与各服务编排。文件较大；修改时应沿具体 IPC 链路定位，不要只看 UI。
+- `src/main/preload.ts`：渲染进程 API 白名单；所有持续事件统一经 `onIpc()` 注册并返回解绑函数。
+- `src/main/practice-controller.ts`：开始/结束去重和生命周期状态。
 
-## 本地验证与真实验收
+### 练习与语音
+
+- `src/main/practice-profile.ts`：练习参数解析与提示词组合。
+- `src/main/chatgpt-automation.ts`：ChatGPT DOM 定位、发送、等待回复、语音启动和历史删除。
+- `src/main/chatgpt-adapter.ts`：ChatGPT 页面消息解析及观察。
+- `src/main/local-speech-service.ts`：VAD、云端识别与本地 TTS worker 编排。
+- `src/main/speech-segments.ts`：流式文本分段，是 TTS chunk 边界的唯一实现。
+
+### 数据与学习
+
+- `src/main/store.ts`：`current-practice.md`、最终 Markdown 和 `learning-index.json` 的唯一写入入口。
+- `src/main/session-checkpoint.ts`：练习中的增量落盘。
+- `src/main/learning-service.ts`：LLM 对话、SSE 解析和复盘结构化。
+- `src/renderer/LearningCenter.tsx`：历史、完整复盘、词汇和复习 UI。
+
+### 渲染与共享配置
+
+- `src/renderer/App.tsx`：主界面组合与客户端交互状态。
+- `src/renderer/app-state.ts`：可独立测试的界面状态派生和模板映射。
+- `src/renderer/subtitle-overlay.tsx`：字幕展示、选词、收藏、文本发送与缩放。
+- `src/shared/defaults.ts`：跨主进程和渲染进程共用的纯数据默认值；不得依赖 Electron 或 Node API。
+- `src/shared/types.ts`：IPC 和跨进程数据契约。
+
+## Test Index
+
+| Test file | Covers |
+| --- | --- |
+| `src/main/practice-pipeline.integration.test.ts` | 参数解析、对话事件、checkpoint 与归档入库真实链路 |
+| `src/main/store.test.ts` | chunk 合并、Markdown、复盘、搜索、词汇和索引持久化 |
+| `src/main/speech-segments.test.ts` | TTS 分段边界 |
+| `src/main/chatgpt-automation.test.ts` | 网页 DOM、发送确认、回复稳定和清理 |
+| `src/renderer/App.voice.test.tsx` | 来源、模式、语音门控、设置和客户端事件 |
+| `src/renderer/app-state.test.ts` | 生命周期忙碌状态、下一次练习模板映射 |
+| `src/renderer/subtitle-overlay.test.tsx` | 字幕、查词、收藏和交互状态 |
+| `src/renderer/LearningCenter.test.tsx` | 历史详情、词汇列表和复习卡 |
+
+## Common Change Recipes
+
+### 修改练习参数
+
+1. 修改 `shared/types.ts` 或 `practice-profile.ts`。
+2. 同步 `preload.ts`、`index.ts` 与 `App.tsx`。
+3. 更新 `practice-profile.test.ts`、`app-state.test.ts` 或 `App.voice.test.tsx`。
+4. 运行全量验证。
+5. 至少检查一次 `practice-pipeline.integration.test.ts` 的解析、事件和入库边界。
+
+### 修改字幕或流式语音
+
+1. 字幕筛选改 `shared/transcript.ts`，语音 chunk 改 `speech-segments.ts`。
+2. 不要在 UI 内复制解析或分段规则。
+3. 运行对应单元测试和集成测试。
+4. 本地启动后检查连续流式文本没有丢字、重复或提前入库。
+
+## Local Verification Commands
 
 ```powershell
 pnpm lint
+pnpm exec tsc --noEmit --noUnusedLocals --noUnusedParameters
 pnpm test
 pnpm build
 pnpm dev
 ```
 
-在学习中心收藏至少两个单词，先打开“待复习”筛选，再点击“所有收藏”，确认筛选被清除并展示全部收藏词；完成一张卡片的“英文 → 评分 → 中文释义 → 下一词”流程后，重启应用确认日期和释义仍保留。
+## Known Runtime Notes
+
+- ChatGPT DOM 会变化；发送成功必须以输入内容离开输入框为准，不能只判断按钮已点击。
+- ChatGPT 清理失败时必须保留 marker，供下次启动重试；不能删除普通用户对话。
+- 不要只看 UI 截图猜修复点；至少验证解析输出、chunk 输出和入库结果中的一个或多个边界。
+- `store.ts` 是学习索引和复习日期的唯一写入点；列表刷新不得触发 LLM 网络回退。
+- `main.tsx` 与 `overlay-main.tsx` 由两个 HTML 入口引用，静态未使用扫描可能误报，不能删除。
+- `.playwright-cli/` 与 `artifacts/` 是本地验收产物，除非明确纳入版本控制，否则视为用户工作区内容。

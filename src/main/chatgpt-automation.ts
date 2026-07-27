@@ -22,7 +22,7 @@ function labelOf(element: Element): string {
   return [element.textContent, element.getAttribute('aria-label'), element.getAttribute('title'), element.getAttribute('data-testid')].filter(Boolean).join(' ').trim().toLowerCase()
 }
 
-export function scoreComposer(element: HTMLElement): number {
+function scoreComposer(element: HTMLElement): number {
   const attributes = [element.id, element.getAttribute('placeholder'), element.getAttribute('aria-label'), element.getAttribute('aria-placeholder'), element.getAttribute('data-placeholder')].filter(Boolean).join(' ').toLowerCase()
   let score = 0
   if (element.id === 'prompt-textarea') score += 200

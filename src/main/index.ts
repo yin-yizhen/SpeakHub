@@ -28,7 +28,7 @@ import { ALIYUN_FUN_ASR_CNY_PER_SECOND } from './aliyun-fun-asr'
 import { openAllowedHelpUrl } from './external-help-navigation'
 import { embeddedConnectionBounds, resizeBounds, subtitleBounds, subtitleHeight, type ResizeDirection } from './window-layout'
 import { mergeTranscriptEvent } from '../shared/transcript'
-import type { AutomationStatus, ConnectionState, CorrectionStrength, GeneratedSpeechChunk, MicrophoneGateState, PracticeEndResult, PracticeMode, PracticeProfile, PracticeSession, PracticeSource, PracticeStartResult, ReviewResult, SpeechUsageState, SubtitlePreferences, TranscriptEvent, VoiceAudioChunk, VoiceCaptureStatus, VoiceTurnPhase, WebPracticeSource } from '../shared/types'
+import type { AutomationStatus, ConnectionState, CorrectionStrength, GeneratedSpeechChunk, MicrophoneGateState, PracticeMode, PracticeProfile, PracticeSession, PracticeSource, ReviewResult, SpeechUsageState, SubtitlePreferences, TranscriptEvent, VoiceAudioChunk, VoiceCaptureStatus, VoiceTurnPhase } from '../shared/types'
 
 const CHATGPT_URL = 'https://chatgpt.com/'
 const CONNECTION_WIDTH = 420

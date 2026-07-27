@@ -1,8 +1,8 @@
 export type Speaker = 'assistant' | 'user'
-export type TranscriptStatus = 'streaming' | 'complete'
+type TranscriptStatus = 'streaming' | 'complete'
 export type SubtitleMode = 'assistant' | 'user' | 'both'
-export type SubtitleLayout = 'same-side' | 'split'
-export type SubtitleBackground = 'transparent' | 'glass' | 'solid'
+type SubtitleLayout = 'same-side' | 'split'
+type SubtitleBackground = 'transparent' | 'glass' | 'solid'
 export type CorrectionStrength = 'light' | 'normal' | 'strict'
 export type PromptTemplateCategory = 'scenario' | 'difficulty' | 'correction'
 export type PracticeSource = 'chatgpt-web' | 'api-direct'
@@ -13,8 +13,8 @@ export type CefrLevel = 'A1' | 'A2' | 'B1' | 'B2' | 'C1'
 export type VocabularyFamiliarity = 'unfamiliar' | 'learning' | 'mastered'
 export type VocabularyReviewRating = 'again' | 'hard' | 'good' | 'easy'
 export type LearningPeriod = 'week' | 'month'
-export type SessionArchiveStatus = 'completed' | 'interrupted'
-export type ErrorCategory = 'grammar' | 'word-choice' | 'tense' | 'articles' | 'prepositions' | 'fluency' | 'coherence' | 'interaction' | 'other'
+type SessionArchiveStatus = 'completed' | 'interrupted'
+type ErrorCategory = 'grammar' | 'word-choice' | 'tense' | 'articles' | 'prepositions' | 'fluency' | 'coherence' | 'interaction' | 'other'
 
 export interface TranscriptEvent {
   id: string
@@ -39,7 +39,7 @@ export interface PracticeSession {
   focus?: string
 }
 
-export interface PracticeSessionProfile {
+interface PracticeSessionProfile {
   topic: string
   level: CefrLevel
   correctionStrength: CorrectionStrength
@@ -51,7 +51,7 @@ export interface PracticeSessionProfile {
 
 export interface PracticeProfile extends PracticeSessionProfile {}
 
-export interface PromptTemplate { id: string; name: string; prompt: string }
+interface PromptTemplate { id: string; name: string; prompt: string }
 export interface PromptTemplates { scenario: PromptTemplate[]; difficulty: PromptTemplate[]; correction: PromptTemplate[] }
 
 export interface PracticePreferences {
@@ -71,7 +71,7 @@ export interface ConnectionState {
   providers: Record<WebPracticeSource, boolean>
 }
 
-export type AutomationPhase = 'idle' | 'filling-prompt' | 'prompt-sent' | 'waiting-for-reply' | 'starting-voice' | 'voice-started' | 'stopping-voice' | 'failed'
+type AutomationPhase = 'idle' | 'filling-prompt' | 'prompt-sent' | 'waiting-for-reply' | 'starting-voice' | 'voice-started' | 'stopping-voice' | 'failed'
 
 export interface AutomationStatus {
   phase: AutomationPhase
@@ -119,13 +119,13 @@ export interface DictionaryResult {
   naturalAlternative?: string
 }
 
-export interface ReviewIssue {
+interface ReviewIssue {
   original: string
   improved: string
   reason: string
 }
 
-export interface PracticeAssessment {
+interface PracticeAssessment {
   estimatedCefr: CefrLevel
   scores: { accuracy: number; vocabulary: number; fluency: number; interaction: number }
   errorCategories: Array<{ category: ErrorCategory; count: number }>
@@ -226,7 +226,7 @@ export interface ProviderSettingsInput {
   clearAliyunAsrApiKey?: boolean
 }
 
-export interface ProviderModelProbeInput {
+interface ProviderModelProbeInput {
   llmBaseUrl: string
   llmApiKey?: string
 }
@@ -237,7 +237,7 @@ export interface MicrophoneGateState {
   shortcut: string
 }
 
-export type SpeechAssetStatus = 'missing' | 'downloading' | 'ready' | 'error'
+type SpeechAssetStatus = 'missing' | 'downloading' | 'ready' | 'error'
 export type VoiceTurnPhase = 'idle' | 'listening' | 'thinking' | 'synthesizing' | 'speaking'
 
 export interface SpeechAssetProgress {

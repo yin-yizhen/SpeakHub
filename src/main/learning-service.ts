@@ -131,7 +131,7 @@ export class LearningService {
   }
 }
 
-export async function readSseResponse(response: Response, onDelta: (delta: string) => void): Promise<string> {
+async function readSseResponse(response: Response, onDelta: (delta: string) => void): Promise<string> {
   if (!response.body) throw new Error('LLM streaming response had no body.')
   const reader = response.body.getReader()
   const decoder = new TextDecoder()

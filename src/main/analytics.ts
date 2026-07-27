@@ -2,7 +2,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 
-export const speakSubTrackingEndpoint = 'https://sonic-analysis.cn-shanghai.log.aliyuncs.com/logstores/speaksub-event/track'
+const speakSubTrackingEndpoint = 'https://sonic-analysis.cn-shanghai.log.aliyuncs.com/logstores/speaksub-event/track'
 
 type AnalyticsEventName = 'app_open' | 'app_heartbeat' | 'app_close'
 
