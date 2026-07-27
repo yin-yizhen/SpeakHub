@@ -238,11 +238,14 @@ export class ChatGPTAutomation {
   async isReady(): Promise<boolean> { return this.contents.executeJavaScript(`Boolean((${pageComposerLocator}).composer)`, true) as Promise<boolean> }
 
   async fillAndSendPrompt(prompt: string): Promise<AutomationResult> {
+    const deadline = Date.now() + 45_000
+    const promptPrefix = prompt.slice(0, 20)
     let latest: { focused: boolean; diagnostics: Array<Record<string, unknown>> } | undefined
     let enteredText = ''
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      latest = await this.waitForComposerFocus()
-      if (!latest.focused) { await pause(350); continue }
+    let attempt = 0
+    while (Date.now() < deadline) {
+      latest = await this.waitForComposerFocus(1_500)
+      if (!latest.focused) { await pause(300); continue }
       if (attempt > 0) {
         this.contents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] })
         this.contents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['control'] })
@@ -251,12 +254,13 @@ export class ChatGPTAutomation {
         await pause(150)
       }
       this.contents.insertText(prompt)
-      await pause(280 + attempt * 250)
+      await pause(350)
       enteredText = await this.contents.executeJavaScript(readComposerScript) as string
-      if (enteredText.includes(prompt.slice(0, 20))) break
-      await pause(400 + attempt * 250)
+      if (enteredText.includes(promptPrefix)) break
+      attempt += 1
+      await pause(550)
     }
-    if (!enteredText.includes(prompt.slice(0, 20))) return { ok: false, message: latest?.focused ? 'ChatGPT 输入框暂未接受文本，已自动重试 3 次仍失败。请打开连接页后重试。' : `ChatGPT 页面仍未准备好：等待输入框后仍未获得焦点。候选：${JSON.stringify(latest?.diagnostics ?? [])}` }
+    if (!enteredText.includes(promptPrefix)) return { ok: false, message: latest?.focused ? 'ChatGPT 输入框在 45 秒内仍未接受提示词。请打开连接页检查网络或登录状态后重试。' : 'ChatGPT 页面在 45 秒内仍未准备好输入框。请打开连接页检查网络或登录状态后重试。' }
     const clicked = await this.contents.executeJavaScript(clickComposerSendScript, true) as boolean
     if (!clicked) { this.contents.sendInputEvent({ type: 'keyDown', keyCode: 'ENTER' }); this.contents.sendInputEvent({ type: 'keyUp', keyCode: 'ENTER' }) }
     let sent = await this.contents.executeJavaScript(`(${confirmPromptSentScript})(${JSON.stringify(prompt)})`, true) as boolean
@@ -274,8 +278,8 @@ export class ChatGPTAutomation {
     return { ok: true, message: clicked ? '已新建 ChatGPT 聊天。' : '已回到 ChatGPT 新聊天页。' }
   }
 
-  private async waitForComposerFocus(): Promise<{ focused: boolean; diagnostics: Array<Record<string, unknown>> }> {
-    const deadline = Date.now() + 8_000
+  private async waitForComposerFocus(timeoutMs = 8_000): Promise<{ focused: boolean; diagnostics: Array<Record<string, unknown>> }> {
+    const deadline = Date.now() + timeoutMs
     let latest: { focused: boolean; diagnostics: Array<Record<string, unknown>> } = { focused: false, diagnostics: [] }
     do {
       latest = await this.contents.executeJavaScript(focusComposerScript, true) as typeof latest

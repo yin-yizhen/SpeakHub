@@ -47,7 +47,7 @@ describe('ChatGPT page automation selectors', () => {
     expect(executeJavaScript).toHaveBeenCalledTimes(5)
   })
 
-  it('retries the first text entry after a new chat finishes hydrating', async () => {
+  it('keeps retrying text entry while a new chat finishes hydrating', async () => {
     const executeJavaScript = vi.fn()
       .mockResolvedValueOnce({ focused: true, diagnostics: [{ id: 'prompt-textarea' }] })
       .mockResolvedValueOnce('')

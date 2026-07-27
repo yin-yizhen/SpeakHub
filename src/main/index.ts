@@ -262,6 +262,7 @@ async function prepareWebPractice(topic: string, level: string, strength: Correc
   cleanPreviousInBackground()
   announceAutomation({ phase: 'filling-prompt', message: 'Creating a new ChatGPT practice.' })
   const newChat = await automation.startNewChat(); if (!newChat.ok) throw new Error(newChat.message)
+  announceAutomation({ phase: 'filling-prompt', message: 'Waiting for the ChatGPT input box and sending the prompt.' })
   const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source: 'chatgpt-web', mode, focus, prompt })
   const session = beginSession(profile); beginWebAdapter()
   let sent
