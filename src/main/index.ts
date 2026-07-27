@@ -21,6 +21,7 @@ import { defaultMicrophoneShortcut, normalizeMicrophoneShortcut, replaceGlobalMi
 import { PracticeController } from './practice-controller'
 import { buildPracticePrompt, parsePracticeProfile } from './practice-profile'
 import { DiagnosticLog } from './diagnostic-log'
+import { AnonymousAnalytics } from './analytics'
 import { embeddedConnectionBounds, resizeBounds, subtitleBounds, subtitleHeight, type ResizeDirection } from './window-layout'
 import { mergeTranscriptEvent } from '../shared/transcript'
 import type { AutomationStatus, ConnectionState, CorrectionStrength, GeneratedSpeechChunk, MicrophoneGateState, PracticeEndResult, PracticeMode, PracticeProfile, PracticeSession, PracticeSource, PracticeStartResult, ReviewResult, SubtitlePreferences, TranscriptEvent, VoiceAudioChunk, VoiceTurnPhase, WebPracticeSource } from '../shared/types'
@@ -65,6 +66,7 @@ let microphoneActive = false
 let microphoneShortcut = defaultMicrophoneShortcut
 let microphoneShortcutError: string | undefined
 let chatgptMicrophoneGateReady = false
+let analytics: AnonymousAnalytics | undefined
 
 function rendererUrl(page: string): string { return process.env.ELECTRON_RENDERER_URL ? `${process.env.ELECTRON_RENDERER_URL}/${page}` : pathToFileURL(join(__dirname, `../renderer/${page}`)).toString() }
 function preloadPath(): string { return join(__dirname, '../preload/preload.js') }
@@ -468,11 +470,11 @@ app.whenReady().then(() => {
   archiveDirectory = appSettings.archiveDirectory(join(userData, 'learning-archive')); store = new SpeakSubStore(archiveDirectory); settings = new SecureSettings(join(userData, 'provider-settings.json')); chatMarker = new ChatGPTMarkerStore(join(userData, 'last-speaksub-chat.json')); learning = new LearningService(settings, join(app.getAppPath(), 'resources', 'dictionaries', 'ecdict-en-zh')); speechModels = new SpeechModelManager(join(userData, 'speech-models')); speechModels.subscribe((assetState) => broadcast('speech-assets:state', assetState))
   const showPersistedOverlay = subtitle.visible
   try { registerMicrophoneShortcut(microphoneShortcut) } catch (error) { microphoneShortcutError = error instanceof Error ? error.message : 'The saved microphone shortcut is unavailable.' }
-  createMainWindow(); createChatHostView(); createOverlayWindow(); installIpc(); applyWindowMode(); if (microphoneShortcutError) announceAutomation({ phase: 'failed', message: microphoneShortcutError, recoverable: true }); if (showPersistedOverlay) showOverlay()
+  createMainWindow(); createChatHostView(); createOverlayWindow(); installIpc(); applyWindowMode(); mainWindow?.webContents.once('did-finish-load', () => { analytics = new AnonymousAnalytics({ userDataDirectory: userData, appVersion: app.getVersion(), platform: process.platform, arch: process.arch }); void analytics.start() }); if (microphoneShortcutError) announceAutomation({ phase: 'failed', message: microphoneShortcutError, recoverable: true }); if (showPersistedOverlay) showOverlay()
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) { createMainWindow(); createChatHostView(); createOverlayWindow(); applyWindowMode() } })
 })
 
 app.on('will-quit', () => globalShortcut.unregister(microphoneShortcut))
 
-app.on('before-quit', () => stopSessionCheckpoint(true))
+app.on('before-quit', () => { stopSessionCheckpoint(true); void analytics?.close() })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

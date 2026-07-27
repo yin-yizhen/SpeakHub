@@ -17,6 +17,7 @@
 | 改 ChatGPT 语音或统一麦克风闸门 | `src/main/index.ts`, `src/main/chatgpt-microphone-preload.ts`, `src/main/microphone-shortcut.ts`, `src/renderer/App.tsx` | `microphone-shortcut.test.ts`, `chatgpt-automation.test.ts`, `App.voice.test.tsx` | `pnpm lint && pnpm test && pnpm build` |
 | 改字幕、悬浮词汇卡或悬浮窗结束对话 | `src/renderer/subtitle-overlay.tsx`, `src/renderer/overlay.css`, `src/main/index.ts`, `src/main/preload.ts`, `src/renderer/App.tsx` | `subtitle-words.test.ts`, `subtitle-overlay.test.tsx`, `App.voice.test.tsx` | `pnpm lint && pnpm test && pnpm build` |
 | 改历史、词汇复习或趋势 | `src/main/store.ts`, `src/renderer/LearningCenter.tsx`, `src/shared/types.ts` | `store.test.ts`, `LearningCenter.test.tsx`, `practice-pipeline.integration.test.ts` | `pnpm lint && pnpm test && pnpm build` |
+| 改匿名使用埋点或 SLS 上报 | `src/main/analytics.ts`, `src/main/index.ts` | `analytics.test.ts` | `pnpm lint && pnpm test && pnpm build && pnpm package:win` |
 
 ## End-to-End Flow
 
@@ -69,6 +70,10 @@ Electron 禁止原生 external ArrayBuffer；Kokoro `generate` 必须传 `enable
 
 `index.ts` 在同一个 `BrowserWindow` 内用 `WebContentsView` 显示右侧 ChatGPT 页面；`connection.pageVisible` 通过 `applyWindowMode` 决定是否显示该视图。左侧 `connection-shell` 固定为 420px，`embeddedConnectionBounds` 让右侧视图紧贴其右边。连接页隐藏后只能隐藏视图，不能销毁其 `webContents`，否则后台采集会中断。主窗口以 `removeMenu()` 移除默认 `File/Edit/View` 菜单；调整窗口大小时必须重新计算嵌入视图的边界。
 
+### 匿名使用埋点
+
+`analytics.ts` 只在 Electron 主进程运行，持久化匿名安装 ID 到 `userData/anonymous-analytics.json`，并向 SLS `speaksub-event` 发送 `app_open`、每 60 秒 `app_heartbeat` 与退出时的 `app_close`。`index.ts` 必须在主窗口完成首次加载后才调用 `start()`，并在 `before-quit` 中调用 `close()`。允许字段严格限定为应用标识、匿名 ID、会话 ID、版本、OS、架构、首次启动标识和关闭时长；不得向模块传入练习内容、设置或密钥。SLS 端还必须关联字段白名单写入处理器，以删除来源/IP 元字段。
+
 ### 持久化与复盘
 
 `store.ts` 把当前练习原子写入 `current-practice.md`，`session-checkpoint.ts` 每 5 秒刷新。临时字幕只在内存和 UI 更新；Markdown 只包含 `complete` 事件，避免 token 级重写或把半截回复归档。结束后 `learning-service.ts` 基于相同 Markdown 生成复盘，随后事务性改名为 `speaksub-practice-*.md` 并更新 `learning-index.json`。
@@ -106,6 +111,7 @@ Electron 禁止原生 external ArrayBuffer；Kokoro `generate` 必须传 `enable
 | `src/renderer/local-speech-audio.test.ts` | 16 kHz Float32 重采样和麦克风提示音 |
 | `src/main/microphone-shortcut.test.ts` | 快捷键格式、按键录入与全局注册冲突回滚 |
 | `src/main/practice-pipeline.integration.test.ts` | parser、字幕、Markdown、JSON 索引和搜索边界 |
+| `src/main/analytics.test.ts` | 匿名 ID 持久化、会话更新、字段白名单、心跳、关闭时长和网络失败隔离 |
 
 ## 验证命令
 
@@ -129,3 +135,4 @@ pnpm dev
 8. 启动 ChatGPT 网页语音后，用主窗口按钮和全局快捷键切换麦克风；确认网页语音行为保持不变。
 9. 从悬浮字幕结束对话，确认主窗口退出练习、复盘出现且 Markdown 已归档；同时核对 SSE parser 输出、chunk 切分和最终入库，不能只看 UI。
 10. 打开学习中心，验证历史、词汇和趋势仍能读取新归档。
+11. 打包版启动后，在 SLS 查询 `event: app_open`；运行超过一分钟确认 `app_heartbeat`，正常退出确认 `app_close` 与 `duration_seconds`。重启后匿名 ID 应不变、会话 ID 应改变；最终入库记录不得出现 IP、来源元字段或任何练习内容。
