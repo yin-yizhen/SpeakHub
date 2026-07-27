@@ -100,6 +100,8 @@ describe('unified voice microphone gate', () => {
     act(() => root.render(<App/>)); await settle()
 
     expect(container.querySelector<HTMLButtonElement>('.source-picker button.active')?.textContent).toBe('ChatGPT 网页')
+    expect(container.querySelector('.prompt-preview')?.textContent).toContain('默认使用英语回复')
+    expect(container.querySelector('.prompt-preview')?.textContent).toContain('英文内容应占回复的至少 80%')
   })
 
   it('restores saved practice preferences and saves a new selection immediately', async () => {

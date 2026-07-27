@@ -6,7 +6,7 @@ import { isPracticeTransitionBusy, templateSelectionForDraft } from './app-state
 import { LearningCenter } from './LearningCenter'
 import { shortcutFromKeyboardEvent } from '../main/microphone-shortcut'
 import { ALIYUN_HELP_LINKS } from '../shared/help-links'
-import { buildDirectChatSystemPrompt } from '../shared/direct-chat-prompt'
+import { buildChatGptWebPrompt, buildDirectChatSystemPrompt } from '../shared/direct-chat-prompt'
 
 const brandIcon = new URL('./assets/app-icon-transparent.png', import.meta.url).href
 
@@ -203,8 +203,11 @@ export function App() {
       const scenario = templates?.scenario.find((item) => item.id === selectedTemplates.scenario)
       const difficulty = templates?.difficulty.find((item) => item.id === selectedTemplates.difficulty)
       const correction = templates?.correction.find((item) => item.id === selectedTemplates.correction)
-      const prompt = [scenario?.prompt, difficulty?.prompt, correction?.prompt].filter(Boolean).join('\n\n')
-      if (!scenario || !difficulty || !correction || !prompt) throw new Error('请先为场景、难度和纠错各选择一个提示词。')
+      const selectedPrompt = [scenario?.prompt, difficulty?.prompt, correction?.prompt].filter(Boolean).join('\n\n')
+      if (!scenario || !difficulty || !correction || !selectedPrompt) throw new Error('请先为场景、难度和纠错各选择一个提示词。')
+      const prompt = source === 'chatgpt-web'
+        ? buildChatGptWebPrompt(scenario.name, difficulty.name, selectedPrompt)
+        : selectedPrompt
       const correctionStrength: CorrectionStrength = ['light', 'normal', 'strict'].includes(correction.id) ? correction.id as CorrectionStrength : 'normal'
       const cefrLevel = ['A1', 'A2', 'B1', 'B2', 'C1'].includes(difficulty.name) ? difficulty.name : 'B1'
       const result = await window.speaksub.startPractice(scenario.name, cefrLevel, correctionStrength, source, mode, focusEnabled ? focus || undefined : undefined, prompt)
@@ -293,7 +296,7 @@ export function App() {
   const selectedPromptWithFocus = `${composedPrompt}${focusEnabled && focus.trim() ? `\n\n本次重点：\n${focus.trim()}` : ''}`
   const promptPreview = source === 'api-direct'
     ? buildDirectChatSystemPrompt(selected('scenario')?.name ?? '日常聊天', selected('difficulty')?.name ?? 'B1', selectedPromptWithFocus)
-    : selectedPromptWithFocus
+    : buildChatGptWebPrompt(selected('scenario')?.name ?? '日常聊天', selected('difficulty')?.name ?? 'B1', selectedPromptWithFocus)
   function openTemplateEditor(category: PromptTemplateCategory): void { if (!templates) return; setTemplateDraft(structuredClone(templates)); setTemplateEditor(category) }
   function closeTemplateEditor(): void { setTemplateEditor(undefined); setTemplateDraft(undefined) }
   async function saveTemplates(): Promise<void> {
@@ -332,7 +335,7 @@ export function App() {
         <div className="source-picker" aria-label="交流方式"><button disabled={Boolean(session) || transitionBusy} className={mode === 'voice' ? 'active' : ''} onClick={() => selectMode('voice')}>语音交流</button><button disabled={Boolean(session) || transitionBusy} className={mode === 'text' ? 'active' : ''} onClick={() => selectMode('text')}>文字交流</button></div>
         {templates && <><div className="prompt-category"><div><strong>情景</strong><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('scenario')}>管理提示词</button></div><div className="topic-grid">{templates.scenario.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.scenario === item.id ? 'topic active' : 'topic'} onClick={() => { setSelectedTemplates((value) => ({ ...value, scenario: item.id })); savePracticePreferences({ scenarioTemplateId: item.id }) }}>{item.name}</button>)}</div></div>
         <div className="session-config"><div className="level-picker"><span>难度</span>{templates.difficulty.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.difficulty === item.id ? 'active' : ''} onClick={() => { setSelectedTemplates((value) => ({ ...value, difficulty: item.id })); savePracticePreferences({ difficultyTemplateId: item.id }) }}>{item.name}</button>)}</div><div className="correction-picker"><span>纠错</span>{templates.correction.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.correction === item.id ? 'active' : ''} onClick={() => { setSelectedTemplates((value) => ({ ...value, correction: item.id })); savePracticePreferences({ correctionTemplateId: item.id }) }}>{item.name}</button>)}</div><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('difficulty')}>管理难度</button><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('correction')}>管理纠错</button>{session ? <button className="finish-action" disabled={transitionBusy} onClick={() => void endPractice()}>{lifecycle === 'ending' ? '正在生成复盘…' : '结束并生成复盘'}</button> : <button className="primary-action" disabled={transitionBusy} onClick={() => void startPractice()}>{lifecycle === 'starting' ? '正在启动…' : '确认并开始'}</button>}</div>
-        <section className="prompt-preview"><strong>{source === 'api-direct' ? '将作为 system 发送给 AI 的完整提示词' : '将发送给 AI 的提示词'}</strong><p>{promptPreview}</p></section>
+        <section className="prompt-preview"><strong>{source === 'api-direct' ? '将作为 system 发送给 AI 的完整提示词' : '将发送给 ChatGPT 的完整提示词'}</strong><p>{promptPreview}</p></section>
         {!session && focus && <label className="practice-focus"><span><input type="checkbox" checked={focusEnabled} onChange={(event) => { setFocusEnabled(event.target.checked); savePracticePreferences({ focusEnabled: event.target.checked }) }}/> 带入上次复盘重点</span><textarea disabled={!focusEnabled} value={focus} onChange={(event) => { setFocus(event.target.value); savePracticePreferences({ focus: event.target.value }) }} rows={3}/><small>重点来自所选历史对话的薄弱点和“下一次练习”建议；勾选后会追加到最终提示词。</small></label>}</>}
         {session && source === 'api-direct' && mode === 'text' && <div className="api-composer"><textarea value={apiMessage} disabled={apiBusy} onChange={(event) => setApiMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendApiMessage() } }} placeholder="用英语输入你的回答…" rows={3}/><button className="primary-action" disabled={apiBusy || !apiMessage.trim()} onClick={() => void sendApiMessage()}>{apiBusy ? '正在回复…' : '发送'}</button></div>}
         {session && mode === 'voice' && <div className="api-composer microphone-control"><div><strong>{microphone.active ? (source === 'api-direct' && voicePhase === 'listening' ? '正在听你说' : '麦克风已开启，可随时打断 AI') : '麦克风已暂停'}</strong><span>按 {microphone.shortcut} 开启或暂停；API 语音在 AI 思考和朗读时也会持续监听。</span></div><button className={microphone.active ? 'finish-action' : 'primary-action'} type="button" onClick={() => void toggleMicrophone()}>{microphone.active ? `暂停麦克风 · ${microphone.shortcut}` : `开启麦克风 · ${microphone.shortcut}`}</button></div>}
