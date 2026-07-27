@@ -1,4 +1,6 @@
-export class RealtimeAudioCapture {
+import type { GeneratedSpeechChunk, VoiceAudioChunk } from '../shared/types'
+
+export class LocalSpeechAudioCapture {
   private stream: MediaStream | undefined
   private context: AudioContext | undefined
   private source: MediaStreamAudioSourceNode | undefined
@@ -6,7 +8,7 @@ export class RealtimeAudioCapture {
   private sink: GainNode | undefined
   private workletUrl: string | undefined
 
-  async start(onAudio: (pcm16: ArrayBuffer) => void): Promise<void> {
+  async start(onAudio: (chunk: VoiceAudioChunk) => void): Promise<void> {
     this.stop()
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } })
     this.context = new AudioContext()
@@ -15,7 +17,10 @@ export class RealtimeAudioCapture {
     this.workletUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
     await this.context.audioWorklet.addModule(this.workletUrl)
     this.processor = new AudioWorkletNode(this.context, 'speaksub-capture', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] })
-    this.processor.port.onmessage = (event: MessageEvent<ArrayBuffer>) => onAudio(toPcm16(new Float32Array(event.data), this.context!.sampleRate))
+    this.processor.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+      const samples = resampleFloat32(new Float32Array(event.data), this.context!.sampleRate, 16000)
+      onAudio({ sampleRate: 16000, format: 'float32', samples: samples.buffer.slice(samples.byteOffset, samples.byteOffset + samples.byteLength) as ArrayBuffer })
+    }
     this.sink = this.context.createGain(); this.sink.gain.value = 0
     this.source.connect(this.processor); this.processor.connect(this.sink); this.sink.connect(this.context.destination)
   }
@@ -27,17 +32,17 @@ export class RealtimeAudioCapture {
   }
 }
 
-export class RealtimeAudioPlayer {
+export class LocalSpeechAudioPlayer {
   private context: AudioContext | undefined
   private scheduledAt = 0
   private readonly nodes = new Set<AudioBufferSourceNode>()
 
-  play(pcm16: ArrayBuffer): void {
+  play(chunk: GeneratedSpeechChunk, onEnded?: () => void): void {
     this.context ??= new AudioContext()
-    const samples = new Int16Array(pcm16); const buffer = this.context.createBuffer(1, samples.length, 24000)
-    const channel = buffer.getChannelData(0)
-    for (let index = 0; index < samples.length; index += 1) channel[index] = samples[index] / 32768
-    const node = this.context.createBufferSource(); node.buffer = buffer; node.connect(this.context.destination); this.nodes.add(node); node.onended = () => this.nodes.delete(node)
+    void this.context.resume()
+    const samples = new Float32Array(chunk.samples); const buffer = this.context.createBuffer(1, samples.length, chunk.sampleRate)
+    buffer.copyToChannel(samples, 0)
+    const node = this.context.createBufferSource(); node.buffer = buffer; node.connect(this.context.destination); this.nodes.add(node); node.onended = () => { this.nodes.delete(node); onEnded?.() }
     const at = Math.max(this.context.currentTime, this.scheduledAt); node.start(at); this.scheduledAt = at + buffer.duration
   }
 
@@ -77,12 +82,11 @@ export function playMicrophoneToggleTone(enabled: boolean): void {
   })
 }
 
-function toPcm16(input: Float32Array, sampleRate: number): ArrayBuffer {
-  const ratio = sampleRate / 24000; const output = new Int16Array(Math.floor(input.length / ratio))
+export function resampleFloat32(input: Float32Array, sampleRate: number, targetRate = 16000): Float32Array {
+  const ratio = sampleRate / targetRate; const output = new Float32Array(Math.floor(input.length / ratio))
   for (let index = 0; index < output.length; index += 1) {
     const position = index * ratio; const lower = Math.floor(position); const upper = Math.min(input.length - 1, lower + 1); const fraction = position - lower
-    const sample = Math.max(-1, Math.min(1, input[lower] * (1 - fraction) + input[upper] * fraction))
-    output[index] = sample < 0 ? sample * 32768 : sample * 32767
+    output[index] = Math.max(-1, Math.min(1, input[lower] * (1 - fraction) + input[upper] * fraction))
   }
-  return output.buffer
+  return output
 }

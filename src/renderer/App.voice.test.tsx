@@ -2,13 +2,13 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { SpeakSubApi, SubtitlePreferences } from '../shared/types'
+import type { SpeakSubApi, SubtitlePreferences, VoiceTurnPhase } from '../shared/types'
 
 const audio = vi.hoisted(() => ({ captureStart: vi.fn(async () => undefined), captureStop: vi.fn(), playTone: vi.fn(), playerPlay: vi.fn(), playerInterrupt: vi.fn(), playerStop: vi.fn() }))
 
-vi.mock('./realtime-audio', () => ({
-  RealtimeAudioCapture: class { start = audio.captureStart; stop = audio.captureStop },
-  RealtimeAudioPlayer: class { play = audio.playerPlay; interrupt = audio.playerInterrupt; stop = audio.playerStop },
+vi.mock('./local-speech-audio', () => ({
+  LocalSpeechAudioCapture: class { start = audio.captureStart; stop = audio.captureStop },
+  LocalSpeechAudioPlayer: class { play = audio.playerPlay; interrupt = audio.playerInterrupt; stop = audio.playerStop },
   playMicrophoneToggleTone: audio.playTone
 }))
 
@@ -27,13 +27,14 @@ let practiceEndedListener: ((result: Parameters<SpeakSubApi['onPracticeEnded']>[
 let microphoneListener: ((state: Parameters<SpeakSubApi['onMicrophoneGateState']>[0] extends (state: infer State) => void ? State : never) => void) | undefined
 let toggleMicrophoneGate: ReturnType<typeof vi.fn>
 let practiceSource: 'api-direct' | 'chatgpt-web'
+let voicePhaseListener: ((phase: VoiceTurnPhase) => void) | undefined
 
 beforeEach(() => {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   audio.captureStart.mockClear(); audio.captureStop.mockClear(); audio.playTone.mockClear(); audio.playerPlay.mockClear(); audio.playerInterrupt.mockClear(); audio.playerStop.mockClear()
   container = document.createElement('div'); document.body.append(container); root = createRoot(container)
   startVoiceCapture = vi.fn(async () => undefined); stopVoiceCapture = vi.fn(async () => undefined)
-  practiceEndedListener = undefined; microphoneListener = undefined; practiceSource = 'api-direct'
+  practiceEndedListener = undefined; microphoneListener = undefined; voicePhaseListener = undefined; practiceSource = 'api-direct'
   let microphone = { active: false, available: false, shortcut: 'F8' }
   toggleMicrophoneGate = vi.fn(async () => {
     microphone = { ...microphone, active: !microphone.active, available: true }
@@ -41,8 +42,8 @@ beforeEach(() => {
     return microphone
   })
   const api = {
-    getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: true, pageVisible: false, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': true } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone })),
-    getProviderSettings: vi.fn(async () => ({ hasLlmKey: true, realtimeEnabled: true, realtimeModel: 'voice-model' })),
+    getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: true, pageVisible: false, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': true } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone, speechAssets: { asr: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 } }, voicePhase: 'listening' })),
+    getProviderSettings: vi.fn(async () => ({ hasLlmKey: true })),
     getArchiveDirectory: vi.fn(async () => 'D:/archive'),
     startPractice: vi.fn(async () => ({ session: { id: 'session-1', startedAt: 'now', correctionStrength: 'normal' }, voiceStarted: false, source: practiceSource, mode: 'voice' as const })),
     startVoiceCapture,
@@ -55,6 +56,8 @@ beforeEach(() => {
     onConnectionState: vi.fn(() => () => undefined),
     onVoiceAudio: vi.fn(() => () => undefined),
     onVoiceInterrupt: vi.fn(() => () => undefined),
+    onSpeechAssetState: vi.fn(() => () => undefined),
+    onVoicePhase: vi.fn((listener) => { voicePhaseListener = listener; return () => { voicePhaseListener = undefined } }),
     onMicrophoneGateState: vi.fn((listener) => { microphoneListener = listener; return () => { microphoneListener = undefined } }),
     toggleMicrophoneGate,
     setMicrophoneGate: vi.fn(async () => microphone),
@@ -103,6 +106,20 @@ describe('unified voice microphone gate', () => {
     expect(toggleMicrophoneGate).toHaveBeenCalledOnce()
     expect(audio.captureStart).not.toHaveBeenCalled()
     expect(container.textContent).toContain('麦克风已开启')
+  })
+
+  it('stops actual API capture during AI output and resumes it after the half-duplex turn', async () => {
+    act(() => root.render(<App/>)); await settle()
+    await act(async () => { container.querySelector<HTMLButtonElement>('.session-config .primary-action')!.click(); await Promise.resolve() })
+    await act(async () => { container.querySelector<HTMLButtonElement>('.microphone-control .primary-action')!.click(); await Promise.resolve() })
+    expect(audio.captureStart).toHaveBeenCalledOnce()
+
+    await act(async () => { voicePhaseListener?.('thinking'); await Promise.resolve() })
+    expect(audio.captureStop).toHaveBeenCalled()
+    expect(container.textContent).toContain('麦克风已临时停采')
+
+    await act(async () => { voicePhaseListener?.('listening'); await Promise.resolve() })
+    expect(audio.captureStart).toHaveBeenCalledTimes(2)
   })
 
   it('returns the main practice UI to idle when the overlay ends the shared session', async () => {

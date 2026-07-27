@@ -19,13 +19,28 @@
   "build": {
     "appId": "com.speaksub.app",
     "productName": "SpeakSub",
-    "directories": { "output": "release" },
-    "files": ["out/**", "resources/dictionaries/**", "package.json"],
-    "win": { "target": ["nsis"] }
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**",
+      "resources/dictionaries/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/sherpa-onnx-node/**/*",
+      "node_modules/sherpa-onnx-win-x64/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    }
   },
   "dependencies": {
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
+    "sherpa-onnx-node": "1.13.4",
     "zod": "^4.1.11"
   },
   "devDependencies": {

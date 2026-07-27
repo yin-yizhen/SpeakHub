@@ -70,4 +70,46 @@ describe('OpenAI-compatible direct chat', () => {
     const service = new LearningService(settings({ hasLlmKey: false }))
     await expect(service.chat([], 'daily chat', 'B1')).rejects.toThrow('OpenAI-compatible')
   })
+
+  it('parses arbitrarily chunked SSE deltas including mixed Chinese and English', async () => {
+    const chunks = [
+      'data: {"choices":[{"delta":{"con',
+      'tent":"你好，"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"world!"}}]}\r\n\r\n',
+      'data: [DONE]\n\n'
+    ]
+    const fetchMock = vi.fn(async () => new Response(new ReadableStream({
+      start(controller) { for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk)); controller.close() }
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'practice-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as typeof fetch)
+    const deltas: string[] = []
+
+    await expect(service.streamChat([], 'daily', 'B1', { onDelta: (delta) => deltas.push(delta) })).resolves.toBe('你好，world!')
+    expect(deltas).toEqual(['你好，', 'world!'])
+    expect(JSON.parse(String((fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1].body))).toMatchObject({ stream: true })
+  })
+
+  it('falls back once to a normal response when streaming is rejected before any delta', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 400 }))
+      .mockResolvedValueOnce(Response.json({ choices: [{ message: { content: '整段回退回复' } }] }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'practice-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as typeof fetch)
+    const deltas: string[] = []
+
+    await expect(service.streamChat([], 'daily', 'B1', { onDelta: (delta) => deltas.push(delta) })).resolves.toBe('整段回退回复')
+    expect(deltas).toEqual(['整段回退回复'])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(String((fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[1][1].body))).not.toHaveProperty('stream')
+  })
+
+  it('honors active cancellation', async () => {
+    const fetchMock = vi.fn((_url: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'practice-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as typeof fetch)
+    const controller = new AbortController()
+    const request = service.streamChat([], 'daily', 'B1', { onDelta: () => undefined, signal: controller.signal })
+    controller.abort()
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' })
+  })
 })

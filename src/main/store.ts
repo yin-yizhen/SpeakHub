@@ -64,7 +64,7 @@ export class SpeakSubStore {
     if (index === -1) current.push(event); else current[index] = { ...current[index], ...event, id: current[index].id }
     this.currentEvents.set(event.sessionId, current)
     const session = this.currentSessions.get(event.sessionId)
-    if (session) this.writeSession(session, this.reviews.get(event.sessionId))
+    if (session && event.status === 'complete') this.writeSession(session, this.reviews.get(event.sessionId))
   }
 
   eventsForSession(sessionId: string): TranscriptEvent[] { return this.currentEvents.get(sessionId) ?? [] }
@@ -211,7 +211,7 @@ export class SpeakSubStore {
   }
 
   private writeSession(session: PracticeSession, review?: ReviewResult): void {
-    const events = this.eventsForSession(session.id); const favorites = this.favoriteWordsForSession(session.id)
+    const events = this.eventsForSession(session.id).filter((event) => event.status === 'complete'); const favorites = this.favoriteWordsForSession(session.id)
     const transcript = events.length ? events.map((event) => `### ${event.speaker === 'assistant' ? 'AI' : 'Me'} at ${event.receivedAt}\n\n${event.text}`).join('\n\n') : '_No supported page text was captured._'
     const favoritesSection = favorites.length ? `\n\n## Saved vocabulary\n\n${favorites.map((word) => `- ${word}`).join('\n')}` : ''
     const reviewSection = review ? `\n\n## Review\n\n**Topic:** ${review.topic}\n\n${review.summary}\n\n### Corrections\n\n${review.issues.map((issue) => `- ${issue.original} -> ${issue.improved}: ${issue.reason}`).join('\n')}\n\n### Vocabulary\n\n${review.vocabulary.map((item) => `- ${item.term}: ${item.meaning}${item.example ? `\n  - Example: ${item.example}` : ''}`).join('\n')}\n\n### Next practice\n\n${review.nextPractice}` : ''

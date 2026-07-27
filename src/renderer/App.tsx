@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AutomationStatus, ConnectionState, CorrectionStrength, MicrophoneGateState, NextPracticeDraft, PracticeLifecycle, PracticeMode, PracticeSource, ProviderSettings, ReviewResult, SubtitlePreferences, TranscriptEvent } from '../shared/types'
-import { playMicrophoneToggleTone, RealtimeAudioCapture, RealtimeAudioPlayer } from './realtime-audio'
+import type { AutomationStatus, ConnectionState, CorrectionStrength, MicrophoneGateState, NextPracticeDraft, PracticeLifecycle, PracticeMode, PracticeSource, ProviderSettings, ReviewResult, SpeechAssetState, SubtitlePreferences, TranscriptEvent, VoiceTurnPhase } from '../shared/types'
+import { LocalSpeechAudioCapture, LocalSpeechAudioPlayer, playMicrophoneToggleTone } from './local-speech-audio'
 import { isPracticeTransitionBusy } from './app-state'
 import { LearningCenter } from './LearningCenter'
 import { shortcutFromKeyboardEvent } from '../main/microphone-shortcut'
@@ -10,6 +10,10 @@ const levels = ['A1', 'A2', 'B1', 'B2', 'C1']
 const sourceLabels: Record<PracticeSource, string> = { 'chatgpt-web': 'ChatGPT 网页', 'api-direct': 'API 直连' }
 const defaultSubtitleSettings: SubtitlePreferences = { mode: 'assistant', layout: 'split', background: 'glass', backgroundColor: '#0e1713', backgroundOpacity: 0.86, assistantColor: '#f1f6f3', userColor: '#fff1c9', fontSize: 25, opacity: 0.94, locked: false, visible: false, maxLines: 4 }
 const defaultMicrophone: MicrophoneGateState = { active: false, available: false, shortcut: 'F8' }
+const defaultSpeechAssets: SpeechAssetState = {
+  asr: { status: 'missing', downloadedBytes: 0, totalBytes: 0, progress: 0 },
+  tts: { status: 'missing', downloadedBytes: 0, totalBytes: 0, progress: 0 }
+}
 
 export function App() {
   const [settings, setSettings] = useState<SubtitlePreferences>(defaultSubtitleSettings)
@@ -33,13 +37,15 @@ export function App() {
   const [microphone, setMicrophone] = useState<MicrophoneGateState>(defaultMicrophone)
   const [shortcutDraft, setShortcutDraft] = useState(defaultMicrophone.shortcut)
   const [shortcutError, setShortcutError] = useState<string>()
-  const capture = useRef(new RealtimeAudioCapture())
-  const player = useRef(new RealtimeAudioPlayer())
+  const [speechAssets, setSpeechAssets] = useState<SpeechAssetState>(defaultSpeechAssets)
+  const [voicePhase, setVoicePhase] = useState<VoiceTurnPhase>('idle')
+  const capture = useRef(new LocalSpeechAudioCapture())
+  const player = useRef(new LocalSpeechAudioPlayer())
   const previousMicrophoneActive = useRef(false)
 
   useEffect(() => {
     void Promise.all([window.speaksub.getState(), window.speaksub.getProviderSettings(), window.speaksub.getArchiveDirectory()]).then(([state, provider, directory]) => {
-      setSettings(state.settings); setConnection(state.connection); setAutomation(state.automation); setSession(state.session?.id); setEvents(state.events); setProviders(provider); setSource(state.source); setMode(state.mode); setLifecycle(state.lifecycle); setArchiveDirectory(directory); setMicrophone(state.microphone); setShortcutDraft(state.microphone.shortcut)
+      setSettings(state.settings); setConnection(state.connection); setAutomation(state.automation); setSession(state.session?.id); setEvents(state.events); setProviders(provider); setSource(state.source); setMode(state.mode); setLifecycle(state.lifecycle); setArchiveDirectory(directory); setMicrophone(state.microphone); setShortcutDraft(state.microphone.shortcut); setSpeechAssets(state.speechAssets); setVoicePhase(state.voicePhase)
     })
     const removeTranscript = window.speaksub.onTranscript((event) => setEvents((current) => {
       const index = current.findIndex((item) => item.sourceMessageId === event.sourceMessageId)
@@ -54,29 +60,32 @@ export function App() {
       else if (result.voiceWarning) setAutomation({ phase: 'failed', message: result.voiceWarning, recoverable: true })
     })
     const removeConnection = window.speaksub.onConnectionState(setConnection)
-    const removeVoiceAudio = window.speaksub.onVoiceAudio((pcm16) => player.current.play(pcm16))
+    const removeVoiceAudio = window.speaksub.onVoiceAudio((chunk) => player.current.play(chunk, () => void window.speaksub.notifyVoicePlaybackEnded(chunk.id)))
     const removeVoiceInterrupt = window.speaksub.onVoiceInterrupt(() => player.current.interrupt())
+    const removeSpeechAssets = window.speaksub.onSpeechAssetState(setSpeechAssets)
+    const removeVoicePhase = window.speaksub.onVoicePhase(setVoicePhase)
     const removeMicrophone = window.speaksub.onMicrophoneGateState((next) => {
       if (next.available && next.active !== previousMicrophoneActive.current) playMicrophoneToggleTone(next.active)
       previousMicrophoneActive.current = next.active
       setMicrophone(next); setShortcutDraft(next.shortcut)
     })
-    return () => { capture.current.stop(); player.current.stop(); removeTranscript(); removeSettings(); removeAutomation(); removePracticeEnded(); removeConnection(); removeVoiceAudio(); removeVoiceInterrupt(); removeMicrophone() }
+    return () => { capture.current.stop(); player.current.stop(); removeTranscript(); removeSettings(); removeAutomation(); removePracticeEnded(); removeConnection(); removeVoiceAudio(); removeVoiceInterrupt(); removeSpeechAssets(); removeVoicePhase(); removeMicrophone() }
   }, [])
 
   const latestAssistant = useMemo(() => [...events].reverse().find((event) => event.speaker === 'assistant')?.text ?? '', [events])
+  const latestUser = useMemo(() => [...events].reverse().find((event) => event.speaker === 'user')?.text ?? '', [events])
   const updateSubtitle = (input: Partial<SubtitlePreferences>) => void window.speaksub.updateSubtitle(input)
   const isWebSource = source !== 'api-direct'
   const transitionBusy = isPracticeTransitionBusy(lifecycle)
 
   useEffect(() => {
     if (!session || source !== 'api-direct' || mode !== 'voice' || lifecycle !== 'active') { capture.current.stop(); return }
-    if (!microphone.active) { capture.current.stop(); void window.speaksub.stopVoiceCapture(); return }
+    if (!microphone.active || voicePhase !== 'listening') { capture.current.stop(); void window.speaksub.stopVoiceCapture(); return }
     let disposed = false
     void (async () => {
       try {
         await window.speaksub.startVoiceCapture()
-        await capture.current.start((pcm16) => void window.speaksub.sendVoiceAudio(pcm16))
+        await capture.current.start((chunk) => void window.speaksub.sendVoiceAudio(chunk))
       } catch (error) {
         if (disposed) return
         capture.current.stop(); void window.speaksub.setMicrophoneGate(false)
@@ -84,7 +93,7 @@ export function App() {
       }
     })()
     return () => { disposed = true }
-  }, [session, source, mode, lifecycle, microphone.active])
+  }, [session, source, mode, lifecycle, microphone.active, voicePhase])
 
   async function enterPractice(): Promise<void> { try { setConnection(await window.speaksub.completeConnection()) } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法确认登录状态。', recoverable: true }) } }
   async function openConnection(): Promise<void> { if (source === 'api-direct') return; await window.speaksub.showConnectionPage() }
@@ -114,7 +123,7 @@ export function App() {
     try { const saved = await window.speaksub.saveMicrophoneShortcut(shortcut); setShortcutDraft(saved); setShortcutError(undefined) }
     catch (error) { setShortcutError(error instanceof Error ? error.message : '该快捷键不可用。') }
   }
-  async function saveProviders(form: HTMLFormElement): Promise<void> { const data = new FormData(form); setProviders(await window.speaksub.saveProviderSettings({ llmBaseUrl: String(data.get('llmBaseUrl') || ''), llmModel: String(data.get('llmModel') || ''), llmApiKey: String(data.get('llmApiKey') || ''), realtimeEnabled: data.get('realtimeEnabled') === 'on', realtimeModel: String(data.get('realtimeModel') || ''), realtimeProtocol: data.get('realtimeProtocol') === 'legacy' ? 'legacy' : 'current', clearLlmApiKey: data.get('clearLlmApiKey') === 'on' })) }
+  async function saveProviders(form: HTMLFormElement): Promise<void> { const data = new FormData(form); setProviders(await window.speaksub.saveProviderSettings({ llmBaseUrl: String(data.get('llmBaseUrl') || ''), llmModel: String(data.get('llmModel') || ''), llmApiKey: String(data.get('llmApiKey') || ''), clearLlmApiKey: data.get('clearLlmApiKey') === 'on' })) }
   async function chooseArchiveDirectory(): Promise<void> { try { const directory = await window.speaksub.chooseArchiveDirectory(); if (!directory) return; setArchiveDirectory(directory) } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法切换归档文件夹。', recoverable: true }) } }
   function useNextPracticeDraft(draft: NextPracticeDraft): void { setTopic(draft.topic); setLevel(draft.level); setStrength(draft.correctionStrength); setSource(draft.source); setMode(draft.mode); setFocus(draft.focus ?? ''); setTab('practice'); setAutomation({ phase: 'idle', message: '已根据上次薄弱点准备好练习，请确认后开始。' }) }
 
@@ -135,24 +144,25 @@ export function App() {
   </header><aside className="studio-nav"><button className={tab === 'practice' ? 'active' : ''} onClick={() => setTab('practice')}>练习</button><button className={tab === 'learning' ? 'active' : ''} onClick={() => setTab('learning')}>学习</button><button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>设置</button></aside>
   <section className="studio-content">
     {tab === 'practice' && <>
-      <section className="practice-stage"><div className="stage-copy"><p className="kicker">SPEAKING SESSION</p><h1>{session ? '正在对话…' : '准备开口。'}</h1><p>{session ? (source === 'api-direct' ? '应用内文字对话已接入字幕与归档。' : `${sourceLabels[source]} 在后台保持运行，字幕可随时显示。`) : '选择来源、场景和难度，然后开始一次练习。'}</p></div><div className="automation-card"><span className={`status-dot ${automation.phase}`}></span><div><small>{automation.phase.replaceAll('-', ' ')}</small><strong>{automation.message}</strong></div>{automation.recoverable && isWebSource && <button onClick={() => void openConnection()}>打开连接页</button>}{automation.recoverable && isWebSource && <button onClick={() => void clearPendingCleanup()}>已处理旧对话</button>}</div></section>
-      <section className="template-workbench"><div className="workbench-heading"><h2>选择一次对话</h2><span>{source === 'api-direct' ? '应用内文字交流，双方进入字幕流' : `${sourceLabels[source]} 在后台执行`}</span></div>
-        <div className="source-picker">{(Object.keys(sourceLabels) as PracticeSource[]).map((item) => <button key={item} disabled={Boolean(session) || transitionBusy} className={source === item ? 'active' : ''} onClick={() => { setSource(item); if (item === 'api-direct' && !providers?.realtimeEnabled) setMode('text') }}>{sourceLabels[item]}</button>)}</div>
-        <div className="source-picker" aria-label="交流方式"><button disabled={Boolean(session) || transitionBusy || (source === 'api-direct' && !providers?.realtimeEnabled)} className={mode === 'voice' ? 'active' : ''} onClick={() => setMode('voice')}>语音交流</button><button disabled={Boolean(session) || transitionBusy} className={mode === 'text' ? 'active' : ''} onClick={() => setMode('text')}>文字交流</button>{source === 'api-direct' && !providers?.realtimeEnabled && <small>请先在设置中启用 Realtime 兼容语音模型。</small>}</div>
+      <section className="practice-stage"><div className="stage-copy"><p className="kicker">SPEAKING SESSION</p><h1>{session ? '正在对话…' : '准备开口。'}</h1><p>{session ? (source === 'api-direct' ? '本地识别与朗读已接入流式 API、字幕和归档。' : `${sourceLabels[source]} 在后台保持运行，字幕可随时显示。`) : '选择来源、场景和难度，然后开始一次练习。'}</p></div><div className="automation-card"><span className={`status-dot ${automation.phase}`}></span><div><small>{source === 'api-direct' && mode === 'voice' ? voicePhase : automation.phase.replaceAll('-', ' ')}</small><strong>{automation.message}</strong></div>{automation.recoverable && isWebSource && <button onClick={() => void openConnection()}>打开连接页</button>}{automation.recoverable && isWebSource && <button onClick={() => void clearPendingCleanup()}>已处理旧对话</button>}</div></section>
+      <section className="template-workbench"><div className="workbench-heading"><h2>选择一次对话</h2><span>{source === 'api-direct' ? '文本 API + 本地双语语音，双方进入同一字幕流' : `${sourceLabels[source]} 在后台执行`}</span></div>
+        <div className="source-picker">{(Object.keys(sourceLabels) as PracticeSource[]).map((item) => <button key={item} disabled={Boolean(session) || transitionBusy} className={source === item ? 'active' : ''} onClick={() => setSource(item)}>{sourceLabels[item]}</button>)}</div>
+        <div className="source-picker" aria-label="交流方式"><button disabled={Boolean(session) || transitionBusy} className={mode === 'voice' ? 'active' : ''} onClick={() => setMode('voice')}>语音交流</button><button disabled={Boolean(session) || transitionBusy} className={mode === 'text' ? 'active' : ''} onClick={() => setMode('text')}>文字交流</button></div>
         <div className="topic-grid">{topics.map((item) => <button key={item} disabled={Boolean(session) || transitionBusy} className={topic === item ? 'topic active' : 'topic'} onClick={() => setTopic(item)}>{item}</button>)}</div>
         <div className="session-config"><div className="level-picker"><span>难度</span>{levels.map((item) => <button key={item} disabled={Boolean(session) || transitionBusy} className={level === item ? 'active' : ''} onClick={() => setLevel(item)}>{item}</button>)}</div><label>纠错<select value={strength} disabled={Boolean(session) || transitionBusy} onChange={(event) => setStrength(event.target.value as CorrectionStrength)}><option value="light">轻度</option><option value="normal">普通</option><option value="strict">严格</option></select></label>{session ? <button className="finish-action" disabled={transitionBusy} onClick={() => void endPractice()}>{lifecycle === 'ending' ? '正在生成复盘…' : '结束并生成复盘'}</button> : <button className="primary-action" disabled={transitionBusy} onClick={() => void startPractice()}>{lifecycle === 'starting' ? '正在启动…' : '确认并开始'}</button>}</div>
         {!session && focus && <label className="practice-focus">本次重点<textarea value={focus} onChange={(event) => setFocus(event.target.value)} rows={3}/><small>来自上次复盘，可在开始前修改。</small></label>}
         {session && source === 'api-direct' && mode === 'text' && <div className="api-composer"><textarea value={apiMessage} disabled={apiBusy} onChange={(event) => setApiMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendApiMessage() } }} placeholder="用英语输入你的回答…" rows={3}/><button className="primary-action" disabled={apiBusy || !apiMessage.trim()} onClick={() => void sendApiMessage()}>{apiBusy ? '正在回复…' : '发送'}</button></div>}
-        {session && mode === 'voice' && <div className="api-composer microphone-control"><div><strong>{microphone.active ? '麦克风已开启' : '麦克风已暂停'}</strong><span>按 {microphone.shortcut} 开启或暂停；ChatGPT 语音会保持连接，暂停时只输入静音。</span></div><button className={microphone.active ? 'finish-action' : 'primary-action'} type="button" onClick={() => void toggleMicrophone()}>{microphone.active ? `暂停麦克风 · ${microphone.shortcut}` : `开启麦克风 · ${microphone.shortcut}`}</button></div>}
+        {session && mode === 'voice' && <div className="api-composer microphone-control"><div><strong>{microphone.active ? (source === 'api-direct' && voicePhase !== 'listening' ? '正在等待 AI，麦克风已临时停采' : '麦克风已开启') : '麦克风已暂停'}</strong><span>按 {microphone.shortcut} 开启或暂停；API 语音会在 AI 生成和朗读时自动半双工停采，结束后恢复。</span></div><button className={microphone.active ? 'finish-action' : 'primary-action'} type="button" onClick={() => void toggleMicrophone()}>{microphone.active ? `暂停麦克风 · ${microphone.shortcut}` : `开启麦克风 · ${microphone.shortcut}`}</button></div>}
       </section>
-      <section className="support-row"><div className="compact-panel"><div><p className="kicker">LIVE SUBTITLES</p><h3>{settings.visible ? '字幕已显示' : '字幕暂未显示'}</h3><p>对话双方都会进入统一字幕流。</p></div><button className="quiet-action" onClick={() => void window.speaksub.toggleOverlay()}>{settings.visible ? '隐藏' : '显示'}</button></div><div className="compact-panel transcript-preview"><p className="kicker">LATEST CAPTURE</p><p>{latestAssistant || '开始后，最新 AI 回复会显示在这里。'}</p></div></section>
+      <section className="support-row"><div className="compact-panel"><div><p className="kicker">LIVE SUBTITLES</p><h3>{settings.visible ? '悬浮字幕已显示' : '悬浮字幕暂未显示'}</h3><p>主页面和悬浮窗使用同一组字幕事件。</p></div><button className="quiet-action" onClick={() => void window.speaksub.toggleOverlay()}>{settings.visible ? '隐藏' : '显示'}</button></div><div className="compact-panel transcript-preview dual-transcript"><div><p className="kicker">我</p><p>{latestUser || '开始说话后，中英混合识别字幕会显示在这里。'}</p></div><div><p className="kicker">AI</p><p>{latestAssistant || 'DeepSeek 的流式回复会逐步显示在这里。'}</p></div></div></section>
       {review && <section className="review-panel"><p className="kicker">SESSION REVIEW</p><h2>{review.topic}</h2><p>{review.summary}</p>{review.issues.slice(0, 3).map((issue, index) => <div className="review-issue" key={index}><span>{issue.original}</span><strong>{issue.improved}</strong><small>{issue.reason}</small></div>)}</section>}
     </>}
     {tab === 'learning' && <LearningCenter onUseDraft={useNextPracticeDraft}/>}
     {tab === 'settings' && <section className="utility-page settings-page"><p className="kicker">SPEAKSUB CONTROLS</p><h1>设置</h1><div className="settings-grid"><label>字幕内容<select value={settings.mode} onChange={(event) => updateSubtitle({ mode: event.target.value as SubtitlePreferences['mode'] })}><option value="assistant">只显示 AI</option><option value="user">只显示我</option><option value="both">显示双方</option></select></label><label>双方布局<select value={settings.layout} onChange={(event) => updateSubtitle({ layout: event.target.value as SubtitlePreferences['layout'] })}><option value="split">AI 左、我右</option><option value="same-side">同侧显示</option></select></label><label>背景<select value={settings.background} onChange={(event) => updateSubtitle({ background: event.target.value as SubtitlePreferences['background'] })}><option value="glass">半透明磨砂</option><option value="solid">纯色底板</option><option value="transparent">完全透明</option></select></label><label>背景颜色<input type="color" value={settings.backgroundColor} onChange={(event) => updateSubtitle({ backgroundColor: event.target.value })}/></label><label>背景透明度 <output>{Math.round(settings.backgroundOpacity * 100)}%</output><input type="range" min="0.1" max="1" step="0.05" value={settings.backgroundOpacity} onChange={(event) => updateSubtitle({ backgroundOpacity: Number(event.target.value) })}/></label><label>持续显示行数<select value={settings.maxLines} onChange={(event) => updateSubtitle({ maxLines: Number(event.target.value) })}>{[2, 3, 4, 5, 6].map((count) => <option key={count} value={count}>{count} 行</option>)}</select></label><label>字号 <output>{settings.fontSize}px</output><input type="range" min="18" max="38" value={settings.fontSize} onChange={(event) => updateSubtitle({ fontSize: Number(event.target.value) })}/></label><label>整体透明度 <output>{Math.round(settings.opacity * 100)}%</output><input type="range" min="0.55" max="1" step="0.05" value={settings.opacity} onChange={(event) => updateSubtitle({ opacity: Number(event.target.value) })}/></label><label>AI 字幕颜色<input type="color" value={settings.assistantColor} onChange={(event) => updateSubtitle({ assistantColor: event.target.value })}/></label><label>我的字幕颜色<input type="color" value={settings.userColor} onChange={(event) => updateSubtitle({ userColor: event.target.value })}/></label><label className="check-label"><input type="checkbox" checked={settings.locked} onChange={(event) => updateSubtitle({ locked: event.target.checked })}/>锁定字幕位置和操作</label></div>
       <section className="archive-directory"><h2>麦克风快捷键</h2><p>点击输入框后直接按下按键组合。它是系统全局快捷键，在 ChatGPT 网页获得焦点时也会生效。</p><input className="shortcut-input" aria-label="麦克风快捷键" value={shortcutDraft} readOnly onKeyDown={(event) => void recordMicrophoneShortcut(event)}/>{shortcutError && <small role="alert">{shortcutError}</small>}</section>
       <section className="archive-directory"><h2>本地归档</h2><p>练习中会持续写入此文件夹根目录的 current-practice.md；复盘完成后，它会改名为一份包含对话、收藏词和复盘的 Markdown。</p><output title={archiveDirectory}>{archiveDirectory || '正在读取…'}</output><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => void chooseArchiveDirectory()}>选择文件夹</button>{(session || transitionBusy) && <small>请先结束当前练习再切换。</small>}</section>
-      <form key={JSON.stringify(providers)} className="provider-form" onSubmit={(event) => { event.preventDefault(); void saveProviders(event.currentTarget) }}><h2>API 直连与复盘</h2><p>OpenAI-compatible 配置用于应用内 API 对话、查词补充和结束后的复盘；悬浮单词释义默认使用内置离线词典。</p><label>兼容接口 Base URL<input name="llmBaseUrl" defaultValue={providers?.llmBaseUrl} placeholder="https://example.com/v1"/></label><label>模型名<input name="llmModel" defaultValue={providers?.llmModel} placeholder="your-model"/></label><label>LLM API Key<input name="llmApiKey" type="password" placeholder={providers?.hasLlmKey ? '已保存' : '选填'}/></label><label className="check-label"><input name="clearLlmApiKey" type="checkbox"/>清除已保存的 API Key</label><label className="check-label"><input name="realtimeEnabled" type="checkbox" defaultChecked={providers?.realtimeEnabled}/>启用 OpenAI Realtime 兼容语音</label><label>Realtime 模型<input name="realtimeModel" defaultValue={providers?.realtimeModel} placeholder="gpt-realtime"/></label><label>Realtime 协议<select name="realtimeProtocol" defaultValue={providers?.realtimeProtocol ?? 'current'}><option value="current">当前 OpenAI 协议</option><option value="legacy">旧兼容协议</option></select></label><button className="primary-action" type="submit">保存设置</button></form>
+      <section className="archive-directory speech-assets"><h2>本地双语语音模型</h2><p>首次准备约下载 197 MB，解压后模型约占 265 MB；之后可永久离线识别和朗读，不依赖 Windows 系统语音。</p>{(['asr', 'tts'] as const).map((asset) => <div key={asset}><strong>{asset === 'asr' ? '中英双语识别' : 'Kokoro 中英朗读'}</strong><span>{speechAssets[asset].status === 'downloading' ? `${Math.round(speechAssets[asset].progress * 100)}%` : speechAssets[asset].status}</span><progress max={1} value={speechAssets[asset].progress}/>{speechAssets[asset].error && <small role="alert">{speechAssets[asset].error}</small>}</div>)}{(speechAssets.asr.status === 'error' || speechAssets.tts.status === 'error') && <button className="quiet-action" onClick={() => void window.speaksub.downloadSpeechAssets().catch((error) => setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '模型下载失败。', recoverable: true }))}>重试下载</button>}</section>
+      <form key={JSON.stringify(providers)} className="provider-form" onSubmit={(event) => { event.preventDefault(); void saveProviders(event.currentTarget) }}><h2>API 直连与复盘</h2><p>只需填写 DeepSeek 或其他 OpenAI-compatible 文本接口；本地语音识别与朗读不需要第二个云端账号。</p><label>兼容接口 Base URL<input name="llmBaseUrl" defaultValue={providers?.llmBaseUrl} placeholder="https://api.deepseek.com/v1"/></label><label>模型名<input name="llmModel" defaultValue={providers?.llmModel} placeholder="deepseek-chat"/></label><label>LLM API Key<input name="llmApiKey" type="password" placeholder={providers?.hasLlmKey ? '已保存' : '填写 API Key'}/></label><label className="check-label"><input name="clearLlmApiKey" type="checkbox"/>清除已保存的 API Key</label><button className="primary-action" type="submit">保存设置</button></form>
     </section>}
   </section></main>
 }

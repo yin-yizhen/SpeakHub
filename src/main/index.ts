@@ -9,7 +9,10 @@ import { ChatGPTMarkerStore } from './chatgpt-marker'
 import { cleanRecordedConversations } from './background-cleanup'
 import { isCurrentConnectionPage, loadConnectionUrl } from './connection-navigation'
 import { LearningService } from './learning-service'
-import { RealtimeVoiceService } from './realtime-voice-service'
+import { LocalSpeechService } from './local-speech-service'
+import { SpeechModelManager } from './speech-model-manager'
+import { SpeechSegmenter } from './speech-segments'
+import { SequentialTaskQueue } from './sequential-task-queue'
 import { SessionCheckpoint } from './session-checkpoint'
 import { SecureSettings } from './secure-settings'
 import { SpeakSubStore } from './store'
@@ -20,7 +23,7 @@ import { buildPracticePrompt, parsePracticeProfile } from './practice-profile'
 import { DiagnosticLog } from './diagnostic-log'
 import { embeddedConnectionBounds, resizeBounds, subtitleBounds, subtitleHeight, type ResizeDirection } from './window-layout'
 import { mergeTranscriptEvent } from '../shared/transcript'
-import type { AutomationStatus, ConnectionState, CorrectionStrength, MicrophoneGateState, PracticeEndResult, PracticeMode, PracticeProfile, PracticeSession, PracticeSource, PracticeStartResult, ReviewResult, SubtitlePreferences, TranscriptEvent, WebPracticeSource } from '../shared/types'
+import type { AutomationStatus, ConnectionState, CorrectionStrength, GeneratedSpeechChunk, MicrophoneGateState, PracticeEndResult, PracticeMode, PracticeProfile, PracticeSession, PracticeSource, PracticeStartResult, ReviewResult, SubtitlePreferences, TranscriptEvent, VoiceAudioChunk, VoiceTurnPhase, WebPracticeSource } from '../shared/types'
 
 const CHATGPT_URL = 'https://chatgpt.com/'
 const CONNECTION_WIDTH = 420
@@ -43,7 +46,12 @@ let activeMode: PracticeMode = 'voice'
 let activeTopic = '日常聊天'
 let activeLevel = 'A1'
 let events: TranscriptEvent[] = []
-let realtimeVoice: RealtimeVoiceService | undefined
+let localSpeech: LocalSpeechService | undefined
+let speechModels: SpeechModelManager
+let voicePhase: VoiceTurnPhase = 'idle'
+let voiceRequest: AbortController | undefined
+let voiceTurnFinished = false
+const pendingPlayback = new Set<string>()
 let subtitle: SubtitlePreferences = defaultSubtitlePreferences
 let connection: ConnectionState = { ready: false, pageVisible: true, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': false } }
 let automationStatus: AutomationStatus = { phase: 'idle', message: 'Ready to practice.' }
@@ -63,10 +71,11 @@ function preloadPath(): string { return join(__dirname, '../preload/preload.js')
 function chatgptMicrophonePreloadPath(): string { return join(__dirname, '../preload/chatgpt-microphone.js') }
 function broadcast(channel: string, payload: unknown): void { for (const window of [mainWindow, overlayWindow]) if (window && !window.isDestroyed()) window.webContents.send(channel, payload) }
 function microphoneGateState(): MicrophoneGateState { return { active: microphoneActive, available: Boolean(activeSession) && activeMode === 'voice', shortcut: microphoneShortcut } }
-function state() { return { session: activeSession, settings: subtitle, events, connection, automation: automationStatus, source: activeSource, mode: activeMode, lifecycle: practiceController.lifecycle, microphone: microphoneGateState() } }
+function state() { return { session: activeSession, settings: subtitle, events, connection, automation: automationStatus, source: activeSource, mode: activeMode, lifecycle: practiceController.lifecycle, microphone: microphoneGateState(), speechAssets: speechModels.state(), voicePhase } }
 function announceAutomation(status: AutomationStatus): void { automationStatus = status; diagnostics?.write('automation', { phase: status.phase, recoverable: status.recoverable }); broadcast('automation:status', status) }
 function announceConnection(): void { broadcast('connection:state', connection) }
 function announceMicrophone(): void { broadcast('microphone:state', microphoneGateState()) }
+function announceVoicePhase(phase: VoiceTurnPhase): void { voicePhase = phase; broadcast('voice:phase', phase) }
 function notify(title: string, body: string): void { if (Notification.isSupported()) new Notification({ title, body }).show() }
 function sourceUrl(): string { return CHATGPT_URL }
 
@@ -222,20 +231,87 @@ async function prepareWebPractice(topic: string, level: string, strength: Correc
   announceAutomation({ phase: 'voice-started', message: voice.message }); return { session, voiceStarted: true, source: 'chatgpt-web' as const, mode }
 }
 
-async function beginRealtimePractice(strength: CorrectionStrength, topic: string, level: string, focus?: string) {
-  const config = settings.get(); const secrets = settings.getSecrets()
-  if (!config.realtimeEnabled || !config.realtimeModel) throw new Error('Enable OpenAI Realtime-compatible voice and configure a Realtime model in Settings first.')
+async function beginLocalVoicePractice(strength: CorrectionStrength, topic: string, level: string, focus?: string) {
+  const config = settings.get()
+  if (!config.llmBaseUrl || !config.llmModel || !config.hasLlmKey) throw new Error('请先在设置中填写 DeepSeek 或其他 OpenAI-compatible 文本 API。')
+  announceAutomation({ phase: 'filling-prompt', message: '正在准备本地中英双语语音模型…' })
+  await speechModels.ensureAll()
   const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source: 'api-direct', mode: 'voice', focus })
   const session = beginSession(profile)
-  realtimeVoice = new RealtimeVoiceService()
-  try { await realtimeVoice.start({ baseUrl: config.llmBaseUrl, model: config.realtimeModel, apiKey: secrets.llmApiKey, protocol: config.realtimeProtocol, instructions: buildPracticePrompt(profile) }, {
-    onStatus: () => announceAutomation({ phase: 'idle', message: `Realtime voice is ready. Press ${microphoneShortcut} to enable the microphone.` }),
-    onTranscript: (speaker, text, sourceMessageId) => handleEvent({ sourceMessageId: `realtime-${sourceMessageId}`, speaker, text, status: 'complete', receivedAt: new Date().toISOString() }),
-    onAudio: (pcm16) => mainWindow?.webContents.send('voice:audio', pcm16),
-    onInterrupt: () => mainWindow?.webContents.send('voice:interrupt'),
-    onError: (message) => announceAutomation({ phase: 'failed', message, recoverable: true })
-  }) } catch (error) { realtimeVoice?.stop(); realtimeVoice = undefined; stopSessionCheckpoint(true); store.abortSession(session.id); activeSession = undefined; throw error }
+  localSpeech = new LocalSpeechService(speechModels.paths)
+  localSpeech.onTranscript(({ utteranceId, text, final }) => {
+    if (!activeSession || activeSession.id !== session.id || voicePhase !== 'listening') return
+    handleEvent({ sourceMessageId: `${session.id}-${utteranceId}`, speaker: 'user', text, status: final ? 'complete' : 'streaming', receivedAt: new Date().toISOString() })
+    if (final && text.trim()) {
+      announceVoicePhase('thinking')
+      textMessagePromise = streamApiReply(false).finally(() => { textMessagePromise = undefined })
+    }
+  })
+  localSpeech.onError((error) => announceAutomation({ phase: 'failed', message: error.message, recoverable: true }))
+  try { await localSpeech.start() } catch (error) { await localSpeech.stop().catch(() => undefined); localSpeech = undefined; stopSessionCheckpoint(true); store.abortSession(session.id); activeSession = undefined; throw error }
+  announceVoicePhase('listening')
+  announceAutomation({ phase: 'idle', message: `本地双语语音已就绪。按 ${microphoneShortcut} 开始说话。` })
   return { session, voiceStarted: false, source: 'api-direct' as const, mode: 'voice' as const }
+}
+
+function maybeResumeListening(): void {
+  if (!voiceTurnFinished || pendingPlayback.size || !activeSession || practiceController.lifecycle !== 'active' || activeMode !== 'voice' || activeSource !== 'api-direct') return
+  voiceTurnFinished = false
+  localSpeech?.reset()
+  announceVoicePhase('listening')
+  announceAutomation({ phase: 'idle', message: '可以继续说话。' })
+}
+
+async function streamApiReply(addUserMessage: boolean, userText?: string): Promise<void> {
+  if (!activeSession) throw new Error('Start an API practice first.')
+  if (addUserMessage && userText) handleEvent({ sourceMessageId: `api-user-${randomUUID()}`, speaker: 'user', text: userText, status: 'complete', receivedAt: new Date().toISOString() })
+  const messageId = `api-assistant-${randomUUID()}`
+  const segmenter = new SpeechSegmenter()
+  const shouldSpeak = activeMode === 'voice'
+  let reply = ''
+  let segmentIndex = 0
+  const synthesis = new SequentialTaskQueue()
+  voiceTurnFinished = false
+  voiceRequest = new AbortController()
+  const queueSpeech = (text: string): void => {
+    if (!shouldSpeak || !localSpeech) return
+    const index = segmentIndex++
+    announceVoicePhase('synthesizing')
+    synthesis.enqueue(async () => {
+      const audio = await localSpeech!.synthesize(text, messageId, index)
+      if (!activeSession || voiceRequest?.signal.aborted) return
+      if (audio.sampleRate !== 24000) throw new Error(`Kokoro returned unsupported sample rate ${audio.sampleRate}.`)
+      const id = `${messageId}-${index}`
+      const samples = audio.samples.slice()
+      const chunk: GeneratedSpeechChunk = { id, messageId, index, sampleRate: 24000, format: 'float32', samples: samples.buffer, final: true }
+      pendingPlayback.add(id)
+      announceVoicePhase('speaking')
+      mainWindow?.webContents.send('voice:audio', chunk)
+    })
+  }
+  announceAutomation({ phase: 'waiting-for-reply', message: 'DeepSeek 正在流式回复…' })
+  try {
+    await learning.streamChat(events, activeTopic, activeLevel, {
+      signal: voiceRequest.signal,
+      onDelta: (delta) => {
+        reply += delta
+        handleEvent({ sourceMessageId: messageId, speaker: 'assistant', text: reply, status: 'streaming', receivedAt: new Date().toISOString() })
+        for (const segment of segmenter.push(delta)) queueSpeech(segment)
+      }
+    })
+    for (const segment of segmenter.flush()) queueSpeech(segment)
+    if (reply) handleEvent({ sourceMessageId: messageId, speaker: 'assistant', text: reply, status: 'complete', receivedAt: new Date().toISOString() })
+    await synthesis.done()
+    voiceTurnFinished = true
+    if (!shouldSpeak) announceAutomation({ phase: 'idle', message: 'API reply received. Continue when ready.' })
+    maybeResumeListening()
+  } catch (error) {
+    if (!voiceRequest.signal.aborted) announceAutomation({ phase: 'failed', message: error instanceof Error ? error.message : 'API reply failed.', recoverable: true })
+    if (shouldSpeak && activeSession) { voiceTurnFinished = true; maybeResumeListening() }
+    throw error
+  } finally {
+    voiceRequest = undefined
+  }
 }
 
 function setConnection(next: Partial<ConnectionState>): ConnectionState { connection = { ...connection, ...next }; connection.ready = connection.providers[connection.activeProvider]; applyWindowMode(); announceConnection(); return connection }
@@ -268,11 +344,7 @@ async function sendPracticeMessage(message: string): Promise<void> {
   textMessagePromise = (async () => {
     try {
       if (activeSource === 'api-direct') {
-        handleEvent({ sourceMessageId: `api-user-${randomUUID()}`, speaker: 'user', text, status: 'complete', receivedAt: new Date().toISOString() })
-        announceAutomation({ phase: 'waiting-for-reply', message: 'Waiting for the API response…' })
-        const reply = await learning.chat(events, activeTopic, activeLevel)
-        handleEvent({ sourceMessageId: `api-assistant-${randomUUID()}`, speaker: 'assistant', text: reply, status: 'complete', receivedAt: new Date().toISOString() })
-        announceAutomation({ phase: 'idle', message: 'API reply received. Continue when ready.' })
+        await streamApiReply(true, text)
         return
       }
       const automation = chatgptAutomation
@@ -314,28 +386,40 @@ function installIpc(): void {
     activeSource = profile.source; activeMode = profile.mode; activeTopic = profile.topic; activeLevel = profile.level
     microphoneActive = false; announceMicrophone()
     if (profile.source === 'api-direct') {
-      if (profile.mode === 'voice') return beginRealtimePractice(profile.correctionStrength, profile.topic, profile.level, profile.focus)
+      if (profile.mode === 'voice') return beginLocalVoicePractice(profile.correctionStrength, profile.topic, profile.level, profile.focus)
       const session = beginSession(profile); announceAutomation({ phase: 'idle', message: 'API direct text practice is ready. Type a message to begin.' }); return { session, voiceStarted: false, source: profile.source, mode: profile.mode }
     }
     return prepareWebPractice(profile.topic, profile.level, profile.correctionStrength, profile.mode, profile.focus)
   }, () => activeSession ? { session: activeSession, voiceStarted: automationStatus.phase === 'voice-started', source: activeSource, mode: activeMode } : undefined))
   ipcMain.handle('practice:sendMessage', (_event, message: string) => sendPracticeMessage(message))
   ipcMain.handle('api:sendMessage', (_event, message: string) => sendPracticeMessage(message))
-  ipcMain.handle('voice:audio', (_event, pcm16: ArrayBuffer) => { if (!(pcm16 instanceof ArrayBuffer) || pcm16.byteLength > 1_048_576) throw new Error('Invalid voice audio chunk.'); if (activeSource === 'api-direct' && activeMode === 'voice') realtimeVoice?.appendAudio(pcm16) })
+  ipcMain.handle('voice:audio', (_event, input: VoiceAudioChunk) => {
+    const chunk = z.object({ sampleRate: z.literal(16000), format: z.literal('float32'), samples: z.instanceof(ArrayBuffer) }).parse(input)
+    if (chunk.samples.byteLength > 1_048_576 || chunk.samples.byteLength % 4 !== 0) throw new Error('Invalid voice audio chunk.')
+    if (activeSource === 'api-direct' && activeMode === 'voice' && microphoneActive && voicePhase === 'listening') localSpeech?.accept(new Float32Array(chunk.samples))
+  })
+  ipcMain.handle('voice:playback:ended', (_event, chunkId: string) => { pendingPlayback.delete(z.string().min(1).max(300).parse(chunkId)); maybeResumeListening() })
   ipcMain.handle('voice:capture:start', () => { if (!activeSession || activeSource !== 'api-direct' || activeMode !== 'voice') throw new Error('Start an API voice practice first.') })
   ipcMain.handle('voice:capture:stop', () => undefined)
+  ipcMain.handle('speech-assets:get', () => speechModels.state())
+  ipcMain.handle('speech-assets:download', () => speechModels.ensureAll())
   ipcMain.handle('microphone:toggle', () => toggleMicrophoneGate())
   ipcMain.handle('microphone:set', (_event, active: boolean) => setMicrophoneGate(z.boolean().parse(active)))
   ipcMain.handle('microphone:shortcut:save', (_event, shortcut: string) => { const saved = registerMicrophoneShortcut(z.string().max(80).parse(shortcut)); appSettings.setMicrophoneShortcut(saved); return saved })
-  ipcMain.handle('practice:cancel-start', () => { if (!activeSession || events.length) return; realtimeVoice?.stop(); realtimeVoice = undefined; adapter?.stop(); adapter = undefined; stopSessionCheckpoint(true); store.abortSession(activeSession.id); activeSession = undefined; microphoneActive = false; announceMicrophone(); practiceController.reset(); announceAutomation({ phase: 'failed', message: 'Practice startup was cancelled before any transcript was recorded.', recoverable: true }) })
+  ipcMain.handle('practice:cancel-start', async () => { if (!activeSession || events.length) return; voiceRequest?.abort(); await localSpeech?.stop(); localSpeech = undefined; pendingPlayback.clear(); announceVoicePhase('idle'); adapter?.stop(); adapter = undefined; stopSessionCheckpoint(true); store.abortSession(activeSession.id); activeSession = undefined; microphoneActive = false; announceMicrophone(); practiceController.reset(); announceAutomation({ phase: 'failed', message: 'Practice startup was cancelled before any transcript was recorded.', recoverable: true }) })
   ipcMain.handle('practice:end', async () => {
     const result = await practiceController.end(async () => {
+      voiceRequest?.abort()
       if (textMessagePromise) await textMessagePromise.catch(() => undefined)
       const session = activeSession!
       const reviewFavorites = store.favoriteWordsForSession(session.id)
       let voiceStopped = activeMode !== 'voice'; let voiceWarning: string | undefined
       if (activeSource === 'chatgpt-web' && activeMode === 'voice') { announceAutomation({ phase: 'stopping-voice', message: 'Ending ChatGPT voice…' }); const result = await chatgptAutomation?.stopVoice().catch(() => undefined); voiceStopped = result?.ok === true; voiceWarning = voiceStopped ? undefined : result?.message ?? 'Could not end ChatGPT voice automatically.' }
-      if (activeSource === 'api-direct' && activeMode === 'voice') { realtimeVoice?.stop(); realtimeVoice = undefined; voiceStopped = true }
+      if (activeSource === 'api-direct' && activeMode === 'voice') {
+        mainWindow?.webContents.send('voice:interrupt')
+        await localSpeech?.stop().catch(() => undefined)
+        localSpeech = undefined; pendingPlayback.clear(); announceVoicePhase('idle'); voiceStopped = true
+      }
       adapter?.stop(); adapter = undefined
       stopSessionCheckpoint(true)
       const ended = store.endSession(session)
@@ -371,14 +455,14 @@ function installIpc(): void {
   ipcMain.handle('archive:get-directory', () => archiveDirectory)
   ipcMain.handle('archive:choose-directory', () => chooseArchiveDirectory())
   ipcMain.handle('providers:get', () => settings.get())
-  ipcMain.handle('providers:save', (_event, input) => settings.save(z.object({ llmBaseUrl: z.string().max(2_000).optional(), llmModel: z.string().max(200).optional(), llmApiKey: z.string().max(2_000).optional(), realtimeEnabled: z.boolean().optional(), realtimeModel: z.string().max(200).optional(), realtimeProtocol: z.enum(['current', 'legacy']).optional(), clearLlmApiKey: z.boolean().optional() }).parse(input)))
+  ipcMain.handle('providers:save', (_event, input) => settings.save(z.object({ llmBaseUrl: z.string().max(2_000).optional(), llmModel: z.string().max(200).optional(), llmApiKey: z.string().max(2_000).optional(), clearLlmApiKey: z.boolean().optional() }).parse(input)))
   ipcMain.handle('data:clear', () => { if (activeSession) throw new Error('End the active practice before clearing data.'); store.clear(); settings.clear(); appSettings.clear(); subtitle = defaultSubtitlePreferences; events = []; practiceController.reset(); broadcast('subtitle:settings', subtitle); return setConnection(appSettings.connection('chatgpt-web', true)) })
 }
 
 app.whenReady().then(() => {
   const workArea = screen.getPrimaryDisplay().workArea; studioBounds = { x: Math.round(workArea.x + (workArea.width - Math.min(1320, workArea.width)) / 2), y: Math.round(workArea.y + (workArea.height - Math.min(860, workArea.height)) / 2), width: Math.min(1320, workArea.width), height: Math.min(860, workArea.height) }
   const userData = app.getPath('userData'); diagnostics = new DiagnosticLog(join(userData, 'speaksub-diagnostics.jsonl')); appSettings = new AppSettingsStore(join(userData, 'app-settings.json')); try { microphoneShortcut = normalizeMicrophoneShortcut(appSettings.microphoneShortcut()) } catch { microphoneShortcut = defaultMicrophoneShortcut; appSettings.setMicrophoneShortcut(microphoneShortcut) } connection = appSettings.connection('chatgpt-web', !appSettings.providerReady('chatgpt-web')); subtitle = appSettings.readSubtitle()
-  archiveDirectory = appSettings.archiveDirectory(join(userData, 'learning-archive')); store = new SpeakSubStore(archiveDirectory); settings = new SecureSettings(join(userData, 'provider-settings.json')); chatMarker = new ChatGPTMarkerStore(join(userData, 'last-speaksub-chat.json')); learning = new LearningService(settings, join(app.getAppPath(), 'resources', 'dictionaries', 'ecdict-en-zh'))
+  archiveDirectory = appSettings.archiveDirectory(join(userData, 'learning-archive')); store = new SpeakSubStore(archiveDirectory); settings = new SecureSettings(join(userData, 'provider-settings.json')); chatMarker = new ChatGPTMarkerStore(join(userData, 'last-speaksub-chat.json')); learning = new LearningService(settings, join(app.getAppPath(), 'resources', 'dictionaries', 'ecdict-en-zh')); speechModels = new SpeechModelManager(join(userData, 'speech-models')); speechModels.subscribe((assetState) => broadcast('speech-assets:state', assetState))
   const showPersistedOverlay = subtitle.visible
   try { registerMicrophoneShortcut(microphoneShortcut) } catch (error) { microphoneShortcutError = error instanceof Error ? error.message : 'The saved microphone shortcut is unavailable.' }
   createMainWindow(); createChatHostView(); createOverlayWindow(); installIpc(); applyWindowMode(); if (microphoneShortcutError) announceAutomation({ phase: 'failed', message: microphoneShortcutError, recoverable: true }); if (showPersistedOverlay) showOverlay()

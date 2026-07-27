@@ -24,6 +24,22 @@ describe('Markdown learning archive', () => {
     } finally { rmSync(directory, { recursive: true, force: true }) }
   })
 
+  it('keeps streaming subtitles in memory but archives only finalized turn text', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speaksub-streaming-'))
+    try {
+      const store = new SpeakSubStore(directory)
+      const session = store.createSession('normal')
+      store.upsertEvent({ id: 'partial', sessionId: session.id, sourceMessageId: 'turn-1', speaker: 'assistant', text: 'partial token', status: 'streaming', receivedAt: '2026-01-01T00:00:00.000Z' })
+      store.flushSession(session.id)
+      expect(store.eventsForSession(session.id)).toHaveLength(1)
+      expect(readFileSync(join(directory, 'current-practice.md'), 'utf8')).not.toContain('partial token')
+
+      store.upsertEvent({ id: 'final', sessionId: session.id, sourceMessageId: 'turn-1', speaker: 'assistant', text: 'final answer', status: 'complete', receivedAt: '2026-01-01T00:00:01.000Z' })
+      expect(readFileSync(join(directory, 'current-practice.md'), 'utf8')).toContain('final answer')
+      expect(readFileSync(join(directory, 'current-practice.md'), 'utf8')).not.toContain('partial token')
+    } finally { rmSync(directory, { recursive: true, force: true }) }
+  })
+
   it('turns the active file into one final Markdown after the review is saved', () => {
     const directory = mkdtempSync(join(tmpdir(), 'speaksub-'))
     try {

@@ -10,7 +10,7 @@ describe('SecureSettings', () => {
   let directory: string; let path: string
   beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'speaksub-provider-')); path = join(directory, 'provider.json') })
   it('recovers from corrupt JSON', () => {
-    try { writeFileSync(path, '{bad', 'utf8'); expect(new SecureSettings(path).get()).toMatchObject({ hasLlmKey: false, realtimeProtocol: 'current' }) }
+    try { writeFileSync(path, '{bad', 'utf8'); expect(new SecureSettings(path).get()).toEqual({ llmBaseUrl: undefined, llmModel: undefined, hasLlmKey: false }) }
     finally { rmSync(directory, { recursive: true, force: true }) }
   })
   it('can explicitly clear the encrypted API key', () => {

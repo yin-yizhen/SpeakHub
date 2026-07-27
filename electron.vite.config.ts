@@ -3,7 +3,10 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
-  main: { plugins: [externalizeDepsPlugin()] },
+  main: {
+    plugins: [externalizeDepsPlugin()],
+    build: { lib: { entry: { index: resolve(__dirname, 'src/main/index.ts'), 'speech-worker': resolve(__dirname, 'src/main/speech-worker.ts') }, formats: ['cjs'], fileName: '[name]' } }
+  },
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: { lib: { entry: { preload: resolve(__dirname, 'src/main/preload.ts'), 'chatgpt-microphone': resolve(__dirname, 'src/main/chatgpt-microphone-preload.ts') }, formats: ['cjs'], fileName: '[name]' } }

@@ -21,7 +21,7 @@ type LlmMessage = { role: 'system' | 'user' | 'assistant'; content: string }
 export class LearningService {
   private readonly localDictionary?: LocalDictionary
 
-  constructor(private readonly settings: SecureSettings, dictionaryDir?: string) {
+  constructor(private readonly settings: SecureSettings, dictionaryDir?: string, private readonly fetcher: typeof fetch = fetch) {
     this.localDictionary = dictionaryDir ? new LocalDictionary(dictionaryDir) : undefined
   }
 
@@ -46,11 +46,30 @@ export class LearningService {
   }
 
   async chat(events: TranscriptEvent[], topic: string, level: string): Promise<string> {
-    const messages: LlmMessage[] = [
-      { role: 'system', content: `You are a warm English speaking partner. The learner selected ${topic} at CEFR ${level}. Reply in English, keep each turn concise, ask at most one question, and gently adapt to the learner's level.` },
-      ...events.map((event) => ({ role: event.speaker === 'assistant' ? 'assistant' as const : 'user' as const, content: event.text }))
-    ]
-    return this.requestLlm(messages)
+    return this.requestLlm(this.chatMessages(events, topic, level))
+  }
+
+  async streamChat(events: TranscriptEvent[], topic: string, level: string, options: { onDelta: (delta: string) => void; signal?: AbortSignal }): Promise<string> {
+    const messages = this.chatMessages(events, topic, level)
+    const config = this.requireLlmConfig()
+    const body = { model: config.model, messages, stream: true }
+    let received = ''
+    try {
+      const response = await this.post(config.url, config.apiKey, body, options.signal)
+      if (!response.ok) {
+        if ([400, 404, 405, 415, 422].includes(response.status)) return this.nonStreamingFallback(messages, options)
+        throw new Error(`LLM request failed (${response.status})`)
+      }
+      const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+      if (!contentType.includes('text/event-stream')) return this.readNonStreamingResponse(response, options.onDelta)
+      received = await readSseResponse(response, options.onDelta)
+      if (received) return received
+      return this.nonStreamingFallback(messages, options)
+    } catch (error) {
+      if (options.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error
+      if (received) throw error
+      throw error
+    }
   }
 
   private async askLlm(prompt: string): Promise<unknown> {
@@ -59,18 +78,79 @@ export class LearningService {
   }
 
   private async requestLlm(messages: LlmMessage[], json = false): Promise<string> {
+    const config = this.requireLlmConfig()
+    const body = { model: config.model, messages, ...(json ? { response_format: { type: 'json_object' } } : {}) }
+    const response = await this.post(config.url, config.apiKey, body)
+    if (!response.ok) throw new Error(`LLM request failed (${response.status})`)
+    return this.readNonStreamingResponse(response)
+  }
+
+  private chatMessages(events: TranscriptEvent[], topic: string, level: string): LlmMessage[] {
+    return [
+      { role: 'system', content: `You are a warm bilingual speaking partner. The learner selected ${topic} at CEFR ${level}. Reply naturally in Chinese, English, or a helpful mix matching the learner. Keep each turn concise, ask at most one question, and gently adapt to the learner's level.` },
+      ...events.filter((event) => event.status === 'complete').map((event) => ({ role: event.speaker === 'assistant' ? 'assistant' as const : 'user' as const, content: event.text }))
+    ]
+  }
+
+  private requireLlmConfig(): { url: URL; model: string; apiKey: string } {
     const config = this.settings.get(); const secrets = this.settings.getSecrets()
     if (!config.llmBaseUrl || !config.llmModel || !secrets.llmApiKey) throw new Error('Please configure an OpenAI-compatible Base URL, model, and API key first.')
     const url = new URL('chat/completions', config.llmBaseUrl.endsWith('/') ? config.llmBaseUrl : `${config.llmBaseUrl}/`)
     if (!['https:', 'http:'].includes(url.protocol)) throw new Error('The LLM Base URL must use HTTP or HTTPS.')
-    const body = { model: config.llmModel, messages, ...(json ? { response_format: { type: 'json_object' } } : {}) }
-    let response: Response
-    try { response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${secrets.llmApiKey}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) }) }
-    catch (error) { if (error instanceof Error && error.name === 'TimeoutError') throw new Error('LLM request timed out after 30 seconds.'); throw error }
+    return { url, model: config.llmModel, apiKey: secrets.llmApiKey }
+  }
+
+  private async post(url: URL, apiKey: string, body: unknown, signal?: AbortSignal): Promise<Response> {
+    const timeout = AbortSignal.timeout(30_000)
+    const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
+    try {
+      return await this.fetcher(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body), signal: requestSignal })
+    } catch (error) {
+      if (timeout.aborted && !signal?.aborted) throw new Error('LLM request timed out after 30 seconds.')
+      throw error
+    }
+  }
+
+  private async nonStreamingFallback(messages: LlmMessage[], options: { onDelta: (delta: string) => void; signal?: AbortSignal }): Promise<string> {
+    const config = this.requireLlmConfig()
+    const response = await this.post(config.url, config.apiKey, { model: config.model, messages }, options.signal)
     if (!response.ok) throw new Error(`LLM request failed (${response.status})`)
+    return this.readNonStreamingResponse(response, options.onDelta)
+  }
+
+  private async readNonStreamingResponse(response: Response, onContent?: (content: string) => void): Promise<string> {
     const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
     const content = payload.choices?.[0]?.message?.content
     if (!content) throw new Error('LLM returned no message content.')
+    onContent?.(content)
     return content
   }
+}
+
+export async function readSseResponse(response: Response, onDelta: (delta: string) => void): Promise<string> {
+  if (!response.body) throw new Error('LLM streaming response had no body.')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result = ''
+  const consume = (block: string): boolean => {
+    const data = block.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n').trim()
+    if (!data) return false
+    if (data === '[DONE]') return true
+    let payload: { choices?: Array<{ delta?: { content?: string } }> }
+    try { payload = JSON.parse(data) as typeof payload } catch { return false }
+    const delta = payload.choices?.[0]?.delta?.content
+    if (delta) { result += delta; onDelta(delta) }
+    return false
+  }
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const blocks = buffer.split(/\r?\n\r?\n/)
+    buffer = blocks.pop() ?? ''
+    for (const block of blocks) if (consume(block)) return result
+    if (done) break
+  }
+  if (buffer) consume(buffer)
+  return result
 }

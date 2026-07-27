@@ -7,7 +7,6 @@ export type CorrectionStrength = 'light' | 'normal' | 'strict'
 export type PracticeSource = 'chatgpt-web' | 'api-direct'
 export type PracticeMode = 'text' | 'voice'
 export type PracticeLifecycle = 'idle' | 'starting' | 'active' | 'ending' | 'error'
-export type RealtimeProtocolProfile = 'current' | 'legacy'
 export type WebPracticeSource = Extract<PracticeSource, 'chatgpt-web'>
 export type CefrLevel = 'A1' | 'A2' | 'B1' | 'B2' | 'C1'
 export type VocabularyFamiliarity = 'unfamiliar' | 'learning' | 'mastered'
@@ -198,18 +197,12 @@ export interface ProviderSettings {
   llmBaseUrl?: string
   llmModel?: string
   hasLlmKey: boolean
-  realtimeEnabled?: boolean
-  realtimeModel?: string
-  realtimeProtocol?: RealtimeProtocolProfile
 }
 
 export interface ProviderSettingsInput {
   llmBaseUrl?: string
   llmModel?: string
   llmApiKey?: string
-  realtimeEnabled?: boolean
-  realtimeModel?: string
-  realtimeProtocol?: RealtimeProtocolProfile
   clearLlmApiKey?: boolean
 }
 
@@ -219,16 +212,51 @@ export interface MicrophoneGateState {
   shortcut: string
 }
 
+export type SpeechAssetStatus = 'missing' | 'downloading' | 'ready' | 'error'
+export type VoiceTurnPhase = 'idle' | 'listening' | 'thinking' | 'synthesizing' | 'speaking'
+
+export interface SpeechAssetProgress {
+  status: SpeechAssetStatus
+  downloadedBytes: number
+  totalBytes: number
+  progress: number
+  error?: string
+}
+
+export interface SpeechAssetState {
+  asr: SpeechAssetProgress
+  tts: SpeechAssetProgress
+}
+
+export interface VoiceAudioChunk {
+  sampleRate: 16000
+  format: 'float32'
+  samples: ArrayBuffer
+}
+
+export interface GeneratedSpeechChunk {
+  id: string
+  messageId: string
+  index: number
+  sampleRate: 24000
+  format: 'float32'
+  samples: ArrayBuffer
+  final: boolean
+}
+
 export interface SpeakSubApi {
   startPractice: (topic: string, level: string, strength: CorrectionStrength, source: PracticeSource, mode: PracticeMode, focus?: string) => Promise<PracticeStartResult>
   sendPracticeMessage: (message: string) => Promise<void>
   sendApiMessage: (message: string) => Promise<void>
   startVoiceCapture: () => Promise<void>
   stopVoiceCapture: () => Promise<void>
-  sendVoiceAudio: (pcm16: ArrayBuffer) => Promise<void>
+  sendVoiceAudio: (chunk: VoiceAudioChunk) => Promise<void>
+  notifyVoicePlaybackEnded: (chunkId: string) => Promise<void>
+  getSpeechAssetState: () => Promise<SpeechAssetState>
+  downloadSpeechAssets: () => Promise<SpeechAssetState>
   endPractice: () => Promise<PracticeEndResult>
   cancelPracticeStart: () => Promise<void>
-  getState: () => Promise<{ session?: PracticeSession; settings: SubtitlePreferences; events: TranscriptEvent[]; connection: ConnectionState; automation: AutomationStatus; source: PracticeSource; mode: PracticeMode; lifecycle: PracticeLifecycle; microphone: MicrophoneGateState }>
+  getState: () => Promise<{ session?: PracticeSession; settings: SubtitlePreferences; events: TranscriptEvent[]; connection: ConnectionState; automation: AutomationStatus; source: PracticeSource; mode: PracticeMode; lifecycle: PracticeLifecycle; microphone: MicrophoneGateState; speechAssets: SpeechAssetState; voicePhase: VoiceTurnPhase }>
   completeConnection: () => Promise<ConnectionState>
   showConnectionPage: () => Promise<ConnectionState>
   clearPendingCleanup: () => Promise<void>
@@ -260,7 +288,9 @@ export interface SpeakSubApi {
   onAutomationStatus: (listener: (status: AutomationStatus) => void) => () => void
   onPracticeEnded: (listener: (result: PracticeEndResult) => void) => () => void
   onConnectionState: (listener: (state: ConnectionState) => void) => () => void
-  onVoiceAudio: (listener: (pcm16: ArrayBuffer) => void) => () => void
+  onVoiceAudio: (listener: (chunk: GeneratedSpeechChunk) => void) => () => void
+  onSpeechAssetState: (listener: (state: SpeechAssetState) => void) => () => void
+  onVoicePhase: (listener: (phase: VoiceTurnPhase) => void) => () => void
   onVoiceInterrupt: (listener: () => void) => () => void
   onMicrophoneGateState: (listener: (state: MicrophoneGateState) => void) => () => void
 }

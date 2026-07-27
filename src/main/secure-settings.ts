@@ -2,7 +2,12 @@ import { safeStorage } from 'electron'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import type { ProviderSettings, ProviderSettingsInput } from '../shared/types'
 
-type StoredSettings = Omit<ProviderSettings, 'hasLlmKey'> & { encrypted?: string }
+type StoredSettings = Omit<ProviderSettings, 'hasLlmKey'> & {
+  encrypted?: string
+  realtimeEnabled?: boolean
+  realtimeModel?: string
+  realtimeProtocol?: 'current' | 'legacy'
+}
 
 export class SecureSettings {
   constructor(private readonly filePath: string) {}
@@ -17,7 +22,7 @@ export class SecureSettings {
   get(): ProviderSettings {
     const value = this.removeLegacyDictionarySecrets(this.read())
     const secrets = this.secrets(value)
-    return { llmBaseUrl: value.llmBaseUrl, llmModel: value.llmModel, hasLlmKey: Boolean(secrets.llmApiKey), realtimeEnabled: value.realtimeEnabled === true, realtimeModel: value.realtimeModel, realtimeProtocol: value.realtimeProtocol === 'legacy' ? 'legacy' : 'current' }
+    return { llmBaseUrl: value.llmBaseUrl, llmModel: value.llmModel, hasLlmKey: Boolean(secrets.llmApiKey) }
   }
 
   getSecrets(): { llmApiKey?: string } { return this.secrets(this.read()) }
@@ -30,9 +35,6 @@ export class SecureSettings {
     this.write({
       llmBaseUrl: input.llmBaseUrl ?? current.llmBaseUrl,
       llmModel: input.llmModel ?? current.llmModel,
-      realtimeEnabled: input.realtimeEnabled ?? current.realtimeEnabled,
-      realtimeModel: input.realtimeModel ?? current.realtimeModel,
-      realtimeProtocol: input.realtimeProtocol ?? current.realtimeProtocol ?? 'current',
       encrypted
     })
     return this.get()

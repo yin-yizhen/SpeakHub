@@ -2,7 +2,7 @@
 
 本文件用于快速定位 SpeakSub 的修改入口、数据流和验证方式。
 
-最近完整验收：`uncommitted working tree (2026-07-23; pnpm test, pnpm lint, pnpm build)`
+最近完整验收：`uncommitted working tree (2026-07-27; pnpm lint, pnpm test, pnpm build, pnpm package:win)`
 
 ## 先看这里
 
@@ -11,7 +11,9 @@
 | 改练习状态、来源或模式 | `src/main/practice-controller.ts`, `src/main/practice-profile.ts`, `src/main/index.ts` | `practice-controller.test.ts`, `practice-profile.test.ts`, `practice-pipeline.integration.test.ts` | `pnpm lint && pnpm test` |
 | 改 ChatGPT 网页采集或清理 | `src/main/chatgpt-adapter.ts`, `src/main/chatgpt-automation.ts`, `src/main/chatgpt-marker.ts`, `src/main/background-cleanup.ts` | 对应 ChatGPT adapter/automation/marker 测试 | `pnpm test` 加网页手工验收 |
 | 改主窗口、内嵌连接页或菜单栏 | `src/main/index.ts`, `src/main/window-layout.ts`, `src/renderer/styles.css` | `window-layout.test.ts`、ChatGPT adapter/automation 测试 | `pnpm lint && pnpm test && pnpm build` |
-| 改 API/ChatGPT 语音、麦克风闸门或复盘 | `src/main/index.ts`, `src/main/chatgpt-microphone-preload.ts`, `src/main/microphone-shortcut.ts`, `src/renderer/App.tsx` | `microphone-shortcut.test.ts`, `chatgpt-automation.test.ts`, `App.voice.test.tsx`, `realtime-audio.test.ts` | `pnpm lint && pnpm test && pnpm build` |
+| 改本地 ASR/TTS、模型下载或半双工 | `src/main/speech-model-manager.ts`, `src/main/speech-worker.ts`, `src/main/local-speech-service.ts`, `src/main/index.ts`, `src/renderer/local-speech-audio.ts` | `speech-model-manager.test.ts`, `streaming-asr-session.test.ts`, `speech-segments.test.ts`, `App.voice.test.tsx`, `local-speech-audio.test.ts` | `pnpm lint && pnpm test && pnpm build && pnpm package:win` |
+| 改 DeepSeek/OpenAI-compatible 流式回复 | `src/main/learning-service.ts`, `src/main/index.ts`, `src/main/speech-segments.ts` | `learning-service.test.ts`, `speech-segments.test.ts`, `sequential-task-queue.test.ts`, `store.test.ts` | `pnpm lint && pnpm test` |
+| 改 ChatGPT 语音或统一麦克风闸门 | `src/main/index.ts`, `src/main/chatgpt-microphone-preload.ts`, `src/main/microphone-shortcut.ts`, `src/renderer/App.tsx` | `microphone-shortcut.test.ts`, `chatgpt-automation.test.ts`, `App.voice.test.tsx` | `pnpm lint && pnpm test && pnpm build` |
 | 改字幕、悬浮词汇卡或悬浮窗结束对话 | `src/renderer/subtitle-overlay.tsx`, `src/main/index.ts`, `src/main/preload.ts`, `src/renderer/App.tsx` | `subtitle-words.test.ts`, `subtitle-overlay.test.tsx`, `App.voice.test.tsx` | `pnpm lint && pnpm test && pnpm build` |
 | 改历史、词汇复习或趋势 | `src/main/store.ts`, `src/renderer/LearningCenter.tsx`, `src/shared/types.ts` | `store.test.ts`, `LearningCenter.test.tsx`, `practice-pipeline.integration.test.ts` | `pnpm lint && pnpm test && pnpm build` |
 
@@ -20,8 +22,13 @@
 ```text
 App.tsx
 -> practice:start IPC -> PracticeController
--> ChatGPT automation/adapter, or LearningService/RealtimeVoiceService
--> microphone global shortcut -> main-process gate -> API capture or ChatGPT track.enabled mute
+-> ChatGPT automation/adapter, or local ASR Worker
+-> 16 kHz Float32 chunks -> bilingual Zipformer partial/final transcript
+-> 1.2 s endpoint -> LearningService /chat/completions SSE
+-> delta -> shared TranscriptEvent + SpeechSegmenter
+-> Kokoro Worker -> 24 kHz Float32 chunks -> ordered renderer playback
+-> playback acknowledgements -> resume local listening (half duplex)
+-> microphone global shortcut -> main-process gate -> local capture or ChatGPT track.enabled mute
 -> mergeTranscriptEvent -> subtitle broadcast + SpeakSubStore current-practice.md
 -> practice:end -> LearningService.review
 -> store.finalizeSession -> speaksub-practice-*.md + learning-index.json
@@ -37,7 +44,17 @@ App.tsx
 
 `src/main/index.ts` 负责 Electron 窗口、IPC、连接页、活动会话、检查点和归档目录。`practice-controller.ts` 保证开始与结束操作单飞。`practice-profile.ts` 校验场景、难度、来源和模式。
 
-练习来源只有 `chatgpt-web` 与 `api-direct`：ChatGPT 模式通过后台网页采集文本；API 直连的文字和 Realtime 语音都直接转成 `TranscriptEvent`。
+练习来源只有 `chatgpt-web` 与 `api-direct`：ChatGPT 模式通过后台网页采集文本；API 直连文字与本地语音都直接转成同一组 `TranscriptEvent`。
+
+### API 本地双语语音
+
+`speech-model-manager.ts` 把固定版本模型下载到 Electron `userData/speech-models`。ASR 是 `zipformer-small-bilingual-zh-en-32-int8` 的四个独立文件；TTS 是 `kokoro-int8-multi-lang-v1_1`。下载必须写 `.part`，验证固定字节数与 SHA-256 后原子改名；Kokoro 在已验证压缩包解压完成后原子移动。模型齐全后不能联网。
+
+`speech-worker.ts` 是 electron-vite 的独立 main entry；`local-speech-service.ts` 管理 Worker 请求。`streaming-asr-session.ts` 保持同一轮临时/最终字幕 ID，endpoint rule 2 为 1.2 秒，空定稿不发送。`learning-service.ts` 解析任意网络分块的标准 SSE；只有尚未收到 delta 时允许一次非流式回退。`speech-segments.ts` 按中英文句末标点切分，超过 120 字时回退到最近逗号或空格。`sequential-task-queue.ts` 保证 TTS 与播放器入队顺序。
+
+Electron 禁止原生 external ArrayBuffer；Kokoro `generate` 必须传 `enableExternalBuffer: false`，否则打包后会报 `External buffers are not allowed`。Windows 包还必须把 `sherpa-onnx-node` 与 `sherpa-onnx-win-x64` 放入 `asarUnpack`。
+
+`VoiceTurnPhase` 的真实链路是 `listening -> thinking -> synthesizing -> speaking -> listening`。只在 `listening` 且用户麦克风偏好开启时采集；AI 生成和播放期间停止实际采集，但不修改用户偏好。结束练习必须先中止流式请求，再停止 Worker 和播放器。
 
 ### ChatGPT 网页模式
 
@@ -45,7 +62,7 @@ App.tsx
 
 ### 统一麦克风闸门
 
-`index.ts` 通过 Electron `globalShortcut` 注册保存在 `AppSettingsStore` 的快捷键（默认 `F8`）；`microphone-shortcut.ts` 负责验证、按键录入格式化和冲突回滚。主进程是闸门状态的唯一来源，并向主窗口广播 `microphone:state`。API 直连收到开启状态后才启动 `RealtimeAudioCapture`，经 `voice:audio` IPC 交给 `RealtimeVoiceService`；ChatGPT 网页则切换已接管的 `MediaStreamTrack.enabled`。开关提示音为 C-E-G（1-3-5）和 G-E-C（5-3-1）。主窗口显示并可点击该开关；悬浮字幕不提供麦克风入口。
+`index.ts` 通过 Electron `globalShortcut` 注册保存在 `AppSettingsStore` 的快捷键（默认 `F8`）；`microphone-shortcut.ts` 负责验证、按键录入格式化和冲突回滚。主进程是闸门状态的唯一来源，并向主窗口广播 `microphone:state`。API 直连收到开启状态且阶段为 `listening` 后才启动 `LocalSpeechAudioCapture`，经 `voice:audio` IPC 交给本地 Worker；ChatGPT 网页仍切换已接管的 `MediaStreamTrack.enabled`。开关提示音为 C-E-G（1-3-5）和 G-E-C（5-3-1）。
 
 ### 主窗口与内嵌连接页
 
@@ -53,7 +70,7 @@ App.tsx
 
 ### 持久化与复盘
 
-`store.ts` 把当前练习原子写入 `current-practice.md`，`session-checkpoint.ts` 每 5 秒刷新。结束后 `learning-service.ts` 基于相同 Markdown 生成复盘，随后事务性改名为 `speaksub-practice-*.md` 并更新 `learning-index.json`；索引失败会把归档恢复为活动文件供重试。异常退出遗留的临时文件会在下次开始时保留为中断记录。
+`store.ts` 把当前练习原子写入 `current-practice.md`，`session-checkpoint.ts` 每 5 秒刷新。临时字幕只在内存和 UI 更新；Markdown 只包含 `complete` 事件，避免 token 级重写或把半截回复归档。结束后 `learning-service.ts` 基于相同 Markdown 生成复盘，随后事务性改名为 `speaksub-practice-*.md` 并更新 `learning-index.json`。
 
 ### 学习中心
 
@@ -75,13 +92,17 @@ App.tsx
 | `src/main/chatgpt-automation.test.ts` | ChatGPT 控件选择和发送 |
 | `src/main/chatgpt-marker.test.ts` | 已记录 ChatGPT 会话校验 |
 | `src/main/learning-service.test.ts` | API 直连、复盘与查词边界 |
-| `src/main/store.test.ts` | Markdown 写入、收藏和归档 |
+| `src/main/speech-model-manager.test.ts` | 模型进度、大小/SHA 校验、失败重试、原子文件和离线复用 |
+| `src/main/streaming-asr-session.test.ts` | 中英临时结果、稳定 ID、静音定稿、空结果和多轮重置 |
+| `src/main/speech-segments.test.ts` | 混合标点、跨 delta 与 120 字无标点切段 |
+| `src/main/sequential-task-queue.test.ts` | TTS 生成和播放入队顺序 |
+| `src/main/store.test.ts` | Markdown 只归档最终事件、收藏和归档 |
 | `src/main/session-checkpoint.test.ts` | 定时检查点与停止 |
 | `src/main/window-layout.test.ts` | 字幕窗口边界及内嵌连接页与左侧面板的拼接边界 |
 | `src/renderer/LearningCenter.test.tsx` | 学习中心加载、完整复盘和词汇状态交互 |
 | `src/renderer/subtitle-overlay.test.tsx` | 锁定字幕后仅保留低干扰解锁入口；活动会话的结束对话与横向关闭字幕操作 |
-| `src/renderer/App.voice.test.tsx` | API 语音会话中 F8 控制麦克风与状态提示 |
-| `src/renderer/realtime-audio.test.ts` | 麦克风开关的 1-3-5 / 5-3-1 提示音顺序 |
+| `src/renderer/App.voice.test.tsx` | API/ChatGPT 麦克风闸门及 API 半双工停采/恢复 |
+| `src/renderer/local-speech-audio.test.ts` | 16 kHz Float32 重采样和麦克风提示音 |
 | `src/main/microphone-shortcut.test.ts` | 快捷键格式、按键录入与全局注册冲突回滚 |
 | `src/main/practice-pipeline.integration.test.ts` | parser、字幕、Markdown、JSON 索引和搜索边界 |
 
@@ -100,10 +121,10 @@ pnpm dev
 1. 打开连接页，确认只有一个 SpeakSub 窗口、没有 `File/Edit/View` 菜单，左侧连接说明与右侧 ChatGPT 网页紧贴；最小化和恢复后网页仍在同一窗口，返回练习台后后台网页仍可继续采集。
 2. 登录 ChatGPT，选择场景、难度和文字或语音模式；确认网页文本进入字幕和 `current-practice.md`。
 3. 结束练习，确认复盘写回并归档为 `speaksub-practice-*.md`；重启后确认只清理记录的 SpeakSub ChatGPT 会话。
-4. 配置 API Base URL、model 和 key 后，启动 API 直连，确认用户与 AI 双方事件进入字幕和 Markdown；使用主窗口按钮和全局快捷键开启/暂停麦克风，确认提示音和输入闸门正常；结束后确认复盘生成。
-5. 启动 ChatGPT 网页语音后，用主窗口按钮和全局快捷键切换麦克风；确认网页语音未结束、暂停时 ChatGPT 只收到静音、恢复后能继续说话。到设置页录入新快捷键并重启，确认新按键仍可用；若系统占用组合键，确认保留原快捷键并显示错误。
-6. 从未锁定的悬浮字幕工具栏点击“结束对话”，确认主窗口退出练习、复盘出现且 `speaksub-practice-*.md` 已归档；确认“关闭字幕”保持横向且只隐藏字幕，不结束对话。
-7. 验证 parser 输出、subtitle event 和 Markdown 入库至少一个关键边界，不能只看 UI。
-8. 打开学习中心，验证历史全文搜索和组合筛选；展开完整复盘，再用“准备下一次练习”确认来源、模式、等级、纠错强度和薄弱点已预填但未自动启动。
-9. 从字幕收藏同一单词的大小写变体，结束练习后确认词汇中心只出现一项；依次标记学习中和已掌握，确认下次复习日期为 3 天和 14 天后。
-10. 切换最近 7/30 天，核对练习次数、Markdown 时长、复盘评分、错误类别与 `learning-index.json` 聚合结果；删除历史后确认 Markdown 和索引同时消失。
+4. 配置 DeepSeek-compatible Base URL、model 和 key 后启动 API 语音；首次确认 ASR/TTS 各自进度、错误可重试，模型目录位于 `userData/speech-models`。
+5. 中英混说时确认“我”字幕持续原位更新，停顿约 1.2 秒只提交一次；DeepSeek 回复逐步显示，第一句结束后即可发声，不等待全文完成。
+6. 确认中文、英文和混合短句均按顺序播放；AI 生成和播放时实际采集停止，全部文字及声音完成后自动恢复监听，扬声器内容不会成为下一轮输入。
+7. 退出重启并断网，确认两组本地模型仍能加载；结束练习后确认 Markdown 只含每轮最终用户/AI 文本，没有临时 ASR 或流式半句。
+8. 启动 ChatGPT 网页语音后，用主窗口按钮和全局快捷键切换麦克风；确认网页语音行为保持不变。
+9. 从悬浮字幕结束对话，确认主窗口退出练习、复盘出现且 Markdown 已归档；同时核对 SSE parser 输出、chunk 切分和最终入库，不能只看 UI。
+10. 打开学习中心，验证历史、词汇和趋势仍能读取新归档。
