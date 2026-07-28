@@ -319,6 +319,7 @@ export interface UpdateInstallResult {
 }
 
 export interface SpeakSubApi {
+  getAppVersion: () => Promise<string>
   startPractice: (topic: string, level: string, strength: CorrectionStrength, source: PracticeSource, mode: PracticeMode, focus?: string, prompt?: string) => Promise<PracticeStartResult>
   getPromptTemplates: () => Promise<PromptTemplates>
   savePromptTemplates: (templates: PromptTemplates) => Promise<PromptTemplates>

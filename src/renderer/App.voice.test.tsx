@@ -37,6 +37,7 @@ let checkForUpdates: ReturnType<typeof vi.fn>
 let downloadAndInstallUpdate: ReturnType<typeof vi.fn>
 let updateProgressListener: ((progress: UpdateDownloadProgress) => void) | undefined
 let copyCommunityGroupNumber: ReturnType<typeof vi.fn>
+let getAppVersion: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -53,6 +54,7 @@ beforeEach(() => {
   checkForUpdates = vi.fn(async () => ({ configured: true, currentVersion: '0.1.0', latestVersion: '0.1.0', updateAvailable: false }))
   downloadAndInstallUpdate = vi.fn(async () => ({ ok: true }))
   copyCommunityGroupNumber = vi.fn(async () => '1091142340')
+  getAppVersion = vi.fn(async () => '0.1.5')
   updateProgressListener = undefined
   let microphone = { active: false, available: false, shortcut: 'F8' }
   toggleMicrophoneGate = vi.fn(async () => {
@@ -61,6 +63,7 @@ beforeEach(() => {
     return microphone
   })
   const api = {
+    getAppVersion,
     getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: true, pageVisible: false, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': true } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone, speechAssets: speechAssetState, speechUsage: { provider: 'aliyun-fun-asr', sessionSeconds: 0, month: '2026-07', monthlySeconds: 0, estimatedCny: 0 }, voicePhase: 'listening' })),
     getProviderSettings: vi.fn(async () => providerSettings),
     getArchiveDirectory: vi.fn(async () => 'D:/archive'),
@@ -108,6 +111,15 @@ const settle = async () => {
 }
 
 describe('unified voice microphone gate', () => {
+  it('shows the packaged application version in the top bar', async () => {
+    act(() => root.render(<App/>)); await settle()
+
+    const version = container.querySelector<HTMLElement>('.brand-version')
+    expect(getAppVersion).toHaveBeenCalledOnce()
+    expect(version?.textContent).toBe('v0.1.5')
+    expect(version?.getAttribute('aria-label')).toBe('应用版本 v0.1.5')
+  })
+
   it('keeps ChatGPT selected by default on a fresh launch', async () => {
     practiceSource = 'chatgpt-web'
     practicePreferences = { ...practicePreferences, source: 'chatgpt-web' }

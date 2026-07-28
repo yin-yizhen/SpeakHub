@@ -133,19 +133,20 @@ export function App() {
   const [communitySupportOpen, setCommunitySupportOpen] = useState(false)
   const [groupCopyStatus, setGroupCopyStatus] = useState('')
   const [voicePhase, setVoicePhase] = useState<VoiceTurnPhase>('idle')
+  const [appVersion, setAppVersion] = useState('')
   const updates = useAppUpdates()
   const capture = useRef(new LocalSpeechAudioCapture())
   const player = useRef(new LocalSpeechAudioPlayer())
   const previousMicrophoneActive = useRef(false)
 
   useEffect(() => {
-    void Promise.all([window.speaksub.getState(), window.speaksub.getProviderSettings(), window.speaksub.getArchiveDirectory(), window.speaksub.getPromptTemplates(), window.speaksub.getPracticePreferences()]).then(([state, provider, directory, promptTemplates, preferences]) => {
+    void Promise.all([window.speaksub.getState(), window.speaksub.getProviderSettings(), window.speaksub.getArchiveDirectory(), window.speaksub.getPromptTemplates(), window.speaksub.getPracticePreferences(), window.speaksub.getAppVersion()]).then(([state, provider, directory, promptTemplates, preferences, version]) => {
       const selected = {
         scenario: promptTemplates.scenario.some((item) => item.id === preferences.scenarioTemplateId) ? preferences.scenarioTemplateId : promptTemplates.scenario[0].id,
         difficulty: promptTemplates.difficulty.some((item) => item.id === preferences.difficultyTemplateId) ? preferences.difficultyTemplateId : promptTemplates.difficulty[0].id,
         correction: promptTemplates.correction.some((item) => item.id === preferences.correctionTemplateId) ? preferences.correctionTemplateId : promptTemplates.correction[1]?.id ?? promptTemplates.correction[0].id
       }
-      setSettings(state.settings); setConnection(state.connection); setAutomation(state.automation); setSession(state.session?.id); setEvents(state.events); setProviders(provider); setSource(preferences.source); setMode(preferences.mode); setLifecycle(state.lifecycle); setArchiveDirectory(directory); setMicrophone(state.microphone); setShortcutDraft(state.microphone.shortcut); setSpeechAssets(state.speechAssets); setSpeechUsage(state.speechUsage); setVoicePhase(state.voicePhase); setTemplates(promptTemplates); setSelectedTemplates(selected); setFocus(preferences.focus); setFocusEnabled(preferences.focusEnabled)
+      setSettings(state.settings); setConnection(state.connection); setAutomation(state.automation); setSession(state.session?.id); setEvents(state.events); setProviders(provider); setSource(preferences.source); setMode(preferences.mode); setLifecycle(state.lifecycle); setArchiveDirectory(directory); setMicrophone(state.microphone); setShortcutDraft(state.microphone.shortcut); setSpeechAssets(state.speechAssets); setSpeechUsage(state.speechUsage); setVoicePhase(state.voicePhase); setTemplates(promptTemplates); setSelectedTemplates(selected); setFocus(preferences.focus); setFocusEnabled(preferences.focusEnabled); setAppVersion(version)
     })
     const removeTranscript = window.speaksub.onTranscript((event) => setEvents((current) => {
       const index = current.findIndex((item) => item.sourceMessageId === event.sourceMessageId)
@@ -401,7 +402,7 @@ export function App() {
   </section></main>{updateDialog}</>
 
   return <><main className="studio-shell"><header className="studio-topbar">
-    <div className="brand-lockup"><img className="brand-icon" src={brandIcon} alt="" /><span className="brand-copy"><strong>SpeakHub</strong><em>personal practice</em></span></div><span className="brand-credit">Made By Ajin</span><div className="top-actions">
+    <div className="brand-lockup"><img className="brand-icon" src={brandIcon} alt="" /><span className="brand-copy"><strong>SpeakHub</strong><em>personal practice</em></span></div><span className="brand-credit">Made By Ajin</span>{appVersion && <span className="brand-version" aria-label={`应用版本 v${appVersion}`} title={`SpeakHub v${appVersion}`}>v{appVersion}</span>}<div className="top-actions">
       <button className={settings.visible ? 'subtitle-toggle active' : 'subtitle-toggle'} onClick={() => void window.speaksub.toggleOverlay()}>{settings.visible ? '隐藏字幕' : '显示字幕'}</button>
       {settings.locked && <button className="subtitle-unlock-action" onClick={() => updateSubtitle({ locked: false })}>解锁字幕</button>}
       {isWebSource && <button className="quiet-action" onClick={() => void openConnection()}>连接页</button>}

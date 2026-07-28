@@ -14,10 +14,11 @@
 ## Packaged App Startup
 
 - Entry: Electron lifecycle and window creation in `src/main/index.ts`; existing-window activation helper in `src/main/window-activation.ts`; early filesystem initialization in `src/main/speech-model-manager.ts`.
+- Version label: `package.json` -> `app.getVersion()` -> `app:version` IPC -> `preload.ts` `getAppVersion()` -> `App.tsx` `.brand-version` badge. Do not hard-code a displayed version in the renderer.
 - Flow: acquire the Electron single-instance lock -> initialize services using writable `userData` paths -> create renderer and auxiliary windows -> show the main window. A second launch exits immediately and asks the first instance to restore, show, and focus its window.
 - Failure handling: the `app.whenReady()` initialization chain must end in a visible startup error dialog and write `startup-failed` to the diagnostic log when available. Do not leave an initialization rejection unhandled while all windows still have `show: false`.
 - Risk: a process visible in Task Manager does not prove successful startup. If the process group has GPU/network utility children but no `--type=renderer` child, inspect synchronous constructors and filesystem writes that run before `createMainWindow()`.
-- Tests: `src/main/window-activation.test.ts` and `src/main/speech-model-manager.test.ts`.
+- Tests: `src/main/window-activation.test.ts`, `src/main/speech-model-manager.test.ts`, and `src/renderer/App.voice.test.tsx`.
 - Verify: `pnpm exec vitest run src/main/window-activation.test.ts src/main/speech-model-manager.test.ts`, then `pnpm lint` and `pnpm package:win`. Install under an administrator-owned directory, launch as a normal user, confirm a visible main window and renderer process, then launch again and confirm only one main-process instance remains.
 
 ## Windows Installer Recovery

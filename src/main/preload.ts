@@ -8,6 +8,7 @@ function onIpc<T>(channel: string, listener: (payload: T) => void): () => void {
 }
 
 const api: SpeakSubApi = {
+  getAppVersion: () => ipcRenderer.invoke('app:version'),
   startPractice: (topic, level, strength, source, mode, focus, prompt) => ipcRenderer.invoke('practice:start', topic, level, strength, source, mode, focus, prompt),
   getPromptTemplates: () => ipcRenderer.invoke('practice:templates:get'),
   savePromptTemplates: (templates) => ipcRenderer.invoke('practice:templates:save', templates),

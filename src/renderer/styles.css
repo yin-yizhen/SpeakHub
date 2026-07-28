@@ -256,6 +256,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .brand-lockup > .brand-copy strong { color: var(--ink); font-size: 17px; font-weight: 720; letter-spacing: -.045em; line-height: 1; }
 .brand-lockup > .brand-copy em { color: var(--ink-soft); font-size: 10px; font-style: italic; font-weight: 520; letter-spacing: .01em; line-height: 1.15; text-transform: none; }
 .brand-credit { margin-left: 40px; color: rgba(53, 106, 110, .54); font-size: 13px; font-weight: 580; letter-spacing: .14em; line-height: 1; white-space: nowrap; }
+.brand-version { margin-left: 14px; border: 1px solid rgba(54, 159, 153, .34); border-radius: 8px; padding: 5px 8px; color: rgba(34, 116, 113, .74); background: rgba(235, 250, 247, .72); box-shadow: inset 0 1px rgba(255,255,255,.9); font-size: 11px; font-weight: 680; letter-spacing: .03em; line-height: 1; white-space: nowrap; }
 .connection-panel .brand-lockup > .brand-icon { width: 42px; height: 42px; }
 
 /* Frameless desktop chrome: the header remains draggable while its actions stay interactive. */

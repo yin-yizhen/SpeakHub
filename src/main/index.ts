@@ -546,6 +546,7 @@ async function sendPracticeMessage(message: string): Promise<void> {
 }
 
 function installIpc(): void {
+  ipcMain.handle('app:version', () => app.getVersion())
   ipcMain.handle('app:state', () => state())
   ipcMain.handle('update:check', (event) => {
     if (event.sender !== mainWindow?.webContents) throw new Error('更新检查只能由主窗口发起。')
