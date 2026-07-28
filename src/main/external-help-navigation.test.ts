@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ALIYUN_HELP_LINKS } from '../shared/help-links'
+import { ALIYUN_HELP_LINKS, SPEECH_MODEL_DOWNLOAD_LINKS } from '../shared/help-links'
 import { openAllowedHelpUrl } from './external-help-navigation'
 
 describe('external help navigation', () => {
@@ -12,6 +12,10 @@ describe('external help navigation', () => {
 
     expect(openExternal).toHaveBeenCalledWith(ALIYUN_HELP_LINKS.apiKeyGuide)
     expect(onError).not.toHaveBeenCalled()
+
+    expect(openAllowedHelpUrl(SPEECH_MODEL_DOWNLOAD_LINKS.kokoro, openExternal, onError)).toBe(true)
+    await Promise.resolve()
+    expect(openExternal).toHaveBeenCalledWith(SPEECH_MODEL_DOWNLOAD_LINKS.kokoro)
   })
 
   it('blocks unknown pages and reports system browser failures', async () => {

@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PracticePreferences, ProviderSettings, SpeakSubApi, SpeechAssetState, SubtitlePreferences, UpdateDownloadProgress, VoiceTurnPhase } from '../shared/types'
+import { SPEECH_MODEL_DOWNLOAD_LINKS } from '../shared/help-links'
 
 const audio = vi.hoisted(() => ({ captureStart: vi.fn(async () => ({ echoCancellation: true })), captureStop: vi.fn(), playTone: vi.fn(), playerPlay: vi.fn(), playerInterrupt: vi.fn(), playerStop: vi.fn() }))
 
@@ -31,6 +32,7 @@ let voicePhaseListener: ((phase: VoiceTurnPhase) => void) | undefined
 let providerSettings: ProviderSettings
 let speechAssetState: SpeechAssetState
 let downloadSpeechAssets: ReturnType<typeof vi.fn>
+let openSpeechAssetDirectory: ReturnType<typeof vi.fn>
 let practicePreferences: PracticePreferences
 let savePracticePreferences: ReturnType<typeof vi.fn>
 let checkForUpdates: ReturnType<typeof vi.fn>
@@ -49,6 +51,7 @@ beforeEach(() => {
   providerSettings = { llmBaseUrl: 'https://api.example.com/v1', llmModel: 'example-chat', hasLlmKey: true, hasAliyunAsrKey: true }
   speechAssetState = { vad: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 } }
   downloadSpeechAssets = vi.fn(async () => ({ vad: { status: 'ready' as const, downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready' as const, downloadedBytes: 1, totalBytes: 1, progress: 1 } }))
+  openSpeechAssetDirectory = vi.fn(async () => undefined)
   practicePreferences = { source: practiceSource, mode: 'voice', scenarioTemplateId: 'daily', difficultyTemplateId: 'a1', correctionTemplateId: 'normal', focus: '', focusEnabled: false }
   savePracticePreferences = vi.fn(async (preferences: PracticePreferences) => { practicePreferences = preferences; return preferences })
   checkForUpdates = vi.fn(async () => ({ configured: true, currentVersion: '0.1.0', latestVersion: '0.1.0', updateAvailable: false }))
@@ -95,6 +98,12 @@ beforeEach(() => {
     toggleMicrophoneGate,
     setMicrophoneGate: vi.fn(async () => microphone),
     saveMicrophoneShortcut: vi.fn(async (shortcut: string) => shortcut),
+    getSpeechAssetInstallInfo: vi.fn(async () => ({
+      root: 'C:\\Users\\test\\AppData\\Roaming\\speaksub\\speech-models',
+      vadFile: 'C:\\Users\\test\\AppData\\Roaming\\speaksub\\speech-models\\silero-vad\\silero_vad.onnx',
+      ttsDirectory: 'C:\\Users\\test\\AppData\\Roaming\\speaksub\\speech-models\\kokoro-int8-multi-lang-v1_1'
+    })),
+    openSpeechAssetDirectory,
     downloadSpeechAssets,
     checkForUpdates,
     downloadAndInstallUpdate,
@@ -160,11 +169,28 @@ describe('unified voice microphone gate', () => {
 
     expect(container.querySelector('.settings-page')).not.toBeNull()
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('约 148 MB')
+    expect(container.textContent).toContain('优先点击上方下载按钮')
+    expect(container.textContent).toContain('C:\\Users\\test\\AppData\\Roaming\\speaksub\\speech-models')
+    expect(container.querySelector<HTMLAnchorElement>(`a[href="${SPEECH_MODEL_DOWNLOAD_LINKS.vad}"]`)).not.toBeNull()
+    expect(container.querySelector<HTMLAnchorElement>(`a[href="${SPEECH_MODEL_DOWNLOAD_LINKS.kokoro}"]`)).not.toBeNull()
     const download = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '下载VAD 与 Kokoro（约 148 MB）')!
     expect(downloadSpeechAssets).not.toHaveBeenCalled()
     await act(async () => { download.click(); await Promise.resolve() })
     expect(downloadSpeechAssets).toHaveBeenCalledWith()
     expect(container.textContent).toContain('阿里语音工作流所需组件已就绪')
+  })
+
+  it('keeps manual installation help visible when speech assets are ready and opens the real model directory', async () => {
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+
+    expect(container.textContent).toContain('阿里语音工作流所需组件已就绪')
+    expect(container.textContent).toContain('下载与安装说明')
+    expect(container.textContent).toContain('不要出现双层同名目录')
+    const openDirectory = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '打开模型文件夹')!
+    await act(async () => { openDirectory.click(); await Promise.resolve() })
+    expect(openSpeechAssetDirectory).toHaveBeenCalledOnce()
   })
 
   it('requires a separate DashScope key before starting Aliyun recognition', async () => {

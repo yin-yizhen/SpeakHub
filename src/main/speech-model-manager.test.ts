@@ -8,9 +8,7 @@ import {
   extractTarArchive,
   SpeechModelManager,
   speechAssetManifest,
-  speechModelRoot,
-  tarExtractionCommand,
-  tarExecutable
+  speechModelRoot
 } from './speech-model-manager'
 
 const hash = (value: Uint8Array): string => createHash('sha256').update(value).digest('hex')
@@ -46,16 +44,6 @@ function responseFor(url: string): Response {
 }
 
 describe('SpeechModelManager', () => {
-  it('uses Windows system tar without forcing an external bzip2 filter', () => {
-    expect(tarExecutable({ platform: 'win32', systemRoot: 'C:\\Windows' })).toBe('C:\\Windows\\System32\\tar.exe')
-    expect(tarExecutable({ platform: 'linux' })).toBe('tar')
-    expect(tarExtractionCommand('模型.tar.bz2', '解压目录', { platform: 'win32', systemRoot: 'D:\\Windows' }))
-      .toEqual({
-        executable: 'D:\\Windows\\System32\\tar.exe',
-        args: ['-xf', '模型.tar.bz2', '-C', '解压目录']
-      })
-  })
-
   it('stores packaged and development models in the writable userData directory', () => {
     expect(speechModelRoot({ isPackaged: true, executablePath: 'C:\\Users\\test\\AppData\\Local\\Programs\\SpeakSub\\SpeakSub.exe', userDataDirectory: 'C:\\Users\\test\\AppData\\Roaming\\speaksub' }))
       .toBe('C:\\Users\\test\\AppData\\Roaming\\speaksub\\speech-models')
@@ -197,7 +185,7 @@ describe('SpeechModelManager', () => {
     }
   })
 
-  it.runIf(process.platform === 'win32')('extracts a bzip2 tar archive through Windows system tar in a path with Chinese and spaces', async () => {
+  it.runIf(process.platform === 'win32')('extracts bzip2 and tar inside the app in a path with Chinese and spaces', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'SpeakHub 中文路径 (5)-'))
     try {
       const source = join(directory, '打包来源')
@@ -205,7 +193,7 @@ describe('SpeechModelManager', () => {
       const archive = join(directory, '模型 文件.tar.bz2')
       createExtractedModel(source)
       mkdirSync(destination, { recursive: true })
-      execFileSync(tarExecutable(), ['-cjf', archive, '-C', source, speechAssetManifest.tts.directory])
+      execFileSync('C:\\Windows\\System32\\tar.exe', ['-cjf', archive, '-C', source, speechAssetManifest.tts.directory])
 
       await extractTarArchive(archive, destination)
 

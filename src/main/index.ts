@@ -623,6 +623,15 @@ function installIpc(): void {
     if (!status.echoCancellation) announceAutomation({ phase: 'failed', message: '当前麦克风没有启用回声消除；仍可打断 AI，但建议使用耳机以减少误触发。', recoverable: true })
   })
   ipcMain.handle('speech-assets:get', () => speechModels.state())
+  ipcMain.handle('speech-assets:install-info', () => ({
+    root: speechModels.root,
+    vadFile: speechModels.paths.vad,
+    ttsDirectory: speechModels.paths.tts
+  }))
+  ipcMain.handle('speech-assets:open-directory', async () => {
+    const error = await shell.openPath(speechModels.root)
+    if (error) throw new Error(`无法打开模型文件夹：${error}`)
+  })
   ipcMain.handle('speech-assets:download', () => speechModels.ensureAll())
   ipcMain.handle('microphone:toggle', () => toggleMicrophoneGate())
   ipcMain.handle('microphone:set', (_event, active: boolean) => setMicrophoneGate(z.boolean().parse(active)))

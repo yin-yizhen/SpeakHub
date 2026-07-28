@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AutomationStatus, AvailableUpdateInfo, ConnectionState, CorrectionStrength, MicrophoneGateState, NextPracticeDraft, PracticeLifecycle, PracticeMode, PracticePreferences, PracticeSource, PromptTemplateCategory, PromptTemplates, ProviderSettings, ReviewResult, SpeechAssetState, SpeechUsageState, SubtitlePreferences, TranscriptEvent, UpdateDownloadProgress, VoiceTurnPhase } from '../shared/types'
+import type { AutomationStatus, AvailableUpdateInfo, ConnectionState, CorrectionStrength, MicrophoneGateState, NextPracticeDraft, PracticeLifecycle, PracticeMode, PracticePreferences, PracticeSource, PromptTemplateCategory, PromptTemplates, ProviderSettings, ReviewResult, SpeechAssetInstallInfo, SpeechAssetState, SpeechUsageState, SubtitlePreferences, TranscriptEvent, UpdateDownloadProgress, VoiceTurnPhase } from '../shared/types'
 import { defaultSubtitlePreferences } from '../shared/defaults'
 import { LocalSpeechAudioCapture, LocalSpeechAudioPlayer, playMicrophoneToggleTone } from './local-speech-audio'
 import { isPracticeTransitionBusy, templateSelectionForDraft } from './app-state'
 import { LearningCenter } from './LearningCenter'
 import { shortcutFromKeyboardEvent } from '../main/microphone-shortcut'
-import { ALIYUN_HELP_LINKS } from '../shared/help-links'
+import { ALIYUN_HELP_LINKS, SPEECH_MODEL_DOWNLOAD_LINKS } from '../shared/help-links'
 import { buildChatGptWebPrompt, buildDirectChatSystemPrompt } from '../shared/direct-chat-prompt'
 import { useAppUpdates } from './use-app-updates'
 
@@ -46,6 +46,29 @@ function speechAssetStatus(asset: SpeechAssetState[keyof SpeechAssetState]): str
   if (asset.status === 'ready') return '已就绪'
   if (asset.status === 'error') return '下载失败'
   return asset.downloadedBytes > 0 ? `需补全 · 已有 ${Math.round(asset.progress * 100)}%` : '未下载'
+}
+
+function SpeechInstallHelp({ info, onOpenDirectory }: { info?: SpeechAssetInstallInfo; onOpenDirectory: () => void }) {
+  return <section className="speech-install-help" aria-labelledby="speech-install-help-title">
+    <div>
+      <strong id="speech-install-help-title">下载与安装说明</strong>
+      <small>优先点击上方下载按钮，SpeakHub 会自动完成下载、校验和安装。以下内容仅用于自动安装持续失败时。</small>
+    </div>
+    <div className="speech-install-location">
+      <span>模型安装目录</span>
+      <output title={info?.root}>{info?.root ?? '正在读取安装目录…'}</output>
+      <button className="quiet-action" type="button" disabled={!info} onClick={onOpenDirectory}>打开模型文件夹</button>
+    </div>
+    <div className="speech-install-links">
+      <a className="quiet-action" href={SPEECH_MODEL_DOWNLOAD_LINKS.vad} target="_blank" rel="noreferrer">下载 Silero VAD ↗</a>
+      <a className="quiet-action" href={SPEECH_MODEL_DOWNLOAD_LINKS.kokoro} target="_blank" rel="noreferrer">下载 Kokoro ↗</a>
+    </div>
+    <ol>
+      <li>VAD 下载后放到 <code title={info?.vadFile}>{info?.vadFile ?? 'speech-models\\silero-vad\\silero_vad.onnx'}</code>。</li>
+      <li>Kokoro 压缩包放到上面的模型安装目录，再点击“下载/重试”，SpeakHub 会自动校验并解压。</li>
+      <li>若已自行解压，请将完整文件夹放到 <code title={info?.ttsDirectory}>{info?.ttsDirectory ?? 'speech-models\\kokoro-int8-multi-lang-v1_1'}</code>，不要出现双层同名目录。</li>
+    </ol>
+  </section>
 }
 
 function UpdatePromptDialog({
@@ -128,6 +151,7 @@ export function App() {
   const [shortcutDraft, setShortcutDraft] = useState(defaultMicrophone.shortcut)
   const [shortcutError, setShortcutError] = useState<string>()
   const [speechAssets, setSpeechAssets] = useState<SpeechAssetState>(defaultSpeechAssets)
+  const [speechInstallInfo, setSpeechInstallInfo] = useState<SpeechAssetInstallInfo>()
   const [speechUsage, setSpeechUsage] = useState<SpeechUsageState>(defaultSpeechUsage)
   const [aliyunHelpOpen, setAliyunHelpOpen] = useState(false)
   const [communitySupportOpen, setCommunitySupportOpen] = useState(false)
@@ -140,13 +164,13 @@ export function App() {
   const previousMicrophoneActive = useRef(false)
 
   useEffect(() => {
-    void Promise.all([window.speaksub.getState(), window.speaksub.getProviderSettings(), window.speaksub.getArchiveDirectory(), window.speaksub.getPromptTemplates(), window.speaksub.getPracticePreferences(), window.speaksub.getAppVersion()]).then(([state, provider, directory, promptTemplates, preferences, version]) => {
+    void Promise.all([window.speaksub.getState(), window.speaksub.getProviderSettings(), window.speaksub.getArchiveDirectory(), window.speaksub.getPromptTemplates(), window.speaksub.getPracticePreferences(), window.speaksub.getAppVersion(), window.speaksub.getSpeechAssetInstallInfo()]).then(([state, provider, directory, promptTemplates, preferences, version, installInfo]) => {
       const selected = {
         scenario: promptTemplates.scenario.some((item) => item.id === preferences.scenarioTemplateId) ? preferences.scenarioTemplateId : promptTemplates.scenario[0].id,
         difficulty: promptTemplates.difficulty.some((item) => item.id === preferences.difficultyTemplateId) ? preferences.difficultyTemplateId : promptTemplates.difficulty[0].id,
         correction: promptTemplates.correction.some((item) => item.id === preferences.correctionTemplateId) ? preferences.correctionTemplateId : promptTemplates.correction[1]?.id ?? promptTemplates.correction[0].id
       }
-      setSettings(state.settings); setConnection(state.connection); setAutomation(state.automation); setSession(state.session?.id); setEvents(state.events); setProviders(provider); setSource(preferences.source); setMode(preferences.mode); setLifecycle(state.lifecycle); setArchiveDirectory(directory); setMicrophone(state.microphone); setShortcutDraft(state.microphone.shortcut); setSpeechAssets(state.speechAssets); setSpeechUsage(state.speechUsage); setVoicePhase(state.voicePhase); setTemplates(promptTemplates); setSelectedTemplates(selected); setFocus(preferences.focus); setFocusEnabled(preferences.focusEnabled); setAppVersion(version)
+      setSettings(state.settings); setConnection(state.connection); setAutomation(state.automation); setSession(state.session?.id); setEvents(state.events); setProviders(provider); setSource(preferences.source); setMode(preferences.mode); setLifecycle(state.lifecycle); setArchiveDirectory(directory); setMicrophone(state.microphone); setShortcutDraft(state.microphone.shortcut); setSpeechAssets(state.speechAssets); setSpeechInstallInfo(installInfo); setSpeechUsage(state.speechUsage); setVoicePhase(state.voicePhase); setTemplates(promptTemplates); setSelectedTemplates(selected); setFocus(preferences.focus); setFocusEnabled(preferences.focusEnabled); setAppVersion(version)
     })
     const removeTranscript = window.speaksub.onTranscript((event) => setEvents((current) => {
       const index = current.findIndex((item) => item.sourceMessageId === event.sourceMessageId)
@@ -331,6 +355,13 @@ export function App() {
       setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '模型下载失败。', recoverable: true })
     }
   }
+  async function openSpeechAssetDirectory(): Promise<void> {
+    try {
+      await window.speaksub.openSpeechAssetDirectory()
+    } catch (error) {
+      setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法打开模型文件夹。', recoverable: true })
+    }
+  }
   async function chooseArchiveDirectory(): Promise<void> { try { const directory = await window.speaksub.chooseArchiveDirectory(); if (!directory) return; setArchiveDirectory(directory) } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法切换归档文件夹。', recoverable: true }) } }
   function useNextPracticeDraft(draft: NextPracticeDraft): void {
     const nextFocus = draft.focus ?? ''
@@ -429,7 +460,7 @@ export function App() {
       <section className="archive-directory"><h2>麦克风快捷键</h2><p>点击输入框后直接按下按键组合。它是系统全局快捷键，在 ChatGPT 网页获得焦点时也会生效。</p><input className="shortcut-input" aria-label="麦克风快捷键" value={shortcutDraft} readOnly onKeyDown={(event) => void recordMicrophoneShortcut(event)}/>{shortcutError && <small role="alert">{shortcutError}</small>}</section>
       <section className="archive-directory"><h2>本地归档</h2><p>练习中会持续写入此文件夹根目录的 current-practice.md；复盘完成后，它会改名为一份包含对话、收藏词和复盘的 Markdown。</p><output title={archiveDirectory}>{archiveDirectory || '正在读取…'}</output><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => void chooseArchiveDirectory()}>选择文件夹</button>{(session || transitionBusy) && <small>请先结束当前练习再切换。</small>}</section>
       <section className="archive-directory app-update-card"><h2>应用更新</h2><p>{updates.available ? `当前版本 ${updates.available.currentVersion}，最新版本 ${updates.available.latestVersion}` : '启动后会自动检查 GitHub Release，也可以在这里手动检查。'}</p>{updates.status && <small role="status">{updates.status}</small>}<button className="quiet-action" type="button" disabled={updates.checking || updates.downloading} onClick={() => void updates.check(true)}>{updates.checking ? '正在检查…' : '检查更新'}</button></section>
-      <section className="archive-directory speech-assets"><h2>阿里语音辅助组件</h2><p>声音识别固定由阿里 Fun-ASR 完成；本地只保留小型 Silero VAD 负责开口检测和抢话，Kokoro 负责 AI 朗读。组件不会放进安装包，下载后保存在应用安装目录。</p>{(['vad', 'tts'] as const).map((asset) => <div key={asset}><strong>{asset === 'vad' ? 'Silero VAD · 开口检测与抢话' : 'Kokoro · 本地中英朗读'}</strong><span>{speechAssetStatus(speechAssets[asset])}</span><progress max={1} value={speechAssets[asset].progress}/>{speechAssets[asset].error && <small role="alert">{speechAssets[asset].error}</small>}</div>)}{speechModelsReady ? <small>阿里语音工作流所需组件已就绪。</small> : <>{speechRemainingMegabytes > 0 && <small>还需下载约 {speechRemainingMegabytes} MB。</small>}<button className="quiet-action" disabled={speechModelsDownloading} onClick={() => void downloadSpeechModels()}>{speechModelsDownloading ? '正在下载语音组件…' : speechDownloadButton}</button></>}</section>
+      <section className="archive-directory speech-assets"><h2>阿里语音辅助组件</h2><p>声音识别固定由阿里 Fun-ASR 完成；本地只保留小型 Silero VAD 负责开口检测和抢话，Kokoro 负责 AI 朗读。组件不会放进安装包，下载后保存在应用数据目录。</p>{(['vad', 'tts'] as const).map((asset) => <div key={asset}><strong>{asset === 'vad' ? 'Silero VAD · 开口检测与抢话' : 'Kokoro · 本地中英朗读'}</strong><span>{speechAssetStatus(speechAssets[asset])}</span><progress max={1} value={speechAssets[asset].progress}/>{speechAssets[asset].error && <small role="alert">{speechAssets[asset].error}</small>}</div>)}{speechModelsReady ? <small>阿里语音工作流所需组件已就绪。</small> : <>{speechRemainingMegabytes > 0 && <small>还需下载约 {speechRemainingMegabytes} MB。</small>}<button className="quiet-action" disabled={speechModelsDownloading} onClick={() => void downloadSpeechModels()}>{speechModelsDownloading ? '正在下载语音组件…' : speechDownloadButton}</button></>}<SpeechInstallHelp info={speechInstallInfo} onOpenDirectory={() => void openSpeechAssetDirectory()}/></section>
       <form key={JSON.stringify(providers)} className="provider-form" onSubmit={(event) => { event.preventDefault(); void saveProviders(event.currentTarget) }}><h2>对话大模型</h2><p>DeepSeek 或其他 OpenAI-compatible 文本接口负责生成回复和练习复盘，不负责麦克风识别。</p><label>兼容接口 Base URL<input name="llmBaseUrl" defaultValue={providers?.llmBaseUrl} placeholder="https://api.deepseek.com/v1"/></label><label>模型名<input name="llmModel" defaultValue={providers?.llmModel} placeholder="deepseek-chat"/></label><label>LLM API Key<input name="llmApiKey" type="password" placeholder={providers?.hasLlmKey ? '已保存' : '填写 API Key'}/></label><div className="model-probe"><button className="quiet-action" type="button" disabled={modelProbeState === 'probing'} onClick={(event) => { const form = event.currentTarget.form; if (form) void probeProviderModels(form) }}>{modelProbeState === 'probing' ? '正在探测…' : '探测可用模型'}</button>{modelProbeMessage && <small role={modelProbeState === 'error' ? 'alert' : 'status'}>{modelProbeMessage}</small>}{discoveredModels.length > 0 && <div className="model-options" aria-label="可用模型">{discoveredModels.map((model) => <button key={model} type="button" onClick={(event) => { const input = event.currentTarget.form?.elements.namedItem('llmModel'); if (input instanceof HTMLInputElement) { input.value = model; input.focus() } }}>{model}</button>)}</div>}</div><label className="check-label"><input name="clearLlmApiKey" type="checkbox"/>清除已保存的 LLM Key</label><h2>阿里语音识别</h2><p>声音转字幕固定使用阿里 Fun-ASR；DeepSeek 对话和本地 Kokoro 朗读保持不变。</p><div className="aliyun-key-row"><label>阿里 DashScope API Key<input name="aliyunAsrApiKey" type="password" placeholder={providers?.hasAliyunAsrKey ? '已保存' : '填写阿里语音识别 Key'}/></label><button className="quiet-action aliyun-help-trigger" type="button" onClick={() => setAliyunHelpOpen(true)}>如何获取</button></div><label className="check-label"><input name="clearAliyunAsrApiKey" type="checkbox"/>清除已保存的阿里 Key</label><div className="speech-usage"><strong>阿里识别用量</strong><span>本次 {speechUsage.sessionSeconds} 秒 · {speechUsage.month || '本月'}累计 {speechUsage.monthlySeconds} 秒</span><small>按目录价估算 ¥{speechUsage.estimatedCny.toFixed(2)}；实际账单以阿里控制台为准。</small></div>{session && <small>请先结束当前练习，再修改 API 或语音识别设置。</small>}<button className="primary-action" type="submit" disabled={Boolean(session)}>保存设置</button></form>
     </section>}
   </section>{communitySupportOpen && <div className="confirm-layer community-support-dialog" role="dialog" aria-modal="true" aria-labelledby="community-support-dialog-title"><div><header><div><p className="kicker">SUPPORT SPEAKHUB</p><h2 id="community-support-dialog-title">请作者喝杯咖啡</h2><p>SpeakHub 免费开源，支持与否都欢迎使用。若它恰好帮到了你，欢迎请作者喝杯咖啡或补充一点 Token，支持后续开发与维护。</p></div><button className="template-editor-close" type="button" aria-label="关闭赞助弹窗" title="关闭" onClick={() => setCommunitySupportOpen(false)}>×</button></header><img src={supportPaymentCode} alt="微信赞助收款码"/><small>微信扫一扫即可赞助，感谢你的支持。</small></div></div>}{aliyunHelpOpen && <div className="confirm-layer aliyun-help-dialog" role="dialog" aria-modal="true" aria-labelledby="aliyun-help-title"><div><header className="aliyun-help-header"><div><p className="kicker">DASHSCOPE API</p><h2 id="aliyun-help-title">如何开通阿里语音识别</h2><p>第一次配置照着下面四步做即可。</p></div><button className="template-editor-close" type="button" aria-label="关闭阿里 API 帮助" title="关闭" onClick={() => setAliyunHelpOpen(false)}>×</button></header><ol><li><strong>注册或登录阿里云</strong><span>打开百炼控制台，按提示开通模型服务；区域选择“华北 2（北京）”。</span></li><li><strong>创建通用 API Key</strong><span>进入 API Key 页面，在默认业务空间创建按量付费 Key。不要使用 Token Plan / Coding Plan 的 <code>sk-sp-</code> 专属 Key。</span></li><li><strong>立即复制保存</strong><span>完整 Key 只在创建成功时显示一次。复制后粘贴到上面的输入框。</span></li><li><strong>回到这里保存</strong><span>识别服务选择“阿里 Fun-ASR”，再点击“保存设置”。</span></li></ol><div className="aliyun-help-actions"><a className="primary-action" href={ALIYUN_HELP_LINKS.console} target="_blank" rel="noreferrer">打开百炼控制台 ↗</a><a className="quiet-action" href={ALIYUN_HELP_LINKS.apiKeyGuide} target="_blank" rel="noreferrer">查看官方教程 ↗</a><a className="quiet-action" href={ALIYUN_HELP_LINKS.freeQuotaGuide} target="_blank" rel="noreferrer">查看免费额度 ↗</a></div><p className="aliyun-help-note"><strong>费用提醒：</strong>新用户通常有免费额度，具体额度和有效期以阿里控制台为准。担心超额时，可在百炼控制台开启“免费额度用完即停”。</p></div></div>}{templateEditor && templateDraft && <div className="confirm-layer template-editor" role="dialog" aria-modal="true" aria-labelledby="template-editor-title"><div><header className="template-editor-header"><div><p className="kicker">PROMPT LIBRARY</p><h2 id="template-editor-title">管理提示词</h2><p>名称显示在练习台；提示词会原样以中文发送给 AI。</p></div><button className="template-editor-close" type="button" aria-label="关闭提示词管理" title="关闭" onClick={closeTemplateEditor}>×</button></header><div className="template-editor-list">{templateDraft[templateEditor].map((item, index) => <div key={item.id}><input value={item.name} aria-label="提示词名称" onChange={(event) => setTemplateDraft((current) => current && ({ ...current, [templateEditor]: current[templateEditor].map((value, position) => position === index ? { ...value, name: event.target.value } : value) }))}/><textarea value={item.prompt} aria-label="提示词内容" rows={4} onChange={(event) => setTemplateDraft((current) => current && ({ ...current, [templateEditor]: current[templateEditor].map((value, position) => position === index ? { ...value, prompt: event.target.value } : value) }))}/><button className="danger-action" disabled={templateDraft[templateEditor].length === 1} onClick={() => setTemplateDraft((current) => current && ({ ...current, [templateEditor]: current[templateEditor].filter((_, position) => position !== index) }))}>删除</button></div>)}</div><button className="quiet-action" onClick={() => setTemplateDraft((current) => current && ({ ...current, [templateEditor]: [...current[templateEditor], { id: `${templateEditor}-${Date.now()}`, name: '新提示词', prompt: '请填写中文提示词。' }] }))}>添加自定义提示词</button><footer><button className="quiet-action" onClick={closeTemplateEditor}>取消</button><button className="primary-action" onClick={() => void saveTemplates()}>保存</button></footer></div></div>}</main>{updateDialog}</>

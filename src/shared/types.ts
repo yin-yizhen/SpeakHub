@@ -251,6 +251,12 @@ export interface SpeechAssetState {
   tts: SpeechAssetProgress
 }
 
+export interface SpeechAssetInstallInfo {
+  root: string
+  vadFile: string
+  ttsDirectory: string
+}
+
 export interface SpeechUsageState {
   provider: 'aliyun-fun-asr'
   sessionSeconds: number
@@ -333,6 +339,8 @@ export interface SpeakSubApi {
   sendVoiceAudio: (chunk: VoiceAudioChunk) => Promise<void>
   notifyVoicePlaybackEnded: (chunkId: string) => Promise<void>
   getSpeechAssetState: () => Promise<SpeechAssetState>
+  getSpeechAssetInstallInfo: () => Promise<SpeechAssetInstallInfo>
+  openSpeechAssetDirectory: () => Promise<void>
   downloadSpeechAssets: () => Promise<SpeechAssetState>
   endPractice: () => Promise<PracticeEndResult>
   cancelPracticeStart: () => Promise<void>

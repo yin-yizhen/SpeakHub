@@ -5,10 +5,12 @@
 - Entry: settings UI in `src/renderer/App.tsx`; IPC bridge in `src/main/preload.ts` and `src/main/index.ts`; implementation in `src/main/speech-model-manager.ts`.
 - Storage: both packaged and development builds use Electron `userData/speech-models`. Never create or download models beside the installed executable because an all-users installation directory can be read-only for a normal app launch.
 - Flow: settings retry -> `speech-assets:download` -> rescan manually placed assets -> verify or download VAD/Kokoro -> reuse a verified `.tar.bz2` when present -> extract into `.extracting` -> verify required model files -> atomically replace the final model directory -> `LocalSpeechService` starts the VAD and TTS workers with the verified paths.
-- Windows extraction: always use `%SystemRoot%\System32\tar.exe -xf`; do not resolve `tar` from `PATH` or force the external `bzip2` filter with `-j`.
+- Extraction: stream BZIP2 decompression and TAR entry extraction inside the Electron main process with `unbzip2-stream` and `tar-stream`; never depend on a system `tar` or `bzip2` executable. Reject entries that escape the temporary destination or use unsupported link/device types.
 - Manual install: place the extracted `kokoro-int8-multi-lang-v1_1` directory directly under `speech-models`, with `model.int8.onnx`, `voices.bin`, `tokens.txt`, both lexicons, `espeak-ng-data`, and `dict` immediately inside it. Afterward, retry from settings or restart the app.
+- Settings help: the speech-assets card always keeps automatic download as the primary action, then shows the actual `userData/speech-models` path, an IPC-backed “open model folder” action, allowlisted official VAD/Kokoro download links, and fallback placement instructions.
+- IPC: `speech-assets:install-info` returns the root, VAD file, and Kokoro directory; `speech-assets:open-directory` may only open the manager-owned root and never accepts a renderer-supplied path.
 - Failure recovery: retain a size- and SHA-256-verified archive after extraction failure, remove the incomplete `.extracting` directory, and reuse the archive on retry. Invalid archives must be removed and downloaded again.
-- Tests: `src/main/speech-model-manager.test.ts`; settings integration coverage: `src/renderer/App.voice.test.tsx`.
+- Tests: `src/main/speech-model-manager.test.ts`; settings integration coverage: `src/renderer/App.voice.test.tsx`; link allowlist coverage: `src/shared/help-links.test.ts` and `src/main/external-help-navigation.test.ts`.
 - Verify: `pnpm exec vitest run src/main/speech-model-manager.test.ts src/renderer/App.voice.test.tsx`, then `pnpm lint` and `pnpm build`. For real Windows acceptance, extract in a path containing Chinese characters, spaces, and parentheses, and confirm the required files are present before starting API voice practice.
 
 ## Packaged App Startup

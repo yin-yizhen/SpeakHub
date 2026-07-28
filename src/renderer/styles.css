@@ -31,6 +31,18 @@
 .dual-transcript > div + div { border-left: 1px solid rgba(201, 227, 210, .12); padding-left: 18px; }
 .speech-assets > div { display: grid; grid-template-columns: 1fr auto; gap: 6px 14px; margin-top: 12px; }
 .speech-assets progress, .speech-assets small { grid-column: 1 / -1; width: 100%; }
+.speech-install-help { display: grid; gap: 12px; margin-top: 18px; border: 1px solid var(--line); border-radius: 12px; padding: 14px; background: var(--surface-soft); }
+.speech-install-help > div:first-child { display: grid; gap: 4px; }
+.speech-install-help > div:first-child strong { color: var(--ink); font-size: 13px; }
+.speech-install-help small { color: var(--ink-soft); line-height: 1.55; }
+.speech-install-location { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.speech-install-location span { color: var(--ink-soft); font-size: 12px; }
+.speech-install-location output { overflow: hidden; border: 1px solid var(--line); border-radius: 7px; padding: 8px 9px; color: var(--ink); background: var(--surface); font: 11px/1.4 ui-monospace, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.speech-install-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.speech-install-links a { display: inline-flex; align-items: center; justify-content: center; width: max-content; text-decoration: none; }
+.speech-install-help ol { display: grid; gap: 7px; margin: 0; padding-left: 20px; color: var(--ink-soft); font-size: 12px; line-height: 1.55; }
+.speech-install-help code { color: var(--ink); font-size: 11px; overflow-wrap: anywhere; }
+@media (max-width: 720px) { .speech-install-location { grid-template-columns: 1fr; }.speech-install-location button { width: max-content; } }
 .speech-usage { grid-column: 1 / -1; display: grid; gap: 5px; border: 1px solid var(--line); border-radius: 10px; padding: 12px; color: var(--ink-soft); }
 .speech-usage strong { color: var(--ink); }
 .speech-usage small { color: var(--ink-soft); }

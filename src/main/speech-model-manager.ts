@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto'
-import { execFile } from 'node:child_process'
-import { closeSync, createReadStream, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { promisify } from 'node:util'
+import { closeSync, createReadStream, createWriteStream, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
+import { dirname, join, resolve, sep } from 'node:path'
+import { finished, pipeline } from 'node:stream/promises'
+import { extract as createTarExtractor } from 'tar-stream'
+import unbzip2 from 'unbzip2-stream'
+import { SPEECH_MODEL_DOWNLOAD_LINKS } from '../shared/help-links'
 import type { SpeechAssetProgress, SpeechAssetState } from '../shared/types'
 
-const execFileAsync = promisify(execFile)
 const ready = (totalBytes: number): SpeechAssetProgress => ({ status: 'ready', downloadedBytes: totalBytes, totalBytes, progress: 1 })
 const missing = (totalBytes: number, downloadedBytes = 0): SpeechAssetProgress => ({ status: 'missing', downloadedBytes, totalBytes, progress: downloadedBytes / totalBytes })
 
@@ -13,7 +14,7 @@ export const speechAssetManifest = {
   vad: {
     directory: 'silero-vad',
     name: 'silero_vad.onnx',
-    url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx',
+    url: SPEECH_MODEL_DOWNLOAD_LINKS.vad,
     size: 643_854,
     sha256: '9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6'
   },
@@ -21,7 +22,7 @@ export const speechAssetManifest = {
     directory: 'kokoro-int8-multi-lang-v1_1',
     archive: {
       name: 'kokoro-int8-multi-lang-v1_1.tar.bz2',
-      url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2',
+      url: SPEECH_MODEL_DOWNLOAD_LINKS.kokoro,
       size: 147_031_220,
       sha256: 'a1e94694776049035c4f2c6529f003aaece993c76aae9a78995831c3c4dcafc6'
     },
@@ -34,25 +35,34 @@ const obsoleteAsrDirectories = ['zipformer-bilingual-zh-en-int8', 'zipformer-sma
 type Fetcher = typeof fetch
 type Extractor = (archive: string, destination: string) => Promise<void>
 
-export function tarExecutable(options: { platform?: NodeJS.Platform; systemRoot?: string } = {}): string {
-  if ((options.platform ?? process.platform) !== 'win32') return 'tar'
-  return join(options.systemRoot ?? process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
-}
-
-export function tarExtractionCommand(
-  archive: string,
-  destination: string,
-  options: { platform?: NodeJS.Platform; systemRoot?: string } = {}
-): { executable: string; args: string[] } {
-  return {
-    executable: tarExecutable(options),
-    args: ['-xf', archive, '-C', destination]
-  }
-}
-
 export async function extractTarArchive(archive: string, destination: string): Promise<void> {
-  const command = tarExtractionCommand(archive, destination)
-  await execFileAsync(command.executable, command.args)
+  const destinationRoot = resolve(destination)
+  const extractor = createTarExtractor()
+  mkdirSync(destinationRoot, { recursive: true })
+  extractor.on('entry', (header, stream, next) => {
+    void (async () => {
+      const output = resolve(destinationRoot, header.name)
+      if (output !== destinationRoot && !output.startsWith(`${destinationRoot}${sep}`)) {
+        stream.resume()
+        await finished(stream)
+        throw new Error(`模型压缩包包含不安全路径：${header.name}`)
+      }
+      if (header.type === 'directory') {
+        mkdirSync(output, { recursive: true })
+        stream.resume()
+        await finished(stream)
+        return
+      }
+      if (header.type !== 'file' && header.type !== 'contiguous-file' && header.type != null) {
+        stream.resume()
+        await finished(stream)
+        throw new Error(`模型压缩包包含不支持的条目：${header.name}`)
+      }
+      mkdirSync(dirname(output), { recursive: true })
+      await pipeline(stream, createWriteStream(output, { mode: header.mode }))
+    })().then(() => next(), (error: unknown) => next(error))
+  })
+  await pipeline(createReadStream(archive), unbzip2(), extractor)
 }
 
 export function speechModelRoot(options: { isPackaged: boolean; executablePath: string; userDataDirectory: string }): string {
