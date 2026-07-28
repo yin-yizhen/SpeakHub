@@ -100,27 +100,34 @@ const focusComposerScript = `(() => {
 const clickComposerSendScript = `(() => {
   const composer = (${pageComposerLocator}).composer;
   if (!composer) return false;
-  const scope = composer.closest('form') || composer.parentElement?.parentElement || document;
-  const explicit = scope.querySelector(${JSON.stringify(sendSelector)});
-  if (explicit && !explicit.disabled) { explicit.click(); return true; }
-  const candidates = [...scope.querySelectorAll('button:not([disabled])')]
-    .filter((button) => !/microphone|麦克风|voice|语音/i.test(button.getAttribute('aria-label') || button.getAttribute('title') || ''))
+  const isVisible = (element) => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none'; };
+  const composerRect = composer.getBoundingClientRect();
+  const buttons = [...document.querySelectorAll('button:not([disabled])')].filter(isVisible);
+  const explicit = buttons.find((button) => button.matches(${JSON.stringify(sendSelector)}));
+  if (explicit) { explicit.click(); return true; }
+  const candidates = buttons
+    .filter((button) => !/microphone|麦克风|voice|语音|audio|音频/i.test(button.getAttribute('aria-label') || button.getAttribute('title') || button.getAttribute('data-testid') || ''))
     .map((button) => ({ button, rect: button.getBoundingClientRect() }))
-    .filter(({ rect }) => rect.width > 20 && rect.height > 20 && rect.bottom > composer.getBoundingClientRect().top - 100)
-    .sort((a, b) => b.rect.right - a.rect.right);
+    .filter(({ rect }) => rect.left >= composerRect.left + composerRect.width * 0.55 && rect.right <= composerRect.right + 48 && rect.top >= composerRect.top - 48 && rect.bottom <= composerRect.bottom + 64)
+    .sort((a, b) => {
+      const aDistance = Math.abs(a.rect.right - composerRect.right) + Math.abs(a.rect.bottom - composerRect.bottom);
+      const bDistance = Math.abs(b.rect.right - composerRect.right) + Math.abs(b.rect.bottom - composerRect.bottom);
+      return aDistance - bDistance;
+    });
   if (!candidates[0]) return false;
   candidates[0].button.click(); return true;
 })()`
-
-const readComposerScript = `(() => { const composer = (${pageComposerLocator}).composer; return composer?.innerText || composer?.value || composer?.textContent || ''; })()`
 
 const confirmPromptSentScript = `(prompt => new Promise((resolve) => {
   const token = prompt.slice(0, 20);
   const deadline = Date.now() + 5000;
   const read = () => {
-    const composer = (${pageComposerLocator}).composer;
-    const text = composer?.innerText || composer?.value || composer?.textContent || '';
-    if (!text.includes(token)) return resolve(true);
+    const turns = [...document.querySelectorAll('article[data-testid^="conversation-turn-"], [data-message-author-role="user"]')];
+    const sent = turns.some((turn) => {
+      const user = turn.getAttribute('data-message-author-role') === 'user' ? turn : turn.querySelector('[data-message-author-role="user"]');
+      return user && (turn.innerText || turn.textContent || '').includes(token);
+    });
+    if (sent) return resolve(true);
     if (Date.now() >= deadline) return resolve(false);
     setTimeout(read, 120);
   };
@@ -239,28 +246,15 @@ export class ChatGPTAutomation {
 
   async fillAndSendPrompt(prompt: string): Promise<AutomationResult> {
     const deadline = Date.now() + 45_000
-    const promptPrefix = prompt.slice(0, 20)
     let latest: { focused: boolean; diagnostics: Array<Record<string, unknown>> } | undefined
-    let enteredText = ''
-    let attempt = 0
     while (Date.now() < deadline) {
       latest = await this.waitForComposerFocus(1_500)
-      if (!latest.focused) { await pause(300); continue }
-      if (attempt > 0) {
-        this.contents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] })
-        this.contents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['control'] })
-        this.contents.sendInputEvent({ type: 'keyDown', keyCode: 'BACKSPACE' })
-        this.contents.sendInputEvent({ type: 'keyUp', keyCode: 'BACKSPACE' })
-        await pause(150)
-      }
-      this.contents.insertText(prompt)
-      await pause(350)
-      enteredText = await this.contents.executeJavaScript(readComposerScript) as string
-      if (enteredText.includes(promptPrefix)) break
-      attempt += 1
-      await pause(550)
+      if (latest.focused) break
+      await pause(300)
     }
-    if (!enteredText.includes(promptPrefix)) return { ok: false, message: latest?.focused ? 'ChatGPT 输入框在 45 秒内仍未接受提示词。请打开连接页检查网络或登录状态后重试。' : 'ChatGPT 页面在 45 秒内仍未准备好输入框。请打开连接页检查网络或登录状态后重试。' }
+    if (!latest?.focused) return { ok: false, message: 'ChatGPT 页面在 45 秒内仍未准备好输入框。请打开连接页检查网络或登录状态后重试。' }
+    this.contents.insertText(prompt)
+    await pause(180)
     const clicked = await this.contents.executeJavaScript(clickComposerSendScript, true) as boolean
     if (!clicked) { this.contents.sendInputEvent({ type: 'keyDown', keyCode: 'ENTER' }); this.contents.sendInputEvent({ type: 'keyUp', keyCode: 'ENTER' }) }
     let sent = await this.contents.executeJavaScript(`(${confirmPromptSentScript})(${JSON.stringify(prompt)})`, true) as boolean
@@ -268,7 +262,7 @@ export class ChatGPTAutomation {
       this.contents.sendInputEvent({ type: 'keyDown', keyCode: 'ENTER' }); this.contents.sendInputEvent({ type: 'keyUp', keyCode: 'ENTER' })
       sent = await this.contents.executeJavaScript(`(${confirmPromptSentScript})(${JSON.stringify(prompt)})`, true) as boolean
     }
-    if (!sent) return { ok: false, message: 'ChatGPT 未确认收到提示词：文本仍停留在输入框中。请打开连接页后重试。' }
+    if (!sent) return { ok: false, message: '已尝试点击 ChatGPT 发送键，但未确认提示词成为对话消息。草稿已保留，请打开连接页后重试。' }
     return { ok: true, message: clicked ? '提示词已发送，正在等待 ChatGPT 回复。' : '提示词已通过 Enter 发送，正在等待 ChatGPT 回复。' }
   }
 

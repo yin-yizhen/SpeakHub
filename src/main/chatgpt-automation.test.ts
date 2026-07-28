@@ -36,7 +36,6 @@ describe('ChatGPT page automation selectors', () => {
     const executeJavaScript = vi.fn()
       .mockResolvedValueOnce({ focused: false, diagnostics: [{ id: 'loading' }] })
       .mockResolvedValueOnce({ focused: true, diagnostics: [{ id: 'prompt-textarea' }] })
-      .mockResolvedValueOnce('Travel practice')
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(true)
     const insertText = vi.fn()
@@ -44,15 +43,13 @@ describe('ChatGPT page automation selectors', () => {
 
     await expect(automation.fillAndSendPrompt('Travel practice')).resolves.toMatchObject({ ok: true })
     expect(insertText).toHaveBeenCalledWith('Travel practice')
-    expect(executeJavaScript).toHaveBeenCalledTimes(5)
+    expect(executeJavaScript).toHaveBeenCalledTimes(4)
   })
 
-  it('keeps retrying text entry while a new chat finishes hydrating', async () => {
+  it('types the prompt once, then immediately clicks send', async () => {
     const executeJavaScript = vi.fn()
       .mockResolvedValueOnce({ focused: true, diagnostics: [{ id: 'prompt-textarea' }] })
-      .mockResolvedValueOnce('')
-      .mockResolvedValueOnce({ focused: true, diagnostics: [{ id: 'prompt-textarea' }] })
-      .mockResolvedValueOnce('Travel practice')
+      .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(true)
     const insertText = vi.fn()
@@ -60,8 +57,25 @@ describe('ChatGPT page automation selectors', () => {
     const automation = new ChatGPTAutomation({ executeJavaScript, insertText, sendInputEvent } as never)
 
     await expect(automation.fillAndSendPrompt('Travel practice')).resolves.toMatchObject({ ok: true })
-    expect(insertText).toHaveBeenCalledTimes(2)
-    expect(sendInputEvent).toHaveBeenCalledWith({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] })
+    expect(insertText).toHaveBeenCalledTimes(1)
+    expect(sendInputEvent).not.toHaveBeenCalled()
+    const scripts = (executeJavaScript.mock.calls as unknown as Array<[string]>).map(([script]) => script)
+    expect(scripts[1]).toContain('composerRect')
+  })
+
+  it('searches the whole page for the send button beside the composer', async () => {
+    const executeJavaScript = vi.fn()
+      .mockResolvedValueOnce({ focused: true, diagnostics: [{ id: 'prompt-textarea' }] })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+    const automation = new ChatGPTAutomation({ executeJavaScript, insertText: vi.fn() } as never)
+
+    await expect(automation.fillAndSendPrompt('Travel practice')).resolves.toMatchObject({ ok: true })
+    const scripts = (executeJavaScript.mock.calls as unknown as Array<[string]>).map(([script]) => script)
+    const sendScript = scripts.find((script) => script.includes('composerRect'))!
+    expect(sendScript).toContain("document.querySelectorAll('button:not([disabled])')")
+    expect(sendScript).toContain('composerRect.width * 0.55')
+    expect(sendScript).not.toContain("composer.closest('form')")
   })
 
   it('recognises the generation stop control separately from voice', () => {
@@ -147,13 +161,13 @@ describe('ChatGPT page automation selectors', () => {
   it('re-reads the visible composer after sending instead of trusting a stale cached node', async () => {
     const executeJavaScript = vi.fn()
       .mockResolvedValueOnce({ focused: true, diagnostics: [{ id: 'prompt-textarea' }] })
-      .mockResolvedValueOnce('Travel practice')
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(true)
     const automation = new ChatGPTAutomation({ executeJavaScript, insertText: vi.fn() } as never)
 
     await expect(automation.fillAndSendPrompt('Travel practice')).resolves.toMatchObject({ ok: true })
     const scripts = (executeJavaScript.mock.calls as unknown as Array<[string]>).map(([script]) => script)
-    expect(scripts.slice(1).some((script) => script.includes('window.__speaksubComposer ||'))).toBe(false)
+    expect(scripts.some((script) => script.includes('window.__speaksubComposer ||'))).toBe(false)
+    expect(scripts.some((script) => script.includes('data-message-author-role="user"'))).toBe(true)
   })
 })
