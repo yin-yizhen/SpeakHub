@@ -1,9 +1,17 @@
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { SpeechModelManager, speechAssetManifest, speechModelRoot } from './speech-model-manager'
+import {
+  extractTarArchive,
+  SpeechModelManager,
+  speechAssetManifest,
+  speechModelRoot,
+  tarExtractionCommand,
+  tarExecutable
+} from './speech-model-manager'
 
 const hash = (value: Uint8Array): string => createHash('sha256').update(value).digest('hex')
 const originals = {
@@ -38,9 +46,19 @@ function responseFor(url: string): Response {
 }
 
 describe('SpeechModelManager', () => {
-  it('stores packaged models beside the installed executable and keeps development models in userData', () => {
+  it('uses Windows system tar without forcing an external bzip2 filter', () => {
+    expect(tarExecutable({ platform: 'win32', systemRoot: 'C:\\Windows' })).toBe('C:\\Windows\\System32\\tar.exe')
+    expect(tarExecutable({ platform: 'linux' })).toBe('tar')
+    expect(tarExtractionCommand('模型.tar.bz2', '解压目录', { platform: 'win32', systemRoot: 'D:\\Windows' }))
+      .toEqual({
+        executable: 'D:\\Windows\\System32\\tar.exe',
+        args: ['-xf', '模型.tar.bz2', '-C', '解压目录']
+      })
+  })
+
+  it('stores packaged and development models in the writable userData directory', () => {
     expect(speechModelRoot({ isPackaged: true, executablePath: 'C:\\Users\\test\\AppData\\Local\\Programs\\SpeakSub\\SpeakSub.exe', userDataDirectory: 'C:\\Users\\test\\AppData\\Roaming\\speaksub' }))
-      .toBe('C:\\Users\\test\\AppData\\Local\\Programs\\SpeakSub\\speech-models')
+      .toBe('C:\\Users\\test\\AppData\\Roaming\\speaksub\\speech-models')
     expect(speechModelRoot({ isPackaged: false, executablePath: 'D:\\tools\\electron.exe', userDataDirectory: 'C:\\Users\\test\\AppData\\Roaming\\speaksub' }))
       .toBe('C:\\Users\\test\\AppData\\Roaming\\speaksub\\speech-models')
   })
@@ -106,6 +124,93 @@ describe('SpeechModelManager', () => {
       corrupt = false
       await expect(manager.ensureAll()).resolves.toMatchObject({ vad: { status: 'ready' }, tts: { status: 'ready' } })
       expect(existsSync(`${manager.paths.vad}.part`)).toBe(false)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('recognizes models placed manually after startup without downloading them', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speakhub-manual-models-'))
+    try {
+      const fetcher = vi.fn()
+      const extractor = vi.fn()
+      const manager = new SpeechModelManager(directory, fetcher as typeof fetch, extractor)
+      expect(manager.state()).toMatchObject({ vad: { status: 'missing' }, tts: { status: 'missing' } })
+
+      mkdirSync(join(directory, speechAssetManifest.vad.directory), { recursive: true })
+      writeFileSync(manager.paths.vad, vadData)
+      createExtractedModel(directory)
+
+      await expect(manager.ensureAll()).resolves.toMatchObject({ vad: { status: 'ready' }, tts: { status: 'ready' } })
+      expect(fetcher).not.toHaveBeenCalled()
+      expect(extractor).not.toHaveBeenCalled()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a verified archive after extraction fails and reuses it on retry', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speakhub-extract-retry-'))
+    try {
+      mkdirSync(join(directory, speechAssetManifest.vad.directory), { recursive: true })
+      writeFileSync(join(directory, speechAssetManifest.vad.directory, speechAssetManifest.vad.name), vadData)
+      const fetcher = vi.fn(async () => new Response(ttsData))
+      let shouldFail = true
+      const extractor = vi.fn(async (_archive: string, destination: string) => {
+        if (shouldFail) throw new Error('extract failed')
+        createExtractedModel(destination)
+      })
+      const manager = new SpeechModelManager(directory, fetcher as typeof fetch, extractor)
+      const archive = join(directory, speechAssetManifest.tts.archive.name)
+      const extractRoot = join(directory, `${speechAssetManifest.tts.directory}.extracting`)
+
+      await expect(manager.ensureAll()).rejects.toThrow('extract failed')
+      expect(fetcher).toHaveBeenCalledOnce()
+      expect(existsSync(archive)).toBe(true)
+      expect(existsSync(extractRoot)).toBe(false)
+
+      shouldFail = false
+      await expect(manager.ensureAll()).resolves.toMatchObject({ tts: { status: 'ready' } })
+      expect(fetcher).toHaveBeenCalledOnce()
+      expect(extractor).toHaveBeenCalledTimes(2)
+      expect(existsSync(archive)).toBe(false)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces an invalid existing archive before extraction', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speakhub-invalid-archive-'))
+    try {
+      mkdirSync(join(directory, speechAssetManifest.vad.directory), { recursive: true })
+      writeFileSync(join(directory, speechAssetManifest.vad.directory, speechAssetManifest.vad.name), vadData)
+      writeFileSync(join(directory, speechAssetManifest.tts.archive.name), Uint8Array.from([0, 0, 0, 0]))
+      const fetcher = vi.fn(async () => new Response(ttsData))
+      const extractor = vi.fn(async (_archive: string, destination: string) => createExtractedModel(destination))
+      const manager = new SpeechModelManager(directory, fetcher as typeof fetch, extractor)
+
+      await expect(manager.ensureAll()).resolves.toMatchObject({ tts: { status: 'ready' } })
+      expect(fetcher).toHaveBeenCalledOnce()
+      expect(extractor).toHaveBeenCalledOnce()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it.runIf(process.platform === 'win32')('extracts a bzip2 tar archive through Windows system tar in a path with Chinese and spaces', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'SpeakHub 中文路径 (5)-'))
+    try {
+      const source = join(directory, '打包来源')
+      const destination = join(directory, '解压结果')
+      const archive = join(directory, '模型 文件.tar.bz2')
+      createExtractedModel(source)
+      mkdirSync(destination, { recursive: true })
+      execFileSync(tarExecutable(), ['-cjf', archive, '-C', source, speechAssetManifest.tts.directory])
+
+      await extractTarArchive(archive, destination)
+
+      expect(existsSync(join(destination, speechAssetManifest.tts.directory, 'model.int8.onnx'))).toBe(true)
+      expect(existsSync(join(destination, speechAssetManifest.tts.directory, 'espeak-ng-data'))).toBe(true)
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }

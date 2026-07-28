@@ -1,10 +1,32 @@
 # SpeakHub Code Map
 
+## Speech Model Download and Extraction
+
+- Entry: settings UI in `src/renderer/App.tsx`; IPC bridge in `src/main/preload.ts` and `src/main/index.ts`; implementation in `src/main/speech-model-manager.ts`.
+- Storage: both packaged and development builds use Electron `userData/speech-models`. Never create or download models beside the installed executable because an all-users installation directory can be read-only for a normal app launch.
+- Flow: settings retry -> `speech-assets:download` -> rescan manually placed assets -> verify or download VAD/Kokoro -> reuse a verified `.tar.bz2` when present -> extract into `.extracting` -> verify required model files -> atomically replace the final model directory -> `LocalSpeechService` starts the VAD and TTS workers with the verified paths.
+- Windows extraction: always use `%SystemRoot%\System32\tar.exe -xf`; do not resolve `tar` from `PATH` or force the external `bzip2` filter with `-j`.
+- Manual install: place the extracted `kokoro-int8-multi-lang-v1_1` directory directly under `speech-models`, with `model.int8.onnx`, `voices.bin`, `tokens.txt`, both lexicons, `espeak-ng-data`, and `dict` immediately inside it. Afterward, retry from settings or restart the app.
+- Failure recovery: retain a size- and SHA-256-verified archive after extraction failure, remove the incomplete `.extracting` directory, and reuse the archive on retry. Invalid archives must be removed and downloaded again.
+- Tests: `src/main/speech-model-manager.test.ts`; settings integration coverage: `src/renderer/App.voice.test.tsx`.
+- Verify: `pnpm exec vitest run src/main/speech-model-manager.test.ts src/renderer/App.voice.test.tsx`, then `pnpm lint` and `pnpm build`. For real Windows acceptance, extract in a path containing Chinese characters, spaces, and parentheses, and confirm the required files are present before starting API voice practice.
+
+## Packaged App Startup
+
+- Entry: Electron lifecycle and window creation in `src/main/index.ts`; existing-window activation helper in `src/main/window-activation.ts`; early filesystem initialization in `src/main/speech-model-manager.ts`.
+- Flow: acquire the Electron single-instance lock -> initialize services using writable `userData` paths -> create renderer and auxiliary windows -> show the main window. A second launch exits immediately and asks the first instance to restore, show, and focus its window.
+- Failure handling: the `app.whenReady()` initialization chain must end in a visible startup error dialog and write `startup-failed` to the diagnostic log when available. Do not leave an initialization rejection unhandled while all windows still have `show: false`.
+- Risk: a process visible in Task Manager does not prove successful startup. If the process group has GPU/network utility children but no `--type=renderer` child, inspect synchronous constructors and filesystem writes that run before `createMainWindow()`.
+- Tests: `src/main/window-activation.test.ts` and `src/main/speech-model-manager.test.ts`.
+- Verify: `pnpm exec vitest run src/main/window-activation.test.ts src/main/speech-model-manager.test.ts`, then `pnpm lint` and `pnpm package:win`. Install under an administrator-owned directory, launch as a normal user, confirm a visible main window and renderer process, then launch again and confirm only one main-process instance remains.
+
 ## Windows Installer Recovery
 
 - Entry: `build/installer.nsh`; packaging configuration: `package.json` -> `build.nsis.include`.
-- Flow: NSIS `preInit` -> reads the per-user install location before electron-builder consumes it -> keeps both records when the old uninstaller exists, otherwise removes the stale install-location and uninstall records -> normal installation continues.
-- Verify: create both stale registry records with `InstallLocation` pointing to a deleted directory, run `pnpm package:win`, start the resulting installer, and confirm both records disappear before the directory-selection page without an “unable to close/write uninstaller” loop.
+- Flow: NSIS `preInit` -> selects the x64 package's registry view -> validates both per-user and per-machine uninstall commands -> keeps valid registrations -> otherwise keeps `InstallLocation` but removes the unusable uninstall record -> removes a duplicate per-user location after a successful all-users migration -> normal installation repairs into the previous directory.
+- Risk: electron-builder reports destination copy failures with the generic “SpeakHub cannot be closed” message. Always check the target folder ACL before investigating process locks. A missing uninstaller must not cause deletion of `InstallLocation`, because that value is also the installer’s path-memory source.
+- Permission: the assisted installer still offers per-user and per-machine modes, but fresh installs default to per-machine and can request elevation. A per-user install cannot write to administrator-owned folders such as a protected `D:\tools`; use the per-machine option for those paths.
+- Verify: create a stale HKCU or HKLM record with `InstallLocation` pointing to a directory whose uninstaller is missing, run `pnpm package:win`, and install the resulting package. Confirm the stale uninstall record is removed, the directory defaults to the saved location, installation completes with the required privilege, and a second install without `/D` still uses that location.
 
 ## Subtitle Overlay Interaction
 

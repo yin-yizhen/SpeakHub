@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
+import { closeSync, createReadStream, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { SpeechAssetProgress, SpeechAssetState } from '../shared/types'
@@ -34,10 +34,29 @@ const obsoleteAsrDirectories = ['zipformer-bilingual-zh-en-int8', 'zipformer-sma
 type Fetcher = typeof fetch
 type Extractor = (archive: string, destination: string) => Promise<void>
 
+export function tarExecutable(options: { platform?: NodeJS.Platform; systemRoot?: string } = {}): string {
+  if ((options.platform ?? process.platform) !== 'win32') return 'tar'
+  return join(options.systemRoot ?? process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
+}
+
+export function tarExtractionCommand(
+  archive: string,
+  destination: string,
+  options: { platform?: NodeJS.Platform; systemRoot?: string } = {}
+): { executable: string; args: string[] } {
+  return {
+    executable: tarExecutable(options),
+    args: ['-xf', archive, '-C', destination]
+  }
+}
+
+export async function extractTarArchive(archive: string, destination: string): Promise<void> {
+  const command = tarExtractionCommand(archive, destination)
+  await execFileAsync(command.executable, command.args)
+}
+
 export function speechModelRoot(options: { isPackaged: boolean; executablePath: string; userDataDirectory: string }): string {
-  return options.isPackaged
-    ? join(dirname(options.executablePath), 'speech-models')
-    : join(options.userDataDirectory, 'speech-models')
+  return join(options.userDataDirectory, 'speech-models')
 }
 
 export class SpeechModelManager {
@@ -48,9 +67,7 @@ export class SpeechModelManager {
   constructor(
     readonly root: string,
     private readonly fetcher: Fetcher = fetch,
-    private readonly extractor: Extractor = async (archive, destination) => {
-      await execFileAsync('tar', ['-xjf', archive, '-C', destination])
-    }
+    private readonly extractor: Extractor = extractTarArchive
   ) {
     mkdirSync(root, { recursive: true })
     this.migrateVadAndRemoveObsoleteAsr()
@@ -96,6 +113,7 @@ export class SpeechModelManager {
   }
 
   private async downloadAll(): Promise<SpeechAssetState> {
+    this.reconcileLocalAssets()
     try {
       if (!this.hasVad()) await this.downloadVad()
       if (!this.hasTts()) await this.downloadTts()
@@ -123,19 +141,50 @@ export class SpeechModelManager {
     const archive = join(this.root, manifest.archive.name)
     const extractRoot = join(this.root, `${manifest.directory}.extracting`)
     this.publish('tts', { status: 'downloading', downloadedBytes: 0, totalBytes: manifest.archive.size, progress: 0 })
-    await this.download(manifest.archive.url, archive, manifest.archive.size, manifest.archive.sha256, (downloadedBytes) => {
-      this.publish('tts', { status: 'downloading', downloadedBytes, totalBytes: manifest.archive.size, progress: downloadedBytes / manifest.archive.size })
-    })
+    if (await this.isVerifiedFile(archive, manifest.archive.size, manifest.archive.sha256)) {
+      this.publish('tts', { status: 'downloading', downloadedBytes: manifest.archive.size, totalBytes: manifest.archive.size, progress: 1 })
+    } else {
+      rmSync(archive, { force: true })
+      await this.download(manifest.archive.url, archive, manifest.archive.size, manifest.archive.sha256, (downloadedBytes) => {
+        this.publish('tts', { status: 'downloading', downloadedBytes, totalBytes: manifest.archive.size, progress: downloadedBytes / manifest.archive.size })
+      })
+    }
     rmSync(extractRoot, { recursive: true, force: true })
     mkdirSync(extractRoot, { recursive: true })
-    await this.extractor(archive, extractRoot)
-    const extracted = join(extractRoot, manifest.directory)
-    if (!manifest.required.every((name) => existsSync(join(extracted, name)))) throw new Error('Kokoro 模型压缩包缺少必要文件。')
-    rmSync(this.paths.tts, { recursive: true, force: true })
-    renameSync(extracted, this.paths.tts)
-    rmSync(extractRoot, { recursive: true, force: true })
-    rmSync(archive, { force: true })
-    this.publish('tts', ready(manifest.archive.size))
+    try {
+      await this.extractor(archive, extractRoot)
+      const extracted = join(extractRoot, manifest.directory)
+      if (!manifest.required.every((name) => existsSync(join(extracted, name)))) throw new Error('Kokoro 模型压缩包缺少必要文件。')
+      rmSync(this.paths.tts, { recursive: true, force: true })
+      renameSync(extracted, this.paths.tts)
+      rmSync(extractRoot, { recursive: true, force: true })
+      rmSync(archive, { force: true })
+      this.publish('tts', ready(manifest.archive.size))
+    } catch (error) {
+      rmSync(extractRoot, { recursive: true, force: true })
+      throw error
+    }
+  }
+
+  private reconcileLocalAssets(): void {
+    const vadPresent = this.hasVad()
+    const ttsPresent = this.hasTts()
+    if (vadPresent && this.current.vad.status !== 'ready') this.publish('vad', ready(speechAssetManifest.vad.size))
+    if (!vadPresent && this.current.vad.status === 'ready') this.publish('vad', missing(speechAssetManifest.vad.size))
+    if (ttsPresent && this.current.tts.status !== 'ready') this.publish('tts', ready(speechAssetManifest.tts.archive.size))
+    if (!ttsPresent && this.current.tts.status === 'ready') this.publish('tts', missing(speechAssetManifest.tts.archive.size))
+  }
+
+  private async isVerifiedFile(path: string, expectedSize: number, expectedHash: string): Promise<boolean> {
+    if (!existsSync(path) || statSync(path).size !== expectedSize) return false
+    const hash = createHash('sha256')
+    await new Promise<void>((resolve, reject) => {
+      const stream = createReadStream(path)
+      stream.on('data', (chunk) => hash.update(chunk))
+      stream.on('error', reject)
+      stream.on('end', resolve)
+    })
+    return hash.digest('hex') === expectedHash
   }
 
   private async download(url: string, destination: string, expectedSize: number, expectedHash: string, onProgress: (bytes: number) => void): Promise<void> {

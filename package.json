@@ -41,6 +41,8 @@
       "oneClick": false,
       "perMachine": false,
       "include": "build/installer.nsh",
+      "allowElevation": true,
+      "selectPerMachineByDefault": true,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
