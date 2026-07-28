@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { closeSync, createReadStream, createWriteStream, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
+import { createReadStream, createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
+import { open as openFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { finished, pipeline } from 'node:stream/promises'
 import { extract as createTarExtractor } from 'tar-stream'
@@ -9,6 +10,8 @@ import type { SpeechAssetProgress, SpeechAssetState } from '../shared/types'
 
 const ready = (totalBytes: number): SpeechAssetProgress => ({ status: 'ready', downloadedBytes: totalBytes, totalBytes, progress: 1 })
 const missing = (totalBytes: number, downloadedBytes = 0): SpeechAssetProgress => ({ status: 'missing', downloadedBytes, totalBytes, progress: downloadedBytes / totalBytes })
+const progressPublishIntervalMs = 200
+const progressPublishBytes = 1_048_576
 
 export const speechAssetManifest = {
   vad: {
@@ -204,20 +207,36 @@ export class SpeechModelManager {
     if (!response.ok || !response.body) throw new Error(`模型下载失败（HTTP ${response.status}）。`)
     const reader = response.body.getReader()
     const hash = createHash('sha256')
-    const handle = openSync(temporary, 'w')
+    const handle = await openFile(temporary, 'w')
     let downloaded = 0
+    let lastPublishedAt = Date.now()
+    let lastPublishedBytes = 0
+    const publishProgress = (force = false): void => {
+      if (downloaded === lastPublishedBytes) return
+      const now = Date.now()
+      if (!force && now - lastPublishedAt < progressPublishIntervalMs && downloaded - lastPublishedBytes < progressPublishBytes) return
+      lastPublishedAt = now
+      lastPublishedBytes = downloaded
+      onProgress(downloaded)
+    }
     try {
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        writeSync(handle, value)
+        let offset = 0
+        while (offset < value.byteLength) {
+          const { bytesWritten } = await handle.write(value, offset, value.byteLength - offset)
+          if (bytesWritten === 0) throw new Error('模型文件写入中断。')
+          offset += bytesWritten
+        }
         hash.update(value)
         downloaded += value.byteLength
-        onProgress(downloaded)
+        publishProgress()
       }
     } finally {
-      closeSync(handle)
+      await handle.close()
     }
+    publishProgress(true)
     if (downloaded !== expectedSize) throw new Error(`模型文件大小校验失败：需要 ${expectedSize}，实际 ${downloaded}。`)
     const actualHash = hash.digest('hex')
     if (actualHash !== expectedHash) throw new Error('模型文件 SHA-256 校验失败。')

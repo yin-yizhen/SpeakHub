@@ -117,6 +117,35 @@ describe('SpeechModelManager', () => {
     }
   })
 
+  it('throttles download progress broadcasts by transferred bytes', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speakhub-progress-throttle-'))
+    const previousVad = { size: speechAssetManifest.vad.size, sha256: speechAssetManifest.vad.sha256 }
+    try {
+      createExtractedModel(directory)
+      const chunkSize = 262_144
+      const chunks = Array.from({ length: 8 }, (_, index) => new Uint8Array(chunkSize).fill(index))
+      const complete = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)))
+      Object.assign(speechAssetManifest.vad, { size: complete.byteLength, sha256: hash(complete) })
+      const fetcher = vi.fn(async () => new Response(new ReadableStream({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(chunk)
+          controller.close()
+        }
+      })))
+      const manager = new SpeechModelManager(directory, fetcher as typeof fetch)
+      const progress: number[] = []
+      manager.subscribe((state) => {
+        if (state.vad.status === 'downloading') progress.push(state.vad.downloadedBytes)
+      })
+
+      await expect(manager.ensureAll()).resolves.toMatchObject({ vad: { status: 'ready' }, tts: { status: 'ready' } })
+      expect(progress).toEqual([0, 1_048_576, 2_097_152])
+    } finally {
+      Object.assign(speechAssetManifest.vad, previousVad)
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('recognizes models placed manually after startup without downloading them', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'speakhub-manual-models-'))
     try {
