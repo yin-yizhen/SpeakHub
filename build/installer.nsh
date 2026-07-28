@@ -3,8 +3,18 @@
 
 !ifndef BUILD_UNINSTALLER
 
-!macro customInit
-  ReadRegStr $0 SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}" "UninstallString"
+!macro preInit
+  ; Run before electron-builder reads the previous InstallLocation.
+  ReadRegStr $0 HKCU "${INSTALL_REGISTRY_KEY}" "InstallLocation"
+  StrCmp $0 "" inspectUninstallRecord
+  IfFileExists "$0\${UNINSTALL_FILENAME}" staleUninstallDone
+
+  DeleteRegKey HKCU "${INSTALL_REGISTRY_KEY}"
+  DeleteRegKey HKCU "${UNINSTALL_REGISTRY_KEY}"
+  Goto staleUninstallDone
+
+inspectUninstallRecord:
+  ReadRegStr $0 HKCU "${UNINSTALL_REGISTRY_KEY}" "UninstallString"
   StrCmp $0 "" staleUninstallDone
 
   Push $0
@@ -12,7 +22,7 @@
   Pop $1
   IfFileExists "$1" staleUninstallDone
 
-  DeleteRegKey SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}"
+  DeleteRegKey HKCU "${UNINSTALL_REGISTRY_KEY}"
 
 staleUninstallDone:
 !macroend

@@ -3,8 +3,8 @@
 ## Windows Installer Recovery
 
 - Entry: `build/installer.nsh`; packaging configuration: `package.json` -> `build.nsis.include`.
-- Flow: NSIS starts -> reads the existing per-user uninstall record -> keeps it when its uninstaller exists, otherwise removes only that stale record -> normal electron-builder installation continues.
-- Verify: create a stale `UninstallString` record whose referenced executable is missing, run `pnpm package:win`, and confirm the resulting installer proceeds without an “unable to close/write uninstaller” loop.
+- Flow: NSIS `preInit` -> reads the per-user install location before electron-builder consumes it -> keeps both records when the old uninstaller exists, otherwise removes the stale install-location and uninstall records -> normal installation continues.
+- Verify: create both stale registry records with `InstallLocation` pointing to a deleted directory, run `pnpm package:win`, start the resulting installer, and confirm both records disappear before the directory-selection page without an “unable to close/write uninstaller” loop.
 
 ## Subtitle Overlay Interaction
 
