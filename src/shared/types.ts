@@ -361,6 +361,7 @@ export interface SpeakSubApi {
   createNextPracticeDraft: (sessionId: string) => Promise<NextPracticeDraft>
   getArchiveDirectory: () => Promise<string>
   chooseArchiveDirectory: () => Promise<string | undefined>
+  copyCommunityGroupNumber: () => Promise<string>
   getProviderSettings: () => Promise<ProviderSettings>
   saveProviderSettings: (settings: ProviderSettingsInput) => Promise<ProviderSettings>
   discoverProviderModels: (input: ProviderModelProbeInput) => Promise<string[]>

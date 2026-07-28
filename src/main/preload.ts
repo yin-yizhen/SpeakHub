@@ -50,6 +50,7 @@ const api: SpeakSubApi = {
   createNextPracticeDraft: (sessionId) => ipcRenderer.invoke('learning:next-practice', sessionId),
   getArchiveDirectory: () => ipcRenderer.invoke('archive:get-directory'),
   chooseArchiveDirectory: () => ipcRenderer.invoke('archive:choose-directory'),
+  copyCommunityGroupNumber: () => ipcRenderer.invoke('community:copy-qq-group-number'),
   getProviderSettings: () => ipcRenderer.invoke('providers:get'),
   saveProviderSettings: (settings) => ipcRenderer.invoke('providers:save', settings),
   discoverProviderModels: (input) => ipcRenderer.invoke('providers:models', input),

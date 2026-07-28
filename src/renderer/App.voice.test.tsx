@@ -36,6 +36,7 @@ let savePracticePreferences: ReturnType<typeof vi.fn>
 let checkForUpdates: ReturnType<typeof vi.fn>
 let downloadAndInstallUpdate: ReturnType<typeof vi.fn>
 let updateProgressListener: ((progress: UpdateDownloadProgress) => void) | undefined
+let copyCommunityGroupNumber: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -51,6 +52,7 @@ beforeEach(() => {
   savePracticePreferences = vi.fn(async (preferences: PracticePreferences) => { practicePreferences = preferences; return preferences })
   checkForUpdates = vi.fn(async () => ({ configured: true, currentVersion: '0.1.0', latestVersion: '0.1.0', updateAvailable: false }))
   downloadAndInstallUpdate = vi.fn(async () => ({ ok: true }))
+  copyCommunityGroupNumber = vi.fn(async () => '1091142340')
   updateProgressListener = undefined
   let microphone = { active: false, available: false, shortcut: 'F8' }
   toggleMicrophoneGate = vi.fn(async () => {
@@ -62,6 +64,7 @@ beforeEach(() => {
     getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: true, pageVisible: false, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': true } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone, speechAssets: speechAssetState, speechUsage: { provider: 'aliyun-fun-asr', sessionSeconds: 0, month: '2026-07', monthlySeconds: 0, estimatedCny: 0 }, voicePhase: 'listening' })),
     getProviderSettings: vi.fn(async () => providerSettings),
     getArchiveDirectory: vi.fn(async () => 'D:/archive'),
+    copyCommunityGroupNumber,
     getPromptTemplates: vi.fn(async () => ({ scenario: [{ id: 'daily', name: '日常聊天', prompt: '场景提示词' }, { id: 'travel', name: '旅行英语', prompt: '旅行场景提示词' }], difficulty: [{ id: 'a1', name: 'A1', prompt: '难度提示词' }, { id: 'b1', name: 'B1', prompt: 'B1 难度提示词' }], correction: [{ id: 'normal', name: '普通', prompt: '纠错提示词' }, { id: 'strict', name: '严格', prompt: '严格纠错提示词' }] })),
     savePromptTemplates: vi.fn(async (templates) => templates),
     getPracticePreferences: vi.fn(async () => practicePreferences),
@@ -358,5 +361,30 @@ describe('application updates', () => {
 
     expect(container.querySelector('.update-dialog')?.textContent).toContain('GitHub 下载失败（HTTP 503）。')
     expect([...container.querySelectorAll<HTMLButtonElement>('.update-dialog button')].some((button) => button.textContent === '打开 GitHub Release')).toBe(true)
+  })
+})
+
+describe('community support entry', () => {
+  it('copies the QQ group number and opens the original payment code in an optional support dialog', async () => {
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+
+    const card = container.querySelector<HTMLElement>('.community-support-card')!
+    expect(card.textContent).toContain('免费开源，欢迎交流学习 AI')
+    const join = [...card.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '加入 QQ 群 1091142340')!
+    await act(async () => { join.click(); await Promise.resolve() })
+    expect(copyCommunityGroupNumber).toHaveBeenCalledOnce()
+    expect(card.textContent).toContain('QQ群号已复制')
+
+    const support = [...card.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '请作者喝杯咖啡')!
+    await act(async () => { support.click(); await Promise.resolve() })
+    const dialog = container.querySelector<HTMLElement>('.community-support-dialog')!
+    expect(dialog.getAttribute('role')).toBe('dialog')
+    expect(dialog.textContent).toContain('支持与否都欢迎使用')
+    expect(dialog.querySelector<HTMLImageElement>('img')?.alt).toBe('微信赞助收款码')
+
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('[aria-label="关闭赞助弹窗"]')!.click(); await Promise.resolve() })
+    expect(container.querySelector('.community-support-dialog')).toBeNull()
   })
 })

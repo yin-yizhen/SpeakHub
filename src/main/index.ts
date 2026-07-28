@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, net, Notification, screen, shell, WebContentsView, type OpenDialogOptions } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, net, Notification, screen, shell, WebContentsView, type OpenDialogOptions } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -89,6 +89,7 @@ let aliyunTaskUsageSeconds = 0
 function rendererUrl(page: string): string { return process.env.ELECTRON_RENDERER_URL ? `${process.env.ELECTRON_RENDERER_URL}/${page}` : pathToFileURL(join(__dirname, `../renderer/${page}`)).toString() }
 function preloadPath(): string { return join(__dirname, '../preload/preload.js') }
 function chatgptMicrophonePreloadPath(): string { return join(__dirname, '../preload/chatgpt-microphone.js') }
+function developmentAppIconPath(): string | undefined { return app.isPackaged ? undefined : join(app.getAppPath(), 'resources', 'app-icon-rounded.ico') }
 function broadcast(channel: string, payload: unknown): void { for (const window of [mainWindow, overlayWindow]) if (window && !window.isDestroyed()) window.webContents.send(channel, payload) }
 function microphoneGateState(): MicrophoneGateState { return { active: microphoneActive, available: Boolean(activeSession) && activeMode === 'voice', shortcut: microphoneShortcut } }
 function usageMonth(): string {
@@ -179,7 +180,7 @@ function createChatHostView(): void {
 }
 
 function createMainWindow(): void {
-  mainWindow = new BrowserWindow({ ...studioBounds, show: false, frame: false, backgroundColor: '#f7fdfb', title: 'SpeakHub', webPreferences: { preload: preloadPath(), contextIsolation: true, sandbox: true, nodeIntegration: false } })
+  mainWindow = new BrowserWindow({ ...studioBounds, show: false, frame: false, backgroundColor: '#f7fdfb', title: 'SpeakHub', icon: developmentAppIconPath(), webPreferences: { preload: preloadPath(), contextIsolation: true, sandbox: true, nodeIntegration: false } })
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     openAllowedHelpUrl(
       url,
@@ -686,6 +687,10 @@ function installIpc(): void {
   ipcMain.handle('learning:next-practice', (_event, id) => store.createNextPracticeDraft(z.string().uuid().parse(id)))
   ipcMain.handle('archive:get-directory', () => archiveDirectory)
   ipcMain.handle('archive:choose-directory', () => chooseArchiveDirectory())
+  ipcMain.handle('community:copy-qq-group-number', () => {
+    clipboard.writeText('1091142340')
+    return '1091142340'
+  })
   ipcMain.handle('providers:get', () => settings.get())
   ipcMain.handle('providers:save', (_event, input) => {
     if (activeSession) throw new Error('请先结束当前练习，再切换 API 或语音识别设置。')

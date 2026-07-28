@@ -19,6 +19,7 @@
 | 改字幕、查词或窗口布局 | `src/renderer/subtitle-overlay.tsx`、`src/shared/transcript.ts`、`src/shared/subtitle-words.ts`、`src/main/window-layout.ts` | 同名测试 | `pnpm lint && pnpm test && pnpm build` |
 | 改归档、复盘、词汇或学习中心 | `src/main/store.ts`、`src/main/learning-service.ts`、`src/renderer/LearningCenter.tsx` | `store.test.ts`、`learning-service.test.ts`、`LearningCenter.test.tsx`、`practice-pipeline.integration.test.ts` | `pnpm lint && pnpm test && pnpm build` |
 | 改设置、默认值或密钥 | `src/shared/defaults.ts`、`src/main/app-settings.ts`、`src/main/secure-settings.ts`、`src/renderer/App.tsx` | `app-settings.test.ts`、`secure-settings.test.ts`、`App.voice.test.tsx` | `pnpm lint && pnpm test` |
+| 改社区加入或赞助入口 | `src/renderer/App.tsx`、`src/main/preload.ts`、`src/main/index.ts`、`src/renderer/assets/support-payment-code.jpg` | `App.voice.test.tsx` | `pnpm lint && pnpm exec vitest run src/renderer/App.voice.test.tsx && pnpm build` |
 | 改自动更新或 Windows 发布 | `src/main/update-service.ts`、`src/main/index.ts`、`src/main/preload.ts`、`src/renderer/use-app-updates.ts` | `update-service.test.ts`、`update-prompt.test.ts`、`App.voice.test.tsx` | `pnpm lint && pnpm test && pnpm package:win` |
 
 ## End-To-End Flow
@@ -85,6 +86,7 @@ App 启动 5 秒 / 设置页手动检查
 
 - `src/main/index.ts`：Electron 生命周期、窗口、IPC、练习状态与各服务编排。文件较大；修改时应沿具体 IPC 链路定位，不要只看 UI。
 - `src/main/preload.ts`：渲染进程 API 白名单；所有持续事件统一经 `onIpc()` 注册并返回解绑函数。
+- 社区群号复制：设置页的“加入 QQ 群” -> `preload.ts` -> `community:copy-qq-group-number` -> 主进程 Electron clipboard；不要让渲染进程自行假设网页 Clipboard API 可用。
 - `src/main/practice-controller.ts`：开始/结束去重和生命周期状态。
 - `src/main/update-service.ts`：GitHub Release 解析、版本比较、安装包下载、镜像安全门控、进度、校验和安装器启动。
 
@@ -107,6 +109,7 @@ App 启动 5 秒 / 设置页手动检查
 ### 渲染与共享配置
 
 - `src/renderer/App.tsx`：主界面组合与客户端交互状态。
+- `src/renderer/assets/support-payment-code.jpg`：赞助弹窗使用的原始微信付款码；必须保持原图，不得经 UI 截图或图片生成后替换。
 - `src/renderer/use-app-updates.ts`：启动延迟检查、手动检查、下载进度及更新弹窗状态。
 - `src/renderer/update-prompt.ts`：仅保存“跳过此版本”的本地偏好；手动检查不受它限制。
 - `src/renderer/app-state.ts`：可独立测试的界面状态派生和模板映射。
@@ -160,6 +163,12 @@ App 启动 5 秒 / 设置页手动检查
 
 - `SubtitlePreferences` no longer stores a layout choice: AI and user subtitles always render on the same side.
 - Legacy saved `layout` values are ignored while reading settings; verify this migration in `app-settings.test.ts`.
+
+## Windows App Icon
+
+- Source artwork: `resources/app-icon-rounded.png`; Windows executable, installer, desktop shortcut, and taskbar use `resources/app-icon-rounded.ico` through `package.json`.
+- During development, `src/main/index.ts` explicitly supplies the same `.ico` to the main window; after packaging, Windows uses the executable icon.
+- Verify with `pnpm package:win`, then inspect the installer and installed desktop shortcut on Windows.
 
 ## API Voice Shutdown Safety
 

@@ -1,6 +1,6 @@
 {
   "name": "speaksub",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Personal Windows speaking subtitle prototype",
   "author": "SpeakHub",
@@ -19,7 +19,7 @@
   "build": {
     "appId": "com.speaksub.app",
     "productName": "SpeakHub",
-    "icon": "resources/app-icon.ico",
+    "icon": "resources/app-icon-rounded.ico",
     "directories": {
       "output": "release"
     },
