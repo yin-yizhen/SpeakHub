@@ -1,10 +1,12 @@
 # SpeakHub
 
-> 💬 **QQ 交流群：1091142340**
+> 💬 **QQ 交流群：1091142340** ｜ 联系邮箱：[yinyizhen0416@163.com](mailto:yinyizhen0416@163.com)
 >
 > 欢迎加入群聊，一起分享 Vibe Coding 经验、交流 AI 工具，也可以反馈 SpeakHub 的问题和想法，大家一起学习、一起把项目做得更好。
 
 [English](./README.en.md)
+
+> ⬇️ **Windows 安装包：** [点击下载最新版（v0.1.2）](https://github.com/yin-yizhen/SpeakHub/releases/download/v0.1.2/SpeakHub-0.1.2-Setup.exe) ｜ [查看 Release](https://github.com/yin-yizhen/SpeakHub/releases/latest)
 
 SpeakHub（项目代码名 SpeakSub）是一款面向 Windows 的 AI 英语口语练习工具。它把自由对话、实时字幕、查词收藏、练习复盘和词汇复习串成一条完整的学习链路，让每一次开口都能留下可以继续利用的学习记录。
 
