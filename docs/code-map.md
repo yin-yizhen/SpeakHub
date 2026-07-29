@@ -155,8 +155,11 @@ App 启动 5 秒 / 设置页手动检查
 -> App 显示版本和 Release 正文
 -> 主进程下载到 userData/updates/downloads
 -> 校验大小、SHA-256（存在时）和 Windows MZ 文件头
--> shell.openPath 打开 NSIS 安装器
+-> 独立启动 NSIS 安装器，确认已启动后旧应用自动退出
+-> NSIS 覆盖安装，不与仍在运行的 SpeakHub 争用文件锁
 ```
+
+- 风险：应用内更新不能在旧进程仍运行时仅调用 `shell.openPath()`。必须以独立进程启动安装器，并仅在收到启动成功事件后退出；启动失败时必须保持应用打开，避免留下半安装状态或白屏。
 
 ## Code Map
 
