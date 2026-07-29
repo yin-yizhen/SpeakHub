@@ -106,8 +106,24 @@ export class SpeechModelManager {
   }
 
   ensureAll(): Promise<SpeechAssetState> {
-    this.active ??= this.downloadAll().finally(() => { this.active = undefined })
+    this.active ??= this.downloadRequired(true).finally(() => { this.active = undefined })
     return this.active
+  }
+
+  ensureVad(): Promise<SpeechAssetState> {
+    this.active ??= this.downloadRequired(false).finally(() => { this.active = undefined })
+    return this.active
+  }
+
+  removeKokoro(): SpeechAssetState {
+    if (this.active) throw new Error('语音模型正在下载，请等待下载完成后再删除 Kokoro。')
+    const manifest = speechAssetManifest.tts
+    rmSync(this.paths.tts, { recursive: true, force: true })
+    rmSync(join(this.root, manifest.archive.name), { force: true })
+    rmSync(join(this.root, `${manifest.archive.name}.part`), { force: true })
+    rmSync(join(this.root, `${manifest.directory}.extracting`), { recursive: true, force: true })
+    this.publish('tts', missing(manifest.archive.size))
+    return this.state()
   }
 
   private publish(asset: keyof SpeechAssetState, next: SpeechAssetProgress): void {
@@ -125,15 +141,15 @@ export class SpeechModelManager {
     return speechAssetManifest.tts.required.every((name) => existsSync(join(directory, name)))
   }
 
-  private async downloadAll(): Promise<SpeechAssetState> {
+  private async downloadRequired(includeTts: boolean): Promise<SpeechAssetState> {
     this.reconcileLocalAssets()
     try {
       if (!this.hasVad()) await this.downloadVad()
-      if (!this.hasTts()) await this.downloadTts()
+      if (includeTts && !this.hasTts()) await this.downloadTts()
       return this.state()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      const asset = (['vad', 'tts'] as const).find((name) => this.current[name].status === 'downloading') ?? 'tts'
+      const asset = (['vad', 'tts'] as const).find((name) => this.current[name].status === 'downloading') ?? (includeTts ? 'tts' : 'vad')
       this.publish(asset, { ...this.current[asset], status: 'error', error: message })
       throw error
     }

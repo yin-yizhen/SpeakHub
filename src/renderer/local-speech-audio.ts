@@ -1,6 +1,14 @@
 import type { GeneratedSpeechChunk, VoiceAudioChunk, VoiceCaptureStatus } from '../shared/types'
 
 export const captureChunkFrames = 2048
+export const microphoneSignalThreshold = 0.012
+
+export function microphoneSignalLevel(samples: Float32Array): number {
+  if (!samples.length) return 0
+  let sum = 0
+  for (const sample of samples) sum += sample * sample
+  return Math.sqrt(sum / samples.length)
+}
 
 export class LocalSpeechAudioCapture {
   private stream: MediaStream | undefined

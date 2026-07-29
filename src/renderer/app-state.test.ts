@@ -7,6 +7,7 @@ describe('renderer practice state', () => {
 
   it('maps an archived practice draft back to the current template ids', () => {
     const templates = {
+      systemPrompt: 'system',
       scenario: [{ id: 'daily-chat', name: '日常聊天', prompt: '' }, { id: 'travel', name: '旅行英语', prompt: '' }],
       difficulty: [{ id: 'a1', name: 'A1', prompt: '' }, { id: 'b1', name: 'B1', prompt: '' }],
       correction: [{ id: 'normal', name: '普通', prompt: '' }, { id: 'strict', name: '严格', prompt: '' }]

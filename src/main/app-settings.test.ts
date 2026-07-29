@@ -32,11 +32,22 @@ describe('AppSettingsStore', () => {
     } finally { rmSync(directory, { recursive: true, force: true }) }
   })
   it('provides independent scenario, difficulty, and text-only correction defaults', () => {
+    expect(defaultPromptTemplates.systemPrompt).toContain('英语口语陪练')
     expect(defaultPromptTemplates.scenario).toHaveLength(7)
     expect(defaultPromptTemplates.difficulty.map((item) => item.name)).toEqual(['A1', 'A2', 'B1', 'B2', 'C1'])
     expect(defaultPromptTemplates.correction.map((item) => item.name)).toEqual(['轻度', '普通', '严格'])
     expect(defaultPromptTemplates.correction.every((item) => item.prompt.includes('不评价或纠正发音'))).toBe(true)
     expect(defaultPromptTemplates.correction.find((item) => item.id === 'normal')?.prompt).toContain('先用简短提示引导我自我修正')
+  })
+  it('keeps a saved system prompt and supplies one for legacy template settings', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speaksub-settings-')); const path = join(directory, 'app.json')
+    try {
+      const store = new AppSettingsStore(path)
+      store.setPromptTemplates({ ...defaultPromptTemplates, systemPrompt: '只用简短自然英语。' })
+      expect(new AppSettingsStore(path).promptTemplates().systemPrompt).toBe('只用简短自然英语。')
+      writeFileSync(path, JSON.stringify({ providers: { 'chatgpt-web': false }, promptTemplates: { scenario: defaultPromptTemplates.scenario, difficulty: defaultPromptTemplates.difficulty, correction: defaultPromptTemplates.correction } }), 'utf8')
+      expect(new AppSettingsStore(path).promptTemplates().systemPrompt).toBe(defaultPromptTemplates.systemPrompt)
+    } finally { rmSync(directory, { recursive: true, force: true }) }
   })
   it('persists validated practice preferences and clears them with the rest of the app data', () => {
     const directory = mkdtempSync(join(tmpdir(), 'speaksub-settings-')); const path = join(directory, 'app.json')

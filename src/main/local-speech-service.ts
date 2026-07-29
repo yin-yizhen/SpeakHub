@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
 import { join } from 'node:path'
 import { AliyunFunAsr } from './aliyun-fun-asr'
+import { MimoTtsClient, type MimoTtsOptions } from './mimo-tts-client'
+import type { SpeechSynthesisProvider } from '../shared/types'
 
 type TranscriptListener = (event: { utteranceId: string; text: string; final: boolean }) => void
 type SpeechActivityListener = (active: boolean) => void
@@ -9,8 +11,11 @@ type WorkerHandle = Pick<Worker, 'on' | 'postMessage' | 'unref'>
 type WorkerFactory = (filename: string, options: ConstructorParameters<typeof Worker>[1]) => WorkerHandle
 type CloudRecognizer = Pick<AliyunFunAsr, 'onTranscript' | 'onUsage' | 'onError' | 'start' | 'accept' | 'stop'>
 type CloudFactory = (apiKey: string) => CloudRecognizer
+type CloudSynthesizer = Pick<MimoTtsClient, 'synthesize'>
+type CloudSynthesizerFactory = (options: MimoTtsOptions, fetcher?: typeof fetch) => CloudSynthesizer
 type SpeechRequest = {
   generation: number
+  controller?: AbortController
   resolve: (audio: { samples: Float32Array; sampleRate: number }) => void
   reject: (error: Error) => void
 }
@@ -31,12 +36,20 @@ export class LocalSpeechService {
   private usageListener?: (cumulativeSeconds: number) => void
   private requests = new Map<string, SpeechRequest>()
   private cloudRecognizer?: CloudRecognizer
+  private cloudSynthesizer?: CloudSynthesizer
 
   constructor(
     private readonly paths: { vad: string; tts: string },
-    private readonly options: { aliyunApiKey?: string } = {},
+    private readonly options: {
+      aliyunApiKey?: string
+      ttsProvider?: SpeechSynthesisProvider
+      mimoTtsApiKey?: string
+      mimoTtsVoice?: string
+      mimoTtsFetcher?: typeof fetch
+    } = {},
     private readonly workerFactory: WorkerFactory = (filename, options) => new Worker(filename, options),
-    private readonly cloudFactory: CloudFactory = (apiKey) => new AliyunFunAsr(apiKey)
+    private readonly cloudFactory: CloudFactory = (apiKey) => new AliyunFunAsr(apiKey),
+    private readonly cloudSynthesizerFactory: CloudSynthesizerFactory = (options, fetcher) => new MimoTtsClient(options, fetcher)
   ) {}
 
   onTranscript(listener: TranscriptListener): void { this.transcriptListener = listener }
@@ -47,14 +60,19 @@ export class LocalSpeechService {
   start(): Promise<void> {
     if (this.ready) return this.ready
     const vadWorker = this.workerFactory(join(__dirname, 'speech-vad-worker.js'), { workerData: { vad: this.paths.vad } })
-    const ttsWorker = this.workerFactory(join(__dirname, 'speech-tts-worker.js'), { workerData: { tts: this.paths.tts } })
     this.vadWorker = vadWorker
-    this.ttsWorker = ttsWorker
-    this.ready = Promise.all([
+    const services: Array<Promise<void>> = [
       this.waitUntilReady(vadWorker, 'VAD', (message) => this.handleVadMessage(message)),
-      this.waitUntilReady(ttsWorker, 'TTS', (message) => this.handleTtsMessage(message)),
       this.startCloudRecognizer()
-    ]).then(() => undefined)
+    ]
+    if (this.ttsProvider() === 'mimo') {
+      this.startCloudSynthesizer()
+    } else {
+      const ttsWorker = this.workerFactory(join(__dirname, 'speech-tts-worker.js'), { workerData: { tts: this.paths.tts } })
+      this.ttsWorker = ttsWorker
+      services.push(this.waitUntilReady(ttsWorker, 'TTS', (message) => this.handleTtsMessage(message)))
+    }
+    this.ready = Promise.all(services).then(() => undefined)
     return this.ready
   }
 
@@ -67,8 +85,22 @@ export class LocalSpeechService {
   async synthesize(text: string, messageId: string, index: number, generation: number): Promise<{ samples: Float32Array; sampleRate: number }> {
     await this.start()
     const requestId = randomUUID()
-    const result = new Promise<{ samples: Float32Array; sampleRate: number }>((resolve, reject) => this.requests.set(requestId, { generation, resolve, reject }))
-    this.ttsWorker!.postMessage({ type: 'synthesize', requestId, messageId, index, generation, text })
+    const controller = this.ttsProvider() === 'mimo' ? new AbortController() : undefined
+    const result = new Promise<{ samples: Float32Array; sampleRate: number }>((resolve, reject) => this.requests.set(requestId, { generation, controller, resolve, reject }))
+    if (controller) {
+      void this.cloudSynthesizer!.synthesize(text, controller.signal).then((audio) => {
+        const request = this.requests.get(requestId)
+        if (request?.generation === generation) request.resolve(audio)
+        this.requests.delete(requestId)
+      }).catch((error: unknown) => {
+        const request = this.requests.get(requestId)
+        if (!request) return
+        request.reject(error instanceof Error ? error : new Error(String(error)))
+        this.requests.delete(requestId)
+      })
+    } else {
+      this.ttsWorker!.postMessage({ type: 'synthesize', requestId, messageId, index, generation, text })
+    }
     return result
   }
 
@@ -76,6 +108,7 @@ export class LocalSpeechService {
     this.ttsWorker?.postMessage({ type: 'cancel', generation })
     for (const [requestId, request] of this.requests) {
       if (request.generation > generation) continue
+      request.controller?.abort()
       request.reject(aborted())
       this.requests.delete(requestId)
     }
@@ -90,6 +123,7 @@ export class LocalSpeechService {
     this.ttsWorker = undefined
     this.ready = undefined
     this.cloudRecognizer = undefined
+    this.cloudSynthesizer = undefined
     this.rejectAll(aborted())
     await Promise.all([
       cloudRecognizer?.stop(),
@@ -151,7 +185,10 @@ export class LocalSpeechService {
   }
 
   private rejectAll(error: Error): void {
-    for (const request of this.requests.values()) request.reject(error)
+    for (const request of this.requests.values()) {
+      request.controller?.abort()
+      request.reject(error)
+    }
     this.requests.clear()
   }
 
@@ -186,5 +223,19 @@ export class LocalSpeechService {
     recognizer.onUsage((seconds) => this.usageListener?.(seconds))
     recognizer.onError((error) => this.errorListener?.(error))
     return recognizer.start()
+  }
+
+  private ttsProvider(): SpeechSynthesisProvider {
+    return this.options.ttsProvider === 'mimo' ? 'mimo' : 'kokoro'
+  }
+
+  private startCloudSynthesizer(): void {
+    const apiKey = this.options.mimoTtsApiKey?.trim()
+    if (!apiKey) throw new Error('请先在设置中填写 Xiaomi MiMo API Key。')
+    this.cloudSynthesizer = this.cloudSynthesizerFactory({
+      apiKey,
+      model: 'mimo-v2.5-tts',
+      voice: this.options.mimoTtsVoice
+    }, this.options.mimoTtsFetcher)
   }
 }

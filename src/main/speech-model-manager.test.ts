@@ -96,6 +96,48 @@ describe('SpeechModelManager', () => {
     }
   })
 
+  it('can prepare only VAD when cloud TTS is selected', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speakhub-vad-only-'))
+    try {
+      const fetcher = vi.fn(async (url: string | URL | Request) => responseFor(String(url)))
+      const extractor = vi.fn()
+      const manager = new SpeechModelManager(directory, fetcher as typeof fetch, extractor)
+
+      await expect(manager.ensureVad()).resolves.toMatchObject({ vad: { status: 'ready' }, tts: { status: 'missing' } })
+      expect(fetcher).toHaveBeenCalledOnce()
+      expect(String(fetcher.mock.calls[0][0])).toContain(speechAssetManifest.vad.name)
+      expect(extractor).not.toHaveBeenCalled()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('removes only Kokoro model files while preserving VAD and publishing the missing state', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speakhub-remove-kokoro-'))
+    try {
+      mkdirSync(join(directory, speechAssetManifest.vad.directory), { recursive: true })
+      writeFileSync(join(directory, speechAssetManifest.vad.directory, speechAssetManifest.vad.name), vadData)
+      createExtractedModel(directory)
+      writeFileSync(join(directory, speechAssetManifest.tts.archive.name), ttsData)
+      writeFileSync(join(directory, `${speechAssetManifest.tts.archive.name}.part`), 'partial')
+      mkdirSync(join(directory, `${speechAssetManifest.tts.directory}.extracting`), { recursive: true })
+      const manager = new SpeechModelManager(directory)
+      const states: string[] = []
+      manager.subscribe((state) => states.push(`${state.vad.status}:${state.tts.status}`))
+
+      expect(manager.removeKokoro()).toMatchObject({ vad: { status: 'ready' }, tts: { status: 'missing' } })
+
+      expect(existsSync(manager.paths.vad)).toBe(true)
+      expect(existsSync(manager.paths.tts)).toBe(false)
+      expect(existsSync(join(directory, speechAssetManifest.tts.archive.name))).toBe(false)
+      expect(existsSync(join(directory, `${speechAssetManifest.tts.archive.name}.part`))).toBe(false)
+      expect(existsSync(join(directory, `${speechAssetManifest.tts.directory}.extracting`))).toBe(false)
+      expect(states.at(-1)).toBe('ready:missing')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('keeps a failed VAD checksum out of the final path and succeeds on retry', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'speakhub-model-retry-'))
     try {

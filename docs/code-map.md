@@ -4,15 +4,39 @@
 
 - Entry: settings UI in `src/renderer/App.tsx`; IPC bridge in `src/main/preload.ts` and `src/main/index.ts`; implementation in `src/main/speech-model-manager.ts`.
 - Storage: both packaged and development builds use Electron `userData/speech-models`. Never create or download models beside the installed executable because an all-users installation directory can be read-only for a normal app launch.
-- Flow: settings retry -> `speech-assets:download` -> rescan manually placed assets -> verify or download VAD/Kokoro -> reuse a verified `.tar.bz2` when present -> extract into `.extracting` -> verify required model files -> atomically replace the final model directory -> `LocalSpeechService` starts the VAD and TTS workers with the verified paths.
+- Flow: settings retry -> `speech-assets:download` -> rescan manually placed assets -> cloud MiMo mode verifies/downloads VAD only; local Kokoro mode verifies/downloads VAD and Kokoro -> reuse a verified `.tar.bz2` when present -> extract into `.extracting` -> verify required model files -> atomically replace the final model directory.
 - Download transport: construct `SpeechModelManager` with Electron `net.fetch` so model downloads use Chromium's network stack and system proxy configuration, matching browser behavior. Stream chunks to an async file handle, hash while writing, and publish progress at most every 200 ms or 1 MiB instead of broadcasting every network chunk.
 - Extraction: stream BZIP2 decompression and TAR entry extraction inside the Electron main process with `unbzip2-stream` and `tar-stream`; never depend on a system `tar` or `bzip2` executable. Reject entries that escape the temporary destination or use unsupported link/device types.
 - Manual install: place the extracted `kokoro-int8-multi-lang-v1_1` directory directly under `speech-models`, with `model.int8.onnx`, `voices.bin`, `tokens.txt`, both lexicons, `espeak-ng-data`, and `dict` immediately inside it. Afterward, retry from settings or restart the app.
 - Settings help: the speech-assets card always keeps automatic download as the primary action, then shows the actual `userData/speech-models` path, an IPC-backed “open model folder” action, allowlisted official VAD/Kokoro download links, and fallback placement instructions.
-- IPC: `speech-assets:install-info` returns the root, VAD file, and Kokoro directory; `speech-assets:open-directory` may only open the manager-owned root and never accepts a renderer-supplied path.
+- Kokoro cleanup: the settings card always shows Kokoro status even when MiMo is selected. An installed model can be removed only after confirmation, only when no practice is active and the saved provider is not Kokoro. `speech-assets:remove-kokoro` accepts no path and deletes only the manager-owned Kokoro directory, archive, partial download, and extraction directory; VAD is preserved.
+- IPC: `speech-assets:install-info` returns the root, VAD file, and Kokoro directory; `speech-assets:open-directory` may only open the manager-owned root and never accepts a renderer-supplied path. `speech-assets:remove-kokoro` likewise accepts no renderer-supplied target.
 - Failure recovery: retain a size- and SHA-256-verified archive after extraction failure, remove the incomplete `.extracting` directory, and reuse the archive on retry. Invalid archives must be removed and downloaded again.
 - Tests: `src/main/speech-model-manager.test.ts`; settings integration coverage: `src/renderer/App.voice.test.tsx`; link allowlist coverage: `src/shared/help-links.test.ts` and `src/main/external-help-navigation.test.ts`.
-- Verify: `pnpm exec vitest run src/main/speech-model-manager.test.ts src/renderer/App.voice.test.tsx`, then `pnpm lint` and `pnpm build`. For real Windows acceptance, extract in a path containing Chinese characters, spaces, and parentheses, and confirm the required files are present before starting API voice practice.
+- Verify: `pnpm exec vitest run src/main/speech-model-manager.test.ts src/renderer/App.voice.test.tsx`, then `pnpm lint` and `pnpm build`. For real Windows acceptance, extract in a path containing Chinese characters, spaces, and parentheses, confirm the required files are present, switch and save MiMo, delete Kokoro from settings, and confirm only the Kokoro directory disappears while VAD remains ready.
+
+## API System Prompt Management
+
+- Entry: practice UI in `src/renderer/App.tsx`; storage in `src/main/app-settings.ts`; shared prompt composition in `src/shared/direct-chat-prompt.ts`.
+- Flow: `管理系统提示词` -> `savePromptTemplates()` -> persisted `PromptTemplates.systemPrompt` -> `practice:start` -> `LearningService` sends `system prompt + scenario + difficulty + correction + focus` as the first API message.
+- Compatibility: legacy saved template settings without `systemPrompt` automatically receive `defaultDirectChatSystemPrompt`; saving a custom system prompt does not replace the three template libraries.
+- Tests: `src/main/app-settings.test.ts`, `src/shared/direct-chat-prompt.test.ts`, `src/main/learning-service.test.ts`, and `src/renderer/App.voice.test.tsx`.
+- Verify: `pnpm exec vitest run src/main/app-settings.test.ts src/shared/direct-chat-prompt.test.ts src/main/learning-service.test.ts src/renderer/App.voice.test.tsx && pnpm lint && pnpm build`.
+
+## TTS Provider Selection
+
+- Entry and settings: `src/renderer/App.tsx` -> `ProviderSettings` in `src/shared/types.ts` -> encrypted secrets in `src/main/secure-settings.ts` -> validation and service construction in `src/main/index.ts`.
+- Local flow: streamed LLM text -> `SpeechSegmenter` -> `LocalSpeechService.synthesize()` -> `speech-tts-worker.ts` -> Kokoro float32/24 kHz -> `voice:audio` -> renderer player.
+- Cloud flow: streamed LLM text -> `SpeechSegmenter` -> `LocalSpeechService.synthesize()` -> `mimo-tts-client.ts` -> Xiaomi MiMo `/v1/chat/completions` SSE -> base64 PCM16/24 kHz conversion -> `voice:audio` -> renderer player.
+- Voice preview: settings voice button -> `previewMimoTtsVoice()` -> preload -> `providers:preview-mimo-tts` -> current form Key or encrypted saved Key -> fixed short preview text in `index.ts` -> `MimoTtsClient` -> 24 kHz float audio returned over IPC -> dedicated renderer preview player. Preview does not start a practice or write transcript/archive data.
+- Settings persistence: changing the TTS provider or clicking a MiMo voice immediately sends a partial `saveProviderSettings()` update to `SecureSettings`; these updates are serialized and do not replace the renderer's full provider-form state, so unfinished API Key input is retained. API keys, LLM fields, and Aliyun settings still use the form's save button.
+- Setup help: the MiMo Key “如何获取” action opens a four-step renderer dialog, explains that the current standard endpoint expects an `sk-…` key rather than a Token Plan `tp-…` key, and links only to `MIMO_HELP_LINKS` pages allowed by `src/shared/help-links.ts` and `src/main/external-help-navigation.ts`.
+- Preview cancellation: selecting another voice aborts the previous main-process HTTP request; leaving settings, unmounting, or starting a practice also cancels the request and stops the dedicated preview player. Do not reuse the practice player because preview generations must not suppress later practice audio.
+- Input remains separate: microphone float32/16 kHz -> VAD worker -> Aliyun Fun-ASR. Changing TTS must not change recognition, transcript parsing, chunk boundaries, barge-in, or archive writes.
+- Cancellation: barge-in, practice end, or generation replacement aborts active MiMo HTTP requests and rejects stale synthesis with `AbortError`; local Kokoro keeps its worker generation gate.
+- Defaults and compatibility: new or legacy settings without an explicit TTS choice default to cloud `mimo`; an explicitly saved `kokoro` choice remains unchanged. MiMo uses `mimo-v2.5-tts` and an English voice default of `Mia`. MiMo mode requires only VAD locally, while Kokoro mode requires both VAD and the Kokoro model.
+- Tests: `src/main/mimo-tts-client.test.ts`, `src/main/local-speech-service.test.ts`, `src/main/speech-segments.test.ts`, `src/main/secure-settings.test.ts`, `src/main/speech-model-manager.test.ts`, `src/renderer/App.voice.test.tsx`, `src/shared/help-links.test.ts`, and `src/main/external-help-navigation.test.ts`.
+- Verify: `pnpm exec vitest run src/main/mimo-tts-client.test.ts src/main/local-speech-service.test.ts src/main/speech-segments.test.ts src/main/secure-settings.test.ts src/main/speech-model-manager.test.ts src/renderer/App.voice.test.tsx`, then `pnpm lint` and `pnpm build`. Real acceptance requires a valid MiMo key: click at least two English and two Chinese voice buttons and confirm each replaces the prior preview, then start API voice practice, confirm first audio plays at 24 kHz, and interrupt mid-reply to confirm no stale audio plays.
 
 ## Packaged App Startup
 
@@ -48,9 +72,10 @@
 | 改练习入口、界面状态或 IPC | `src/renderer/App.tsx`、`src/renderer/app-state.ts`、`src/main/preload.ts`、`src/main/index.ts` | `App.voice.test.tsx`、`app-state.test.ts`、`practice-pipeline.integration.test.ts` | `pnpm lint && pnpm test && pnpm build` |
 | 改 ChatGPT 网页自动化 | `src/main/chatgpt-automation.ts`、`src/main/chatgpt-adapter.ts`、`src/main/index.ts` | `chatgpt-automation.test.ts`、`chatgpt-adapter.test.ts` | `pnpm test && pnpm build`，再做登录态验收 |
 | 改 API 对话、语音或抢话 | `src/main/index.ts`、`src/main/local-speech-service.ts`、`src/main/speech-segments.ts`、`src/main/barge-in-policy.ts` | 同名测试、`practice-pipeline.integration.test.ts`、`App.voice.test.tsx` | `pnpm test && pnpm build` |
+| 改麦克风采集或设置页检测 | `src/renderer/local-speech-audio.ts`、`src/renderer/App.tsx` | `local-speech-audio.test.ts`、`App.voice.test.tsx` | `pnpm exec vitest run src/renderer/local-speech-audio.test.ts src/renderer/App.voice.test.tsx && pnpm build` |
 | 改字幕、查词或窗口布局 | `src/renderer/subtitle-overlay.tsx`、`src/shared/transcript.ts`、`src/shared/subtitle-words.ts`、`src/main/window-layout.ts` | 同名测试 | `pnpm lint && pnpm test && pnpm build` |
 | 改归档、复盘、词汇或学习中心 | `src/main/store.ts`、`src/main/learning-service.ts`、`src/renderer/LearningCenter.tsx` | `store.test.ts`、`learning-service.test.ts`、`LearningCenter.test.tsx`、`practice-pipeline.integration.test.ts` | `pnpm lint && pnpm test && pnpm build` |
-| 改设置、默认值或密钥 | `src/shared/defaults.ts`、`src/main/app-settings.ts`、`src/main/secure-settings.ts`、`src/renderer/App.tsx` | `app-settings.test.ts`、`secure-settings.test.ts`、`App.voice.test.tsx` | `pnpm lint && pnpm test` |
+| 改设置、密钥或 API 连通性检测 | `src/main/provider-connection-check.ts`、`src/main/secure-settings.ts`、`src/renderer/App.tsx` | `provider-connection-check.test.ts`、`secure-settings.test.ts`、`App.voice.test.tsx` | `pnpm lint && pnpm exec vitest run src/main/provider-connection-check.test.ts src/renderer/App.voice.test.tsx` |
 | 改社区加入或赞助入口 | `src/renderer/App.tsx`、`src/main/preload.ts`、`src/main/index.ts`、`src/renderer/assets/support-payment-code.jpg` | `App.voice.test.tsx` | `pnpm lint && pnpm exec vitest run src/renderer/App.voice.test.tsx && pnpm build` |
 | 改自动更新或 Windows 发布 | `src/main/update-service.ts`、`src/main/index.ts`、`src/main/preload.ts`、`src/renderer/use-app-updates.ts` | `update-service.test.ts`、`update-prompt.test.ts`、`App.voice.test.tsx` | `pnpm lint && pnpm test && pnpm package:win` |
 
@@ -100,6 +125,27 @@ App 选择的场景/难度/纠错提示词与本次重点
 -> OpenAI-compatible /chat/completions（SSE 优先）
 ```
 
+设置页连通性检测链路：
+
+```text
+App.tsx 当前表单值（密码框为空时允许复用已保存 Key）
+-> preload.ts
+-> index.ts providers:check-llm / providers:check-aliyun
+-> provider-connection-check.ts
+-> 最小非流式 /chat/completions / Fun-ASR task-started 后立即 stop
+-> 中文成功或可操作错误返回设置页；不保存测试输入、不启动麦克风、不写入练习
+```
+
+设置页麦克风检测链路：
+
+```text
+App.tsx“检测麦克风”
+-> LocalSpeechAudioCapture 请求系统权限并输出 16 kHz Float32 chunk
+-> microphoneSignalLevel 计算本地 RMS 输入强度
+-> 4 秒后区分检测到声音 / 有权限但无声音 / 权限或设备错误
+-> 停止音轨；不调用 LLM、阿里识别或 TTS
+```
+
 应用更新链路：
 
 ```text
@@ -120,6 +166,7 @@ App 启动 5 秒 / 设置页手动检查
 - `src/main/preload.ts`：渲染进程 API 白名单；所有持续事件统一经 `onIpc()` 注册并返回解绑函数。
 - 社区群号复制：设置页的“加入 QQ 群” -> `preload.ts` -> `community:copy-qq-group-number` -> 主进程 Electron clipboard；不要让渲染进程自行假设网页 Clipboard API 可用。
 - `src/main/practice-controller.ts`：开始/结束去重和生命周期状态。
+- `src/main/provider-connection-check.ts`：设置页的大模型真实对话检测和阿里 Fun-ASR 握手检测；当前输入 Key 优先，空密码框回退到 `SecureSettings` 中已保存的 Key。
 - `src/main/update-service.ts`：GitHub Release 解析、版本比较、安装包下载、镜像安全门控、进度、校验和安装器启动。
 
 ### 练习与语音
@@ -158,6 +205,8 @@ App 启动 5 秒 / 设置页手动检查
 | `src/main/speech-segments.test.ts` | TTS 分段边界 |
 | `src/main/chatgpt-automation.test.ts` | 网页 DOM、发送确认、回复稳定和清理 |
 | `src/main/learning-service.test.ts` | 完整 system 组合、user/assistant 历史顺序、SSE 与非流式回退 |
+| `src/main/provider-connection-check.test.ts` | 大模型最小对话、HTTP/超时错误、已保存 Key 回退，以及阿里握手与安全关闭 |
+| `src/renderer/local-speech-audio.test.ts` | 麦克风采集重采样、输入强度阈值、提示音和播放 generation |
 | `src/renderer/App.voice.test.tsx` | 来源、模式、语音门控、设置和客户端事件 |
 | `src/renderer/app-state.test.ts` | 生命周期忙碌状态、下一次练习模板映射 |
 | `src/renderer/subtitle-overlay.test.tsx` | 字幕、查词、收藏和交互状态 |
@@ -229,6 +278,9 @@ pnpm dev
 - ChatGPT 清理失败时必须保留 marker，供下次启动重试；不能删除普通用户对话。
 - 不要只看 UI 截图猜修复点；至少验证解析输出、chunk 输出和入库结果中的一个或多个边界。
 - `store.ts` 是学习索引和复习日期的唯一写入点；列表刷新不得触发 LLM 网络回退。
+- 设置页“探测可用模型”只验证 `/models`；“检测大模型”才验证实际 `/chat/completions`。阿里检测只验证 Key、网络和服务握手，不代表麦克风或扬声器可用。
+- 大模型连通性检测只要求成功返回标准 `choices[0].message`；不要要求极短测试请求必须有非空 `message.content`，推理模型可能先耗尽测试输出额度但真实流式对话仍完全可用。
+- 设置页麦克风检测仅验证系统权限和本地输入信号，不验证阿里识别准确率或扬声器；离开设置页时必须停止测试音轨。
 - `main.tsx` 与 `overlay-main.tsx` 由两个 HTML 入口引用，静态未使用扫描可能误报，不能删除。
 - `.playwright-cli/` 与 `artifacts/` 是本地验收产物，除非明确纳入版本控制，否则视为用户工作区内容。
 - 正式版直接加载打包后的本地 HTML，不启动 localhost 服务，也不占用固定端口。

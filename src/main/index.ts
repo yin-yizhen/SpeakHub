@@ -10,6 +10,7 @@ import { cleanRecordedConversations } from './background-cleanup'
 import { isCurrentConnectionPage, loadConnectionUrl } from './connection-navigation'
 import { LearningService } from './learning-service'
 import { LocalSpeechService } from './local-speech-service'
+import { MimoTtsClient } from './mimo-tts-client'
 import { SpeechModelManager, speechModelRoot } from './speech-model-manager'
 import { SpeechSegmenter } from './speech-segments'
 import { SequentialTaskQueue } from './sequential-task-queue'
@@ -18,6 +19,7 @@ import { SecureSettings } from './secure-settings'
 import { SpeakSubStore } from './store'
 import { AppSettingsStore, defaultSubtitlePreferences, parseSubtitleUpdate } from './app-settings'
 import { discoverProviderModels } from './provider-model-probe'
+import { checkAliyunConnection, checkLlmConnection } from './provider-connection-check'
 import { defaultMicrophoneShortcut, normalizeMicrophoneShortcut, replaceGlobalMicrophoneShortcut } from './microphone-shortcut'
 import { bargeInDelayMs } from './barge-in-policy'
 import { PracticeController } from './practice-controller'
@@ -35,6 +37,7 @@ import type { AutomationStatus, ConnectionState, CorrectionStrength, GeneratedSp
 const CHATGPT_URL = 'https://chatgpt.com/'
 const CONNECTION_WIDTH = 420
 const WEB_PRACTICE_PARTITION = 'persist:speaksub-chatgpt'
+const mimoTtsVoices = ['Mia', 'Chloe', 'Milo', 'Dean', '冰糖', '茉莉', '苏打', '白桦'] as const
 
 let mainWindow: BrowserWindow | undefined
 let chatHostView: WebContentsView | undefined
@@ -54,8 +57,10 @@ let activeMode: PracticeMode = 'voice'
 let activeTopic = '日常聊天'
 let activeLevel = 'A1'
 let activePrompt: string | undefined
+let activeSystemPrompt: string | undefined
 let events: TranscriptEvent[] = []
 let localSpeech: LocalSpeechService | undefined
+let mimoPreviewController: AbortController | undefined
 let speechModels: SpeechModelManager
 let updateService: UpdateService
 let voicePhase: VoiceTurnPhase = 'idle'
@@ -291,12 +296,15 @@ async function prepareWebPractice(topic: string, level: string, strength: Correc
 }
 
 async function beginApiVoicePractice(strength: CorrectionStrength, topic: string, level: string, focus?: string, prompt?: string) {
+  mimoPreviewController?.abort()
+  mimoPreviewController = undefined
   const config = settings.get()
   if (!config.llmBaseUrl || !config.llmModel || !config.hasLlmKey) throw new Error('请先在设置中填写 DeepSeek 或其他 OpenAI-compatible 文本 API。')
   if (!config.hasAliyunAsrKey) throw new Error('请先在设置中填写阿里云 DashScope API Key。')
+  if (config.ttsProvider === 'mimo' && !config.hasMimoTtsKey) throw new Error('已选择云端 MiMo 朗读，请先在设置中填写 Xiaomi MiMo API Key。')
   const assets = speechModels.state()
-  const requiredReady = assets.vad.status === 'ready' && assets.tts.status === 'ready'
-  if (!requiredReady) throw new Error('请先到设置下载 VAD 与 Kokoro 语音组件。')
+  const requiredReady = assets.vad.status === 'ready' && (config.ttsProvider === 'mimo' || assets.tts.status === 'ready')
+  if (!requiredReady) throw new Error(config.ttsProvider === 'mimo' ? '请先到设置下载 VAD 语音组件。' : '请先到设置下载 VAD 与 Kokoro 语音组件。')
   announceAutomation({ phase: 'filling-prompt', message: '正在连接阿里中英实时识别…' })
   const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source: 'api-direct', mode: 'voice', focus, prompt })
   const session = beginSession(profile)
@@ -308,8 +316,13 @@ async function beginApiVoicePractice(strength: CorrectionStrength, topic: string
   announceSpeechUsage()
   echoCancellationAvailable = true
   clearBargeTimer()
+  const secrets = settings.getSecrets()
   localSpeech = new LocalSpeechService(speechModels.paths, {
-    aliyunApiKey: settings.getSecrets().aliyunAsrApiKey
+    aliyunApiKey: secrets.aliyunAsrApiKey,
+    ttsProvider: config.ttsProvider,
+    mimoTtsApiKey: secrets.mimoTtsApiKey,
+    mimoTtsVoice: config.mimoTtsVoice,
+    mimoTtsFetcher: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, init)
   })
   localSpeech.onSpeechActivity((active) => handleLocalSpeechActivity(active))
   localSpeech.onTranscript((transcript) => acceptLocalTranscript(session.id, transcript))
@@ -455,7 +468,7 @@ async function streamApiReply(addUserMessage: boolean, userText?: string): Promi
     synthesis.enqueue(async () => {
       const audio = await localSpeech!.synthesize(text, messageId, index, generation)
       if (!activeSession || controller.signal.aborted || generation !== voiceGeneration) return
-      if (audio.sampleRate !== 24000) throw new Error(`Kokoro returned unsupported sample rate ${audio.sampleRate}.`)
+      if (audio.sampleRate !== 24000) throw new Error(`Speech synthesis returned unsupported sample rate ${audio.sampleRate}.`)
       const id = `${messageId}-${index}`
       const samples = audio.samples.slice()
       const chunk: GeneratedSpeechChunk = { id, messageId, index, generation, sampleRate: 24000, format: 'float32', samples: samples.buffer, final: true }
@@ -475,7 +488,7 @@ async function streamApiReply(addUserMessage: boolean, userText?: string): Promi
         handleEvent({ sourceMessageId: messageId, speaker: 'assistant', text: reply, status: 'streaming', receivedAt: new Date().toISOString() })
         for (const segment of segmenter.push(delta)) queueSpeech(segment)
       }
-    }, activePrompt)
+    }, activePrompt, activeSystemPrompt)
     for (const segment of segmenter.flush()) queueSpeech(segment)
     if (reply) handleEvent({ sourceMessageId: messageId, speaker: 'assistant', text: reply, status: 'complete', receivedAt: new Date().toISOString() })
     await synthesis.done()
@@ -583,9 +596,9 @@ function installIpc(): void {
     else mainWindow.maximize()
   })
   ipcMain.handle('window:close', (event) => { if (event.sender === mainWindow?.webContents) mainWindow.close() })
-  ipcMain.handle('practice:start', (_event, topic: string, level: string, strength: CorrectionStrength, source: PracticeSource = 'chatgpt-web', mode: PracticeMode = 'text', focus?: string, prompt?: string) => practiceController.start(async () => {
-    const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source, mode, focus, prompt })
-    activeSource = profile.source; activeMode = profile.mode; activeTopic = profile.topic; activeLevel = profile.level; activePrompt = buildPracticePrompt(profile)
+  ipcMain.handle('practice:start', (_event, topic: string, level: string, strength: CorrectionStrength, source: PracticeSource = 'chatgpt-web', mode: PracticeMode = 'text', focus?: string, prompt?: string, systemPrompt?: string) => practiceController.start(async () => {
+    const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source, mode, focus, prompt, systemPrompt })
+    activeSource = profile.source; activeMode = profile.mode; activeTopic = profile.topic; activeLevel = profile.level; activePrompt = buildPracticePrompt(profile); activeSystemPrompt = profile.systemPrompt
     microphoneActive = profile.mode === 'voice'
     if (profile.source === 'chatgpt-web' && profile.mode === 'voice') chatHostView?.webContents.send('speaksub:microphone-gate', true)
     announceMicrophone()
@@ -632,7 +645,12 @@ function installIpc(): void {
     const error = await shell.openPath(speechModels.root)
     if (error) throw new Error(`无法打开模型文件夹：${error}`)
   })
-  ipcMain.handle('speech-assets:download', () => speechModels.ensureAll())
+  ipcMain.handle('speech-assets:download', (_event, includeTts?: boolean) => includeTts === false ? speechModels.ensureVad() : speechModels.ensureAll())
+  ipcMain.handle('speech-assets:remove-kokoro', () => {
+    if (activeSession) throw new Error('请先结束当前练习，再删除 Kokoro 模型。')
+    if (settings.get().ttsProvider === 'kokoro') throw new Error('当前正在使用 Kokoro。请先在设置中切换并保存 MiMo，再删除本地模型。')
+    return speechModels.removeKokoro()
+  })
   ipcMain.handle('microphone:toggle', () => toggleMicrophoneGate())
   ipcMain.handle('microphone:set', (_event, active: boolean) => setMicrophoneGate(z.boolean().parse(active)))
   ipcMain.handle('microphone:shortcut:save', (_event, shortcut: string) => { const saved = registerMicrophoneShortcut(z.string().max(80).parse(shortcut)); appSettings.setMicrophoneShortcut(saved); return saved })
@@ -711,7 +729,11 @@ function installIpc(): void {
       llmApiKey: z.string().max(2_000).optional(),
       clearLlmApiKey: z.boolean().optional(),
       aliyunAsrApiKey: z.string().max(2_000).optional(),
-      clearAliyunAsrApiKey: z.boolean().optional()
+      clearAliyunAsrApiKey: z.boolean().optional(),
+      ttsProvider: z.enum(['kokoro', 'mimo']).optional(),
+      mimoTtsVoice: z.enum(['Mia', 'Chloe', 'Milo', 'Dean', '冰糖', '茉莉', '苏打', '白桦']).optional(),
+      mimoTtsApiKey: z.string().max(2_000).optional(),
+      clearMimoTtsApiKey: z.boolean().optional()
     }).parse(input))
     announceSpeechUsage()
     return saved
@@ -719,6 +741,47 @@ function installIpc(): void {
   ipcMain.handle('providers:models', async (_event, input) => {
     const parsed = z.object({ llmBaseUrl: z.string().trim().min(1).max(2_000), llmApiKey: z.string().max(2_000).optional() }).parse(input)
     return discoverProviderModels(parsed.llmBaseUrl, parsed.llmApiKey || settings.getSecrets().llmApiKey || '')
+  })
+  ipcMain.handle('providers:check-llm', async (_event, input) => {
+    if (activeSession) throw new Error('请先结束当前练习，再检测大模型连接。')
+    const parsed = z.object({
+      llmBaseUrl: z.string().max(2_000),
+      llmModel: z.string().max(200),
+      llmApiKey: z.string().max(2_000).optional()
+    }).parse(input)
+    return checkLlmConnection(parsed, settings.getSecrets().llmApiKey)
+  })
+  ipcMain.handle('providers:check-aliyun', async (_event, input) => {
+    if (activeSession) throw new Error('请先结束当前练习，再检测阿里识别连接。')
+    const parsed = z.object({ aliyunAsrApiKey: z.string().max(2_000).optional() }).parse(input)
+    return checkAliyunConnection(parsed.aliyunAsrApiKey, settings.getSecrets().aliyunAsrApiKey)
+  })
+  ipcMain.handle('providers:preview-mimo-tts', async (_event, input) => {
+    if (activeSession) throw new Error('请先结束当前练习，再试听 MiMo 音色。')
+    const parsed = z.object({
+      voice: z.enum(mimoTtsVoices),
+      mimoTtsApiKey: z.string().max(2_000).optional()
+    }).parse(input)
+    const apiKey = parsed.mimoTtsApiKey?.trim() || settings.getSecrets().mimoTtsApiKey
+    if (!apiKey) throw new Error('请先填写或保存 Xiaomi MiMo API Key，再试听音色。')
+    mimoPreviewController?.abort()
+    const controller = new AbortController()
+    mimoPreviewController = controller
+    const text = ['Mia', 'Chloe', 'Milo', 'Dean'].includes(parsed.voice)
+      ? "Hello! I'm ready to practice English with you."
+      : '你好，很高兴认识你，我们开始练习吧。'
+    try {
+      const client = new MimoTtsClient({ apiKey, model: 'mimo-v2.5-tts', voice: parsed.voice }, (request, init) => net.fetch(request instanceof URL ? request.toString() : request, init))
+      const audio = await client.synthesize(text, controller.signal)
+      const samples = audio.samples.buffer.slice(audio.samples.byteOffset, audio.samples.byteOffset + audio.samples.byteLength) as ArrayBuffer
+      return { sampleRate: audio.sampleRate, samples }
+    } finally {
+      if (mimoPreviewController === controller) mimoPreviewController = undefined
+    }
+  })
+  ipcMain.handle('providers:cancel-mimo-preview', () => {
+    mimoPreviewController?.abort()
+    mimoPreviewController = undefined
   })
   ipcMain.handle('data:clear', () => { if (activeSession) throw new Error('End the active practice before clearing data.'); store.clear(); settings.clear(); appSettings.clear(); subtitle = defaultSubtitlePreferences; events = []; practiceController.reset(); broadcast('subtitle:settings', subtitle); return setConnection(appSettings.connection('chatgpt-web', true)) })
 }

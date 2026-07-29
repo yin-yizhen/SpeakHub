@@ -50,12 +50,12 @@ export class LearningService {
     return { ...review, vocabulary: review.vocabulary.filter((item) => saved.has(item.term.toLocaleLowerCase())) }
   }
 
-  async chat(events: TranscriptEvent[], topic: string, level: string, prompt?: string): Promise<string> {
-    return this.requestLlm(this.chatMessages(events, topic, level, prompt))
+  async chat(events: TranscriptEvent[], topic: string, level: string, prompt?: string, systemPrompt?: string): Promise<string> {
+    return this.requestLlm(this.chatMessages(events, topic, level, prompt, systemPrompt))
   }
 
-  async streamChat(events: TranscriptEvent[], topic: string, level: string, options: { onDelta: (delta: string) => void; signal?: AbortSignal }, prompt?: string): Promise<string> {
-    const messages = this.chatMessages(events, topic, level, prompt)
+  async streamChat(events: TranscriptEvent[], topic: string, level: string, options: { onDelta: (delta: string) => void; signal?: AbortSignal }, prompt?: string, systemPrompt?: string): Promise<string> {
+    const messages = this.chatMessages(events, topic, level, prompt, systemPrompt)
     const config = this.requireLlmConfig()
     const body = { model: config.model, messages, stream: true }
     let received = ''
@@ -90,9 +90,9 @@ export class LearningService {
     return this.readNonStreamingResponse(response)
   }
 
-  private chatMessages(events: TranscriptEvent[], topic: string, level: string, prompt?: string): LlmMessage[] {
+  private chatMessages(events: TranscriptEvent[], topic: string, level: string, prompt?: string, systemPrompt?: string): LlmMessage[] {
     return [
-      { role: 'system', content: buildDirectChatSystemPrompt(topic, level, prompt) },
+      { role: 'system', content: buildDirectChatSystemPrompt(topic, level, prompt, systemPrompt) },
       ...events.filter((event) => event.status === 'complete').map((event) => ({ role: event.speaker === 'assistant' ? 'assistant' as const : 'user' as const, content: event.text }))
     ]
   }

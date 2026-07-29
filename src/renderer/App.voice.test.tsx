@@ -2,14 +2,16 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { PracticePreferences, ProviderSettings, SpeakSubApi, SpeechAssetState, SubtitlePreferences, UpdateDownloadProgress, VoiceTurnPhase } from '../shared/types'
-import { SPEECH_MODEL_DOWNLOAD_LINKS } from '../shared/help-links'
+import type { PracticePreferences, ProviderSettings, ProviderSettingsInput, SpeakSubApi, SpeechAssetState, SubtitlePreferences, UpdateDownloadProgress, VoiceTurnPhase } from '../shared/types'
+import { MIMO_HELP_LINKS, SPEECH_MODEL_DOWNLOAD_LINKS } from '../shared/help-links'
 
-const audio = vi.hoisted(() => ({ captureStart: vi.fn(async () => ({ echoCancellation: true })), captureStop: vi.fn(), playTone: vi.fn(), playerPlay: vi.fn(), playerInterrupt: vi.fn(), playerStop: vi.fn() }))
+const audio = vi.hoisted(() => ({ captureStart: vi.fn(async (_onAudio?: (chunk: { sampleRate: 16000; format: 'float32'; samples: ArrayBuffer }) => void) => ({ echoCancellation: true })), captureStop: vi.fn(), playTone: vi.fn(), playerPlay: vi.fn(), playerInterrupt: vi.fn(), playerStop: vi.fn() }))
 
 vi.mock('./local-speech-audio', () => ({
   LocalSpeechAudioCapture: class { start = audio.captureStart; stop = audio.captureStop },
   LocalSpeechAudioPlayer: class { play = audio.playerPlay; interrupt = audio.playerInterrupt; stop = audio.playerStop },
+  microphoneSignalThreshold: 0.012,
+  microphoneSignalLevel: (samples: Float32Array) => samples.length ? Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length) : 0,
   playMicrophoneToggleTone: audio.playTone
 }))
 
@@ -32,6 +34,7 @@ let voicePhaseListener: ((phase: VoiceTurnPhase) => void) | undefined
 let providerSettings: ProviderSettings
 let speechAssetState: SpeechAssetState
 let downloadSpeechAssets: ReturnType<typeof vi.fn>
+let removeKokoroModel: ReturnType<typeof vi.fn>
 let openSpeechAssetDirectory: ReturnType<typeof vi.fn>
 let practicePreferences: PracticePreferences
 let savePracticePreferences: ReturnType<typeof vi.fn>
@@ -40,6 +43,10 @@ let downloadAndInstallUpdate: ReturnType<typeof vi.fn>
 let updateProgressListener: ((progress: UpdateDownloadProgress) => void) | undefined
 let copyCommunityGroupNumber: ReturnType<typeof vi.fn>
 let getAppVersion: ReturnType<typeof vi.fn>
+let checkLlmConnection: ReturnType<typeof vi.fn>
+let checkAliyunConnection: ReturnType<typeof vi.fn>
+let previewMimoTtsVoice: ReturnType<typeof vi.fn>
+let saveProviderSettings: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -48,9 +55,13 @@ beforeEach(() => {
   container = document.createElement('div'); document.body.append(container); root = createRoot(container)
   startVoiceCapture = vi.fn(async () => undefined); stopVoiceCapture = vi.fn(async () => undefined)
   practiceEndedListener = undefined; microphoneListener = undefined; voicePhaseListener = undefined; practiceSource = 'api-direct'
-  providerSettings = { llmBaseUrl: 'https://api.example.com/v1', llmModel: 'example-chat', hasLlmKey: true, hasAliyunAsrKey: true }
+  providerSettings = { llmBaseUrl: 'https://api.example.com/v1', llmModel: 'example-chat', hasLlmKey: true, hasAliyunAsrKey: true, ttsProvider: 'kokoro', hasMimoTtsKey: false }
   speechAssetState = { vad: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 } }
-  downloadSpeechAssets = vi.fn(async () => ({ vad: { status: 'ready' as const, downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready' as const, downloadedBytes: 1, totalBytes: 1, progress: 1 } }))
+  downloadSpeechAssets = vi.fn(async (includeTts = true): Promise<SpeechAssetState> => ({
+    vad: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 },
+    tts: includeTts ? { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 } : speechAssetState.tts
+  }))
+  removeKokoroModel = vi.fn(async () => ({ vad: { status: 'ready' as const, downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'missing' as const, downloadedBytes: 0, totalBytes: 147_031_220, progress: 0 } }))
   openSpeechAssetDirectory = vi.fn(async () => undefined)
   practicePreferences = { source: practiceSource, mode: 'voice', scenarioTemplateId: 'daily', difficultyTemplateId: 'a1', correctionTemplateId: 'normal', focus: '', focusEnabled: false }
   savePracticePreferences = vi.fn(async (preferences: PracticePreferences) => { practicePreferences = preferences; return preferences })
@@ -58,6 +69,19 @@ beforeEach(() => {
   downloadAndInstallUpdate = vi.fn(async () => ({ ok: true }))
   copyCommunityGroupNumber = vi.fn(async () => '1091142340')
   getAppVersion = vi.fn(async () => '0.1.5')
+  checkLlmConnection = vi.fn(async () => ({ ok: true as const, message: '连接成功，模型可以正常回复。' }))
+  checkAliyunConnection = vi.fn(async () => ({ ok: true as const, message: '阿里识别连接成功，Key 和网络可用；此检测不测试麦克风或扬声器。' }))
+  previewMimoTtsVoice = vi.fn(async () => ({ sampleRate: 24000 as const, samples: Float32Array.from([0.1, -0.1]).buffer }))
+  saveProviderSettings = vi.fn(async (input: ProviderSettingsInput) => {
+    providerSettings = {
+      ...providerSettings,
+      ...(input.llmBaseUrl !== undefined ? { llmBaseUrl: input.llmBaseUrl } : {}),
+      ...(input.llmModel !== undefined ? { llmModel: input.llmModel } : {}),
+      ...(input.ttsProvider !== undefined ? { ttsProvider: input.ttsProvider } : {}),
+      ...(input.mimoTtsVoice !== undefined ? { mimoTtsVoice: input.mimoTtsVoice } : {})
+    }
+    return providerSettings
+  })
   updateProgressListener = undefined
   let microphone = { active: false, available: false, shortcut: 'F8' }
   toggleMicrophoneGate = vi.fn(async () => {
@@ -69,9 +93,14 @@ beforeEach(() => {
     getAppVersion,
     getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: true, pageVisible: false, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': true } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone, speechAssets: speechAssetState, speechUsage: { provider: 'aliyun-fun-asr', sessionSeconds: 0, month: '2026-07', monthlySeconds: 0, estimatedCny: 0 }, voicePhase: 'listening' })),
     getProviderSettings: vi.fn(async () => providerSettings),
+    saveProviderSettings,
+    checkLlmConnection,
+    checkAliyunConnection,
+    previewMimoTtsVoice,
+    cancelMimoTtsPreview: vi.fn(async () => undefined),
     getArchiveDirectory: vi.fn(async () => 'D:/archive'),
     copyCommunityGroupNumber,
-    getPromptTemplates: vi.fn(async () => ({ scenario: [{ id: 'daily', name: '日常聊天', prompt: '场景提示词' }, { id: 'travel', name: '旅行英语', prompt: '旅行场景提示词' }], difficulty: [{ id: 'a1', name: 'A1', prompt: '难度提示词' }, { id: 'b1', name: 'B1', prompt: 'B1 难度提示词' }], correction: [{ id: 'normal', name: '普通', prompt: '纠错提示词' }, { id: 'strict', name: '严格', prompt: '严格纠错提示词' }] })),
+    getPromptTemplates: vi.fn(async () => ({ systemPrompt: '系统提示词', scenario: [{ id: 'daily', name: '日常聊天', prompt: '场景提示词' }, { id: 'travel', name: '旅行英语', prompt: '旅行场景提示词' }], difficulty: [{ id: 'a1', name: 'A1', prompt: '难度提示词' }, { id: 'b1', name: 'B1', prompt: 'B1 难度提示词' }], correction: [{ id: 'normal', name: '普通', prompt: '纠错提示词' }, { id: 'strict', name: '严格', prompt: '严格纠错提示词' }] })),
     savePromptTemplates: vi.fn(async (templates) => templates),
     getPracticePreferences: vi.fn(async () => practicePreferences),
     savePracticePreferences,
@@ -105,6 +134,7 @@ beforeEach(() => {
     })),
     openSpeechAssetDirectory,
     downloadSpeechAssets,
+    removeKokoroModel,
     checkForUpdates,
     downloadAndInstallUpdate,
     openUpdateRelease: vi.fn(async () => ({ ok: true })),
@@ -139,6 +169,28 @@ describe('unified voice microphone gate', () => {
     expect(container.querySelector('.prompt-preview')?.textContent).toContain('英文内容应占回复的至少 80%')
   })
 
+  it('opens a separate system prompt editor for API direct practice', async () => {
+    act(() => root.render(<App/>)); await settle()
+
+    const button = [...container.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === '管理系统提示词')!
+    await act(async () => { button.click(); await Promise.resolve() })
+
+    expect(container.querySelector('[role="dialog"] h2')?.textContent).toBe('管理系统提示词')
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="系统提示词内容"]')?.value).toBe('系统提示词')
+  })
+
+  it('restores the default system prompt in the editor', async () => {
+    act(() => root.render(<App/>)); await settle()
+
+    const manageButton = [...container.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === '管理系统提示词')!
+    await act(async () => { manageButton.click(); await Promise.resolve() })
+
+    const resetButton = [...container.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === '恢复默认')!
+    await act(async () => { resetButton.click(); await Promise.resolve() })
+
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="系统提示词内容"]')?.value).toContain('你是一名英语口语陪练')
+  })
+
   it('restores saved practice preferences and saves a new selection immediately', async () => {
     practicePreferences = { source: 'api-direct', mode: 'text', scenarioTemplateId: 'travel', difficultyTemplateId: 'b1', correctionTemplateId: 'strict', focus: '练习过去时。', focusEnabled: true }
     act(() => root.render(<App/>)); await settle()
@@ -147,7 +199,7 @@ describe('unified voice microphone gate', () => {
     expect(container.querySelector<HTMLButtonElement>('.topic-grid .active')?.textContent).toBe('旅行英语')
     expect(container.querySelector<HTMLTextAreaElement>('.practice-focus textarea')?.value).toBe('练习过去时。')
     expect(container.querySelector('.prompt-preview')?.textContent).toContain('将作为 system 发送给 AI 的完整提示词')
-    expect(container.querySelector('.prompt-preview')?.textContent).toContain('英文内容应占回复的至少 80%')
+    expect(container.querySelector('.prompt-preview')?.textContent).toContain('系统提示词')
     expect(container.querySelector('.prompt-preview')?.textContent).toContain('本次重点：')
     expect(container.querySelector('.prompt-preview')?.textContent).toContain('练习过去时。')
 
@@ -176,8 +228,150 @@ describe('unified voice microphone gate', () => {
     const download = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '下载VAD 与 Kokoro（约 148 MB）')!
     expect(downloadSpeechAssets).not.toHaveBeenCalled()
     await act(async () => { download.click(); await Promise.resolve() })
-    expect(downloadSpeechAssets).toHaveBeenCalledWith()
-    expect(container.textContent).toContain('阿里语音工作流所需组件已就绪')
+    expect(downloadSpeechAssets).toHaveBeenCalledWith(true)
+    expect(container.textContent).toContain('当前语音方案所需的本地组件已就绪')
+    expect(container.textContent).toContain('Kokoro · 本地备用朗读（非推荐）')
+    const recommendationBadge = container.querySelector<HTMLElement>('.mimo-recommendation-badge')!
+    expect(recommendationBadge.textContent).toBe('推荐使用 MiMo')
+    expect(recommendationBadge.parentElement?.textContent).toBe('Kokoro · 本地备用朗读（非推荐）推荐使用 MiMo')
+    expect(container.querySelector<HTMLButtonElement>('.kokoro-remove-trigger')?.disabled).toBe(true)
+    expect(container.querySelector<HTMLSelectElement>('[name="ttsProvider"]')?.value).toBe('kokoro')
+    expect([...container.querySelectorAll<HTMLOptionElement>('[name="ttsProvider"] option')].map((option) => option.textContent)).toEqual([
+      '云端 Xiaomi MiMo V2.5 TTS（推荐）',
+      '本地 Kokoro（备用）'
+    ])
+  })
+
+  it('defaults an unset reading provider to the recommended MiMo option', async () => {
+    providerSettings = { ...providerSettings, ttsProvider: undefined }
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+
+    expect(container.querySelector<HTMLSelectElement>('[name="ttsProvider"]')?.value).toBe('mimo')
+    expect(container.querySelector('.mimo-recommendation-badge')?.textContent).toBe('推荐使用 MiMo')
+  })
+
+  it('automatically saves the reading provider without clearing unfinished key input', async () => {
+    providerSettings = { ...providerSettings, ttsProvider: 'kokoro' }
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+
+    const unfinishedKey = container.querySelector<HTMLInputElement>('[name="llmApiKey"]')!
+    unfinishedKey.value = 'not-saved-yet'
+    const provider = container.querySelector<HTMLSelectElement>('[name="ttsProvider"]')!
+    await act(async () => {
+      provider.value = 'mimo'
+      provider.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(saveProviderSettings).toHaveBeenCalledWith({ ttsProvider: 'mimo' })
+    expect(provider.value).toBe('mimo')
+    expect(unfinishedKey.value).toBe('not-saved-yet')
+    expect(container.querySelector('.tts-preference-save.saved')?.textContent).toBe('已自动保存')
+  })
+
+  it('restores the last saved reading provider when automatic saving fails', async () => {
+    providerSettings = { ...providerSettings, ttsProvider: 'kokoro' }
+    saveProviderSettings.mockRejectedValueOnce(new Error('保存失败，请检查本地设置权限。'))
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+
+    const provider = container.querySelector<HTMLSelectElement>('[name="ttsProvider"]')!
+    await act(async () => {
+      provider.value = 'mimo'
+      provider.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(provider.value).toBe('kokoro')
+    expect(container.querySelector('.tts-preference-save.error[role="alert"]')?.textContent).toContain('保存失败')
+  })
+
+  it('shows the selected MiMo voice and settings guidance in the practice heading', async () => {
+    providerSettings = { ...providerSettings, ttsProvider: 'mimo', mimoTtsVoice: 'Milo', hasMimoTtsKey: true }
+    act(() => root.render(<App/>)); await settle()
+
+    expect(container.querySelector('.workbench-heading span')?.textContent).toBe('文本 API + 阿里双语识别 + MiMo Milo 朗读；音色可在设置中切换')
+  })
+
+  it('requires only VAD and a MiMo key for cloud TTS', async () => {
+    providerSettings = { ...providerSettings, ttsProvider: 'mimo', mimoTtsVoice: 'Milo', hasMimoTtsKey: true }
+    speechAssetState = {
+      vad: { status: 'missing', downloadedBytes: 0, totalBytes: 643_854, progress: 0 },
+      tts: { status: 'missing', downloadedBytes: 0, totalBytes: 147_031_220, progress: 0 }
+    }
+    act(() => root.render(<App/>)); await settle()
+
+    const apiButton = [...container.querySelectorAll<HTMLButtonElement>('.source-picker button')].find((button) => button.textContent === 'API 直连')!
+    await act(async () => { apiButton.click(); await Promise.resolve() })
+
+    expect(container.querySelector('.settings-page')).not.toBeNull()
+    expect(container.textContent).toContain('云端 Xiaomi MiMo V2.5 TTS')
+    expect(container.textContent).not.toContain('还需下载约 148 MB')
+    const download = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '下载VAD（约 1 MB）')!
+    await act(async () => { download.click(); await Promise.resolve() })
+    expect(downloadSpeechAssets).toHaveBeenCalledWith(false)
+    expect(container.textContent).toContain('MiMo 云端朗读所需的本地组件已就绪；Kokoro 仅作为本地备用')
+    expect([...container.querySelectorAll<HTMLElement>('.speech-assets strong')].some((item) => item.textContent === 'Silero VAD · 语音检测与抢话（语音对话必需）')).toBe(true)
+    expect(container.textContent).toContain('Kokoro · 本地备用朗读（非推荐）')
+    expect(container.querySelector('.mimo-recommendation-badge')?.textContent).toBe('推荐使用 MiMo')
+    expect(container.querySelector('.kokoro-remove-trigger')).toBeNull()
+  })
+
+  it('keeps an installed Kokoro model visible in MiMo mode and deletes it only after confirmation', async () => {
+    providerSettings = { ...providerSettings, ttsProvider: 'mimo', mimoTtsVoice: 'Mia', hasMimoTtsKey: true }
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+
+    const removeButton = container.querySelector<HTMLButtonElement>('.kokoro-remove-trigger')!
+    expect(removeButton.disabled).toBe(false)
+    expect(removeKokoroModel).not.toHaveBeenCalled()
+    await act(async () => { removeButton.click(); await Promise.resolve() })
+
+    const dialog = container.querySelector<HTMLElement>('.kokoro-removal-dialog')!
+    expect(dialog.textContent).toContain('Silero VAD、MiMo API Key、音色设置和练习记录不会受到影响')
+    expect(removeKokoroModel).not.toHaveBeenCalled()
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('.kokoro-removal-confirm')!.click(); await Promise.resolve(); await Promise.resolve() })
+
+    expect(removeKokoroModel).toHaveBeenCalledOnce()
+    expect(container.querySelector('.kokoro-removal-dialog')).toBeNull()
+    expect(container.querySelector('.kokoro-remove-trigger')).toBeNull()
+    const kokoroRow = [...container.querySelectorAll<HTMLElement>('.speech-assets > div')].find((item) => item.textContent?.includes('Kokoro · 本地备用朗读'))!
+    expect(kokoroRow.textContent).toContain('未下载')
+    const vadRow = [...container.querySelectorAll<HTMLElement>('.speech-assets > div')].find((item) => item.textContent?.includes('Silero VAD'))!
+    expect(vadRow.textContent).toContain('已就绪')
+  })
+
+  it('selects and previews each MiMo voice from local settings', async () => {
+    providerSettings = { ...providerSettings, ttsProvider: 'mimo', mimoTtsVoice: 'Mia', hasMimoTtsKey: true }
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+
+    const unfinishedKey = container.querySelector<HTMLInputElement>('[name="llmApiKey"]')!
+    unfinishedKey.value = 'not-saved-yet'
+    const milo = container.querySelector<HTMLButtonElement>('[aria-label="选择并试听 Milo"]')!
+    await act(async () => { milo.click(); await Promise.resolve(); await Promise.resolve() })
+
+    expect(milo.getAttribute('aria-pressed')).toBe('true')
+    expect(container.querySelector<HTMLInputElement>('[name="mimoTtsVoice"]')?.value).toBe('Milo')
+    expect(saveProviderSettings).toHaveBeenCalledWith({ mimoTtsVoice: 'Milo' })
+    expect(unfinishedKey.value).toBe('not-saved-yet')
+    expect(container.querySelector('.tts-preference-save.saved')?.textContent).toBe('已自动保存')
+    expect(previewMimoTtsVoice).toHaveBeenCalledWith({ voice: 'Milo', mimoTtsApiKey: undefined })
+    expect(audio.playerPlay).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'mimo-preview',
+      sampleRate: 24000,
+      format: 'float32'
+    }), expect.any(Function))
+    expect(container.querySelector('.mimo-preview-result')?.textContent).toContain('正在播放 Milo')
   })
 
   it('keeps manual installation help visible when speech assets are ready and opens the real model directory', async () => {
@@ -185,7 +379,7 @@ describe('unified voice microphone gate', () => {
     const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
     await act(async () => { settingsButton.click(); await Promise.resolve() })
 
-    expect(container.textContent).toContain('阿里语音工作流所需组件已就绪')
+    expect(container.textContent).toContain('当前语音方案所需的本地组件已就绪')
     expect(container.textContent).toContain('下载与安装说明')
     expect(container.textContent).toContain('不要出现双层同名目录')
     const openDirectory = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '打开模型文件夹')!
@@ -210,7 +404,7 @@ describe('unified voice microphone gate', () => {
     const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
     await act(async () => { settingsButton.click(); await Promise.resolve() })
 
-    const helpButton = container.querySelector<HTMLButtonElement>('.aliyun-help-trigger')!
+    const helpButton = container.querySelector<HTMLButtonElement>('.aliyun-help-trigger:not(.mimo-help-trigger)')!
     expect(helpButton.textContent).toBe('如何获取')
     await act(async () => { helpButton.click(); await Promise.resolve() })
 
@@ -232,22 +426,137 @@ describe('unified voice microphone gate', () => {
     expect(container.querySelector('.aliyun-help-dialog')).toBeNull()
   })
 
+  it('shows the MiMo registration guide and opens only its official pages', async () => {
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+
+    const helpButton = container.querySelector<HTMLButtonElement>('.mimo-help-trigger')!
+    expect(helpButton.textContent).toBe('如何获取')
+    await act(async () => { helpButton.click(); await Promise.resolve() })
+
+    const dialog = container.querySelector<HTMLElement>('.mimo-help-dialog')!
+    expect(dialog.getAttribute('role')).toBe('dialog')
+    expect(dialog.textContent).toContain('如何开通 MiMo 云端朗读')
+    expect(dialog.textContent).toContain('sk-…')
+    expect(dialog.textContent).toContain('tp-…')
+    expect(dialog.textContent).toContain('选择音色并试听')
+
+    const links = [...dialog.querySelectorAll<HTMLAnchorElement>('.aliyun-help-actions a')]
+    expect(links.map((link) => link.href)).toEqual([
+      MIMO_HELP_LINKS.console,
+      MIMO_HELP_LINKS.apiKeyGuide,
+      MIMO_HELP_LINKS.ttsGuide
+    ])
+    expect(links.every((link) => link.target === '_blank')).toBe(true)
+
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('[aria-label="关闭 MiMo API 帮助"]')!.click(); await Promise.resolve() })
+    expect(container.querySelector('.mimo-help-dialog')).toBeNull()
+  })
+
   it('shows only the Aliyun workflow and no local recognition option or model', async () => {
     act(() => root.render(<App/>)); await settle()
     const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
     await act(async () => { settingsButton.click(); await Promise.resolve() })
 
     expect(container.textContent).toContain('阿里语音识别')
-    expect(container.textContent).toContain('阿里语音辅助组件')
+    expect(container.textContent).toContain('语音朗读辅助组件')
     expect(container.textContent).not.toContain('本地识别')
     expect(container.textContent).not.toContain('Zipformer')
     expect(container.textContent).not.toContain('Whisper')
     expect(container.querySelector('[name="speechRecognitionProvider"]')).toBeNull()
   })
 
+  it('detects a usable local microphone signal without calling provider APIs', async () => {
+    const samples = Float32Array.from({ length: 320 }, (_, index) => Math.sin(index / 5) * 0.08)
+    audio.captureStart.mockImplementationOnce(async (onAudio) => {
+      onAudio?.({ sampleRate: 16000, format: 'float32', samples: samples.buffer as ArrayBuffer })
+      return { echoCancellation: true }
+    })
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+    vi.useFakeTimers()
+
+    const microphoneTest = container.querySelector<HTMLButtonElement>('.microphone-test-trigger')!
+    await act(async () => { microphoneTest.click(); await Promise.resolve() })
+    expect(container.querySelector<HTMLProgressElement>('[aria-label="麦克风输入强度"]')?.value).toBeGreaterThan(0)
+    expect(checkLlmConnection).not.toHaveBeenCalled()
+    expect(checkAliyunConnection).not.toHaveBeenCalled()
+
+    await act(async () => { vi.advanceTimersByTime(4_000); await Promise.resolve() })
+    expect(container.querySelector('.microphone-test.success')?.textContent).toContain('麦克风正常，已检测到声音')
+    expect(audio.captureStop).toHaveBeenCalled()
+  })
+
+  it('distinguishes microphone permission from actually receiving sound', async () => {
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+    vi.useFakeTimers()
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('.microphone-test-trigger')!.click(); await Promise.resolve() })
+    await act(async () => { vi.advanceTimersByTime(4_000); await Promise.resolve() })
+    expect(container.querySelector('.microphone-test.error')?.textContent).toContain('已获得麦克风权限，但没有检测到声音')
+  })
+
+  it('explains how to recover when microphone permission is denied', async () => {
+    const denied = Object.assign(new Error('Permission denied'), { name: 'NotAllowedError' })
+    audio.captureStart.mockRejectedValueOnce(denied)
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('.microphone-test-trigger')!.click(); await Promise.resolve() })
+    expect(container.querySelector('.microphone-test.error [role="alert"]')?.textContent).toContain('Windows 隐私设置')
+  })
+
+  it('checks the saved LLM and Aliyun credentials independently from the settings form', async () => {
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+
+    const llmButton = container.querySelector<HTMLButtonElement>('.llm-check-trigger')!
+    await act(async () => { llmButton.click(); await Promise.resolve() })
+    expect(checkLlmConnection).toHaveBeenCalledWith({
+      llmBaseUrl: 'https://api.example.com/v1',
+      llmModel: 'example-chat',
+      llmApiKey: undefined
+    })
+    expect(container.querySelector('.provider-check.success')?.textContent).toContain('模型可以正常回复')
+
+    const aliyunButton = container.querySelector<HTMLButtonElement>('.aliyun-check-trigger')!
+    await act(async () => { aliyunButton.click(); await Promise.resolve() })
+    expect(checkAliyunConnection).toHaveBeenCalledWith({ aliyunAsrApiKey: undefined })
+    expect([...container.querySelectorAll('.provider-check.success')].some((item) => item.textContent?.includes('Key 和网络可用'))).toBe(true)
+  })
+
+  it('shows independent loading and error feedback for provider checks', async () => {
+    let rejectLlm!: (error: Error) => void
+    checkLlmConnection.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectLlm = reject }))
+    checkAliyunConnection.mockRejectedValueOnce(new Error("Error invoking remote method 'providers:check-aliyun': Error: 阿里识别鉴权失败，请检查 DashScope API Key。"))
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find((button) => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+
+    const llmButton = container.querySelector<HTMLButtonElement>('.llm-check-trigger')!
+    await act(async () => { llmButton.click(); await Promise.resolve() })
+    expect(llmButton.disabled).toBe(true)
+    expect(llmButton.textContent).toContain('正在检测')
+    expect(container.querySelector<HTMLButtonElement>('.aliyun-check-trigger')?.disabled).toBe(false)
+
+    await act(async () => { rejectLlm(new Error('大模型鉴权失败（HTTP 401）')); await Promise.resolve() })
+    expect(container.querySelector('.provider-check.error [role="alert"]')?.textContent).toContain('HTTP 401')
+
+    const aliyunButton = container.querySelector<HTMLButtonElement>('.aliyun-check-trigger')!
+    await act(async () => { aliyunButton.click(); await Promise.resolve() })
+    expect([...container.querySelectorAll('[role="alert"]')].some((item) => item.textContent?.includes('阿里识别鉴权失败'))).toBe(true)
+    expect(container.textContent).not.toContain('Error invoking remote method')
+  })
+
   it('redirects API direct to settings when the text API is not configured', async () => {
     practiceSource = 'chatgpt-web'
-    providerSettings = { hasLlmKey: false }
+    providerSettings = { hasLlmKey: false, ttsProvider: 'kokoro', hasMimoTtsKey: false }
     act(() => root.render(<App/>)); await settle()
 
     const apiButton = [...container.querySelectorAll<HTMLButtonElement>('.source-picker button')].find((button) => button.textContent === 'API 直连')!

@@ -46,12 +46,13 @@ interface PracticeSessionProfile {
   mode: PracticeMode
   focus?: string
   prompt?: string
+  systemPrompt?: string
 }
 
 export interface PracticeProfile extends PracticeSessionProfile {}
 
 interface PromptTemplate { id: string; name: string; prompt: string }
-export interface PromptTemplates { scenario: PromptTemplate[]; difficulty: PromptTemplate[]; correction: PromptTemplate[] }
+export interface PromptTemplates { systemPrompt: string; scenario: PromptTemplate[]; difficulty: PromptTemplate[]; correction: PromptTemplate[] }
 
 export interface PracticePreferences {
   source: PracticeSource
@@ -208,11 +209,17 @@ export interface NextPracticeDraft extends PracticeSessionProfile {
   derivedFromSessionId: string
 }
 
+export type SpeechSynthesisProvider = 'kokoro' | 'mimo'
+export type MimoTtsVoice = 'Mia' | 'Chloe' | 'Milo' | 'Dean' | '冰糖' | '茉莉' | '苏打' | '白桦'
+
 export interface ProviderSettings {
   llmBaseUrl?: string
   llmModel?: string
   hasLlmKey: boolean
   hasAliyunAsrKey?: boolean
+  ttsProvider?: SpeechSynthesisProvider
+  mimoTtsVoice?: MimoTtsVoice
+  hasMimoTtsKey?: boolean
 }
 
 export interface ProviderSettingsInput {
@@ -222,11 +229,40 @@ export interface ProviderSettingsInput {
   clearLlmApiKey?: boolean
   aliyunAsrApiKey?: string
   clearAliyunAsrApiKey?: boolean
+  ttsProvider?: SpeechSynthesisProvider
+  mimoTtsVoice?: MimoTtsVoice
+  mimoTtsApiKey?: string
+  clearMimoTtsApiKey?: boolean
 }
 
 interface ProviderModelProbeInput {
   llmBaseUrl: string
   llmApiKey?: string
+}
+
+export interface LlmConnectionCheckInput {
+  llmBaseUrl: string
+  llmModel: string
+  llmApiKey?: string
+}
+
+export interface AliyunConnectionCheckInput {
+  aliyunAsrApiKey?: string
+}
+
+export interface ProviderConnectionCheckResult {
+  ok: true
+  message: string
+}
+
+export interface MimoTtsPreviewInput {
+  voice: MimoTtsVoice
+  mimoTtsApiKey?: string
+}
+
+export interface MimoTtsPreviewAudio {
+  sampleRate: 24000
+  samples: ArrayBuffer
 }
 
 export interface MicrophoneGateState {
@@ -326,7 +362,7 @@ export interface UpdateInstallResult {
 
 export interface SpeakSubApi {
   getAppVersion: () => Promise<string>
-  startPractice: (topic: string, level: string, strength: CorrectionStrength, source: PracticeSource, mode: PracticeMode, focus?: string, prompt?: string) => Promise<PracticeStartResult>
+  startPractice: (topic: string, level: string, strength: CorrectionStrength, source: PracticeSource, mode: PracticeMode, focus?: string, prompt?: string, systemPrompt?: string) => Promise<PracticeStartResult>
   getPromptTemplates: () => Promise<PromptTemplates>
   savePromptTemplates: (templates: PromptTemplates) => Promise<PromptTemplates>
   getPracticePreferences: () => Promise<PracticePreferences>
@@ -341,7 +377,8 @@ export interface SpeakSubApi {
   getSpeechAssetState: () => Promise<SpeechAssetState>
   getSpeechAssetInstallInfo: () => Promise<SpeechAssetInstallInfo>
   openSpeechAssetDirectory: () => Promise<void>
-  downloadSpeechAssets: () => Promise<SpeechAssetState>
+  downloadSpeechAssets: (includeTts?: boolean) => Promise<SpeechAssetState>
+  removeKokoroModel: () => Promise<SpeechAssetState>
   endPractice: () => Promise<PracticeEndResult>
   cancelPracticeStart: () => Promise<void>
   getState: () => Promise<{ session?: PracticeSession; settings: SubtitlePreferences; events: TranscriptEvent[]; connection: ConnectionState; automation: AutomationStatus; source: PracticeSource; mode: PracticeMode; lifecycle: PracticeLifecycle; microphone: MicrophoneGateState; speechAssets: SpeechAssetState; speechUsage: SpeechUsageState; voicePhase: VoiceTurnPhase }>
@@ -374,6 +411,10 @@ export interface SpeakSubApi {
   getProviderSettings: () => Promise<ProviderSettings>
   saveProviderSettings: (settings: ProviderSettingsInput) => Promise<ProviderSettings>
   discoverProviderModels: (input: ProviderModelProbeInput) => Promise<string[]>
+  checkLlmConnection: (input: LlmConnectionCheckInput) => Promise<ProviderConnectionCheckResult>
+  checkAliyunConnection: (input: AliyunConnectionCheckInput) => Promise<ProviderConnectionCheckResult>
+  previewMimoTtsVoice: (input: MimoTtsPreviewInput) => Promise<MimoTtsPreviewAudio>
+  cancelMimoTtsPreview: () => Promise<void>
   saveMicrophoneShortcut: (shortcut: string) => Promise<string>
   toggleMicrophoneGate: () => Promise<MicrophoneGateState>
   setMicrophoneGate: (active: boolean) => Promise<MicrophoneGateState>

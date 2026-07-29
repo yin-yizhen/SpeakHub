@@ -2,6 +2,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { z } from 'zod'
 import { defaultMicrophoneShortcut } from './microphone-shortcut'
 import type { ConnectionState, PracticePreferences, PromptTemplates, SubtitlePreferences, WebPracticeSource } from '../shared/types'
+import { defaultDirectChatSystemPrompt } from '../shared/direct-chat-prompt'
 import { defaultSubtitlePreferences } from '../shared/defaults'
 
 export { defaultSubtitlePreferences } from '../shared/defaults'
@@ -14,7 +15,7 @@ const subtitleSchema = z.object({
   visible: z.boolean(), maxLines: z.number().int().min(2).max(6), bounds: boundsSchema.optional()
 })
 const promptTemplateSchema = z.object({ id: z.string().min(1).max(80), name: z.string().trim().min(1).max(80), prompt: z.string().trim().min(1).max(8_000) })
-const promptTemplatesSchema = z.object({ scenario: z.array(promptTemplateSchema).min(1).max(30), difficulty: z.array(promptTemplateSchema).min(1).max(30), correction: z.array(promptTemplateSchema).min(1).max(30) })
+const promptTemplatesSchema = z.object({ systemPrompt: z.string().trim().min(1).max(8_000).optional(), scenario: z.array(promptTemplateSchema).min(1).max(30), difficulty: z.array(promptTemplateSchema).min(1).max(30), correction: z.array(promptTemplateSchema).min(1).max(30) })
 const practicePreferencesSchema = z.object({
   source: z.enum(['chatgpt-web', 'api-direct']), mode: z.enum(['text', 'voice']),
   scenarioTemplateId: z.string().min(1).max(80), difficultyTemplateId: z.string().min(1).max(80), correctionTemplateId: z.string().min(1).max(80),
@@ -31,6 +32,7 @@ const storedSchema = z.object({
 })
 
 export const defaultPromptTemplates: PromptTemplates = {
+  systemPrompt: defaultDirectChatSystemPrompt,
   scenario: [
     { id: 'daily-chat', name: '日常聊天', prompt: '围绕生活、兴趣和近况自然聊天；主动追问，保持轻松。' },
     { id: 'travel', name: '旅行英语', prompt: '扮演当地服务人员或旅伴，围绕出行、住宿、点餐、问路与突发情况交流。' },
@@ -67,8 +69,8 @@ export class AppSettingsStore {
   setArchiveDirectory(directory: string): void { this.write({ ...this.read(), archiveDirectory: z.string().min(1).parse(directory) }) }
   microphoneShortcut(): string { return this.read().microphoneShortcut ?? defaultMicrophoneShortcut }
   setMicrophoneShortcut(shortcut: string): void { this.write({ ...this.read(), microphoneShortcut: z.string().min(1).max(80).parse(shortcut) }) }
-  promptTemplates(): PromptTemplates { return this.read().promptTemplates ?? defaultPromptTemplates }
-  setPromptTemplates(templates: PromptTemplates): PromptTemplates { const parsed = promptTemplatesSchema.parse(templates); this.write({ ...this.read(), promptTemplates: parsed }); return parsed }
+  promptTemplates(): PromptTemplates { const saved = this.read().promptTemplates; return saved ? { ...defaultPromptTemplates, ...saved } : defaultPromptTemplates }
+  setPromptTemplates(templates: PromptTemplates): PromptTemplates { const parsed = { ...defaultPromptTemplates, ...promptTemplatesSchema.parse(templates) }; this.write({ ...this.read(), promptTemplates: parsed }); return parsed }
   practicePreferences(): PracticePreferences { return this.read().practicePreferences ?? defaultPracticePreferences }
   setPracticePreferences(preferences: PracticePreferences): PracticePreferences { const parsed = practicePreferencesSchema.parse(preferences); this.write({ ...this.read(), practicePreferences: parsed }); return parsed }
   speechUsageSeconds(month: string): number { return this.read().speechUsageSeconds?.[month] ?? 0 }

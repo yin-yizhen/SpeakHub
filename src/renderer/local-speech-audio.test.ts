@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { captureChunkFrames, isPlayableSpeechGeneration, microphoneToggleTones, resampleFloat32 } from './local-speech-audio'
+import { captureChunkFrames, isPlayableSpeechGeneration, microphoneSignalLevel, microphoneSignalThreshold, microphoneToggleTones, resampleFloat32 } from './local-speech-audio'
 
 describe('microphone toggle tones', () => {
   it('uses C-E-G when the microphone opens and G-E-C when it closes', () => {
@@ -19,6 +19,11 @@ describe('microphone toggle tones', () => {
     const input = Float32Array.from({ length: captureChunkFrames }, (_, index) => Math.sin(index / 12))
     expect(captureChunkFrames).toBe(2048)
     expect(resampleFloat32(input, 48000)).toHaveLength(682)
+  })
+
+  it('distinguishes silence from a usable microphone signal', () => {
+    expect(microphoneSignalLevel(new Float32Array(320))).toBe(0)
+    expect(microphoneSignalLevel(Float32Array.from({ length: 320 }, (_, index) => Math.sin(index / 5) * 0.08))).toBeGreaterThan(microphoneSignalThreshold)
   })
 
   it('rejects audio returned by an interrupted generation', () => {

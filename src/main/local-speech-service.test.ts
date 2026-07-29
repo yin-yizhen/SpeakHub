@@ -96,6 +96,68 @@ describe('LocalSpeechService', () => {
     expect(workers[0].messages).toHaveLength(1)
   })
 
+  it('uses MiMo cloud synthesis without starting the Kokoro worker', async () => {
+    const workers: FakeWorker[] = []
+    const cloud = fakeCloud()
+    const cloudTts = { synthesize: vi.fn(async () => ({ samples: Float32Array.from([0.25]), sampleRate: 24000 as const })) }
+    const cloudTtsFactory = vi.fn(() => cloudTts)
+    const service = new LocalSpeechService(
+      { vad: 'D:/models/silero-vad/silero_vad.onnx', tts: 'D:/models/tts' },
+      { aliyunApiKey: 'aliyun-secret', ttsProvider: 'mimo', mimoTtsApiKey: 'mimo-secret', mimoTtsVoice: 'Milo' },
+      ((_filename: string) => {
+        const worker = new FakeWorker()
+        workers.push(worker)
+        return worker
+      }) as never,
+      (() => cloud.api) as never,
+      cloudTtsFactory
+    )
+
+    const starting = service.start()
+    workers[0].emit('message', { type: 'ready' })
+    await starting
+    await expect(service.synthesize('Hello', 'message-1', 0, 1)).resolves.toMatchObject({ sampleRate: 24000 })
+
+    expect(workers).toHaveLength(1)
+    expect(cloudTtsFactory).toHaveBeenCalledWith(expect.objectContaining({
+      apiKey: 'mimo-secret',
+      model: 'mimo-v2.5-tts',
+      voice: 'Milo'
+    }), undefined)
+    expect(cloudTts.synthesize).toHaveBeenCalledWith('Hello', expect.any(AbortSignal))
+  })
+
+  it('aborts an in-flight MiMo request when speech is interrupted', async () => {
+    const workers: FakeWorker[] = []
+    const cloud = fakeCloud()
+    const cloudTts = {
+      synthesize: vi.fn((_text: string, signal: AbortSignal) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true })
+      }))
+    }
+    const service = new LocalSpeechService(
+      { vad: 'D:/models/silero-vad/silero_vad.onnx', tts: 'D:/models/tts' },
+      { aliyunApiKey: 'aliyun-secret', ttsProvider: 'mimo', mimoTtsApiKey: 'mimo-secret' },
+      ((_filename: string) => {
+        const worker = new FakeWorker()
+        workers.push(worker)
+        return worker
+      }) as never,
+      (() => cloud.api) as never,
+      (() => cloudTts) as never
+    )
+    const starting = service.start()
+    workers[0].emit('message', { type: 'ready' })
+    await starting
+
+    const speech = service.synthesize('Interrupt me', 'message-1', 0, 5)
+    await Promise.resolve()
+    service.cancelSynthesis(5)
+
+    await expect(speech).rejects.toMatchObject({ name: 'AbortError' })
+    expect(cloudTts.synthesize.mock.calls[0][1].aborted).toBe(true)
+  })
+
   it('rejects stale synthesis immediately when a generation is interrupted', async () => {
     const workers: FakeWorker[] = []
     const { service } = createService(workers)

@@ -61,7 +61,7 @@ describe('lookup response boundary', () => {
 })
 
 describe('OpenAI-compatible direct chat', () => {
-  it('combines the fixed English-first system rules with selected prompts and focus before transcript history', async () => {
+  it('combines an editable system prompt with selected prompts and focus before transcript history', async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: 'What would you like to drink?' } }] }) }))
     vi.stubGlobal('fetch', fetchMock)
     const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'practice-model', hasLlmKey: true }, { llmApiKey: 'secret' }))
@@ -70,13 +70,12 @@ describe('OpenAI-compatible direct chat', () => {
     await service.chat([
       { id: 'u1', sessionId: 's1', sourceMessageId: 'u1', speaker: 'user', text: 'Um', status: 'complete', receivedAt: '2026-01-01T00:00:00.000Z' },
       { id: 'a1', sessionId: 's1', sourceMessageId: 'a1', speaker: 'assistant', text: 'Take your time.', status: 'complete', receivedAt: '2026-01-01T00:00:01.000Z' }
-    ], '日常聊天', 'A1', selectedPrompt)
+    ], '日常聊天', 'A1', selectedPrompt, '这是可编辑的系统提示词。')
 
     const request = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1]
     const messages = JSON.parse(String(request.body)).messages as Array<{ role: string; content: string }>
     expect(messages.map((message) => message.role)).toEqual(['system', 'user', 'assistant'])
-    expect(messages[0].content).toContain('英文内容应占回复的至少 80%')
-    expect(messages[0].content).toContain('语气词、孤立单词、不完整句子')
+    expect(messages[0].content).toContain('这是可编辑的系统提示词。')
     expect(messages[0].content).toContain('请扮演咖啡店店员')
     expect(messages[0].content).toContain('本次重点：\n练习过去时。')
   })
