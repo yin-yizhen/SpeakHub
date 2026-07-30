@@ -731,8 +731,9 @@ export function App() {
     <p>右侧页面用于登录和恢复网页模式。完成登录后回到 SpeakSub，选择难度并开始对话。</p>
     <p role="status" aria-live="polite">{automation.message}</p>
     <div className="connection-steps"><span>01 登录 ChatGPT</span><span>02 确认账号状态</span><span>03 进入练习台</span></div>
-    {!connection.ready && <><button className="primary-action" disabled={connectionLoginBusy} onClick={() => void startBrowserWebLogin()}>{connectionLoginBusy ? '等待浏览器登录…' : '使用 Google 登录 ChatGPT'}</button><button className="quiet-action" onClick={() => void enterPractice()}>我已在右侧登录，检查状态</button></>}
-    <button className={connection.ready ? 'primary-action' : 'quiet-action'} onClick={() => void window.speaksub.hideConnectionPage()}>返回主界面</button><button className="quiet-action connection-skip" onClick={() => void skipWebConnection()}>先使用 API 直连</button>
+    <button className="primary-action" disabled={connectionLoginBusy} onClick={() => void startBrowserWebLogin()}>{connectionLoginBusy ? '等待浏览器登录…' : '使用 Google 登录 ChatGPT'}</button>
+    {!connection.ready && <button className="quiet-action" onClick={() => void enterPractice()}>我已在右侧登录，检查状态</button>}
+    <button className="quiet-action" onClick={() => void window.speaksub.hideConnectionPage()}>返回主界面</button><button className="quiet-action connection-skip" onClick={() => void skipWebConnection()}>先使用 API 直连</button>
   </section></main>{updateDialog}</>
 
   return <>{mimoHelpDialog}{kokoroRemovalDialog}<main className="studio-shell"><header className="studio-topbar">

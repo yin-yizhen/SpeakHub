@@ -188,6 +188,15 @@ describe('unified voice microphone gate', () => {
     expect(container.textContent).toContain('返回主界面')
   })
 
+  it('keeps Google login visible when the cached connection is ready', async () => {
+    connectionPageVisible = true
+    connectionReady = true
+    act(() => root.render(<App/>)); await settle()
+
+    expect(container.textContent).toContain('使用 Google 登录 ChatGPT')
+    expect(container.textContent).toContain('返回主界面')
+  })
+
   it('shows the packaged application version in the top bar', async () => {
     act(() => root.render(<App/>)); await settle()
 
