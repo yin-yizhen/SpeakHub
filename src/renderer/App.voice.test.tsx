@@ -47,6 +47,11 @@ let checkLlmConnection: ReturnType<typeof vi.fn>
 let checkAliyunConnection: ReturnType<typeof vi.fn>
 let previewMimoTtsVoice: ReturnType<typeof vi.fn>
 let saveProviderSettings: ReturnType<typeof vi.fn>
+let connectionPageVisible: boolean
+let connectionReady: boolean
+let clearWebConnectionLogin: ReturnType<typeof vi.fn>
+let importWebConnectionLogin: ReturnType<typeof vi.fn>
+let hideConnectionPage: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -55,6 +60,11 @@ beforeEach(() => {
   container = document.createElement('div'); document.body.append(container); root = createRoot(container)
   startVoiceCapture = vi.fn(async () => undefined); stopVoiceCapture = vi.fn(async () => undefined)
   practiceEndedListener = undefined; microphoneListener = undefined; voicePhaseListener = undefined; practiceSource = 'api-direct'
+  connectionPageVisible = false
+  connectionReady = true
+  clearWebConnectionLogin = vi.fn(async () => ({ ready: false, pageVisible: true, activeProvider: 'chatgpt-web' as const, providers: { 'chatgpt-web': false } }))
+  importWebConnectionLogin = vi.fn(async () => ({ ready: true, pageVisible: true, activeProvider: 'chatgpt-web' as const, providers: { 'chatgpt-web': true } }))
+  hideConnectionPage = vi.fn(async () => ({ ready: connectionReady, pageVisible: false, activeProvider: 'chatgpt-web' as const, providers: { 'chatgpt-web': connectionReady } }))
   providerSettings = { llmBaseUrl: 'https://api.example.com/v1', llmModel: 'example-chat', hasLlmKey: true, hasAliyunAsrKey: true, ttsProvider: 'kokoro', hasMimoTtsKey: false }
   speechAssetState = { vad: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 }, tts: { status: 'ready', downloadedBytes: 1, totalBytes: 1, progress: 1 } }
   downloadSpeechAssets = vi.fn(async (includeTts = true): Promise<SpeechAssetState> => ({
@@ -91,7 +101,10 @@ beforeEach(() => {
   })
   const api = {
     getAppVersion,
-    getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: true, pageVisible: false, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': true } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone, speechAssets: speechAssetState, speechUsage: { provider: 'aliyun-fun-asr', sessionSeconds: 0, month: '2026-07', monthlySeconds: 0, estimatedCny: 0 }, voicePhase: 'listening' })),
+    getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: connectionReady, pageVisible: connectionPageVisible, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': connectionReady } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone, speechAssets: speechAssetState, speechUsage: { provider: 'aliyun-fun-asr', sessionSeconds: 0, month: '2026-07', monthlySeconds: 0, estimatedCny: 0 }, voicePhase: 'listening' })),
+    clearWebConnectionLogin,
+    importWebConnectionLogin,
+    hideConnectionPage,
     getProviderSettings: vi.fn(async () => providerSettings),
     saveProviderSettings,
     checkLlmConnection,
@@ -143,13 +156,38 @@ beforeEach(() => {
   window.speaksub = api
 })
 
-afterEach(() => { act(() => root.unmount()); container.remove(); vi.useRealTimers() })
+afterEach(() => { act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 const settle = async () => {
   await act(async () => { await Promise.resolve(); await Promise.resolve() })
 }
 
 describe('unified voice microphone gate', () => {
+  it('always returns to the main interface when the login is not ready', async () => {
+    connectionPageVisible = true
+    connectionReady = false
+    act(() => root.render(<App/>)); await settle()
+
+    expect(container.textContent).not.toContain('清除网页登录状态')
+    const button = [...container.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === '返回主界面')!
+    await act(async () => { button.click(); await Promise.resolve() })
+
+    expect(hideConnectionPage).toHaveBeenCalledOnce()
+  })
+
+  it('starts a one-time browser login and returns to the embedded ChatGPT page', async () => {
+    connectionPageVisible = true
+    connectionReady = false
+    act(() => root.render(<App/>)); await settle()
+
+    const button = [...container.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === '使用 Google 登录 ChatGPT')!
+    await act(async () => { button.click(); await Promise.resolve() })
+
+    expect(importWebConnectionLogin).toHaveBeenCalledOnce()
+    expect(container.textContent).toContain('Google 登录已传回 SpeakHub')
+    expect(container.textContent).toContain('返回主界面')
+  })
+
   it('shows the packaged application version in the top bar', async () => {
     act(() => root.render(<App/>)); await settle()
 

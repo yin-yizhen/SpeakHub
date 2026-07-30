@@ -132,6 +132,7 @@ function UpdatePromptDialog({
 export function App() {
   const [settings, setSettings] = useState<SubtitlePreferences>(defaultSubtitlePreferences)
   const [connection, setConnection] = useState<ConnectionState>({ ready: false, pageVisible: true, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': false } })
+  const [connectionLoginBusy, setConnectionLoginBusy] = useState(false)
   const [automation, setAutomation] = useState<AutomationStatus>({ phase: 'idle', message: '正在准备练习。' })
   const [session, setSession] = useState<string>()
   const [events, setEvents] = useState<TranscriptEvent[]>([])
@@ -282,6 +283,24 @@ export function App() {
   }, [session, source, mode, lifecycle, microphone.active])
 
   async function enterPractice(): Promise<void> { try { setConnection(await window.speaksub.completeConnection()) } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法确认登录状态。', recoverable: true }) } }
+  async function startBrowserWebLogin(): Promise<void> {
+    setConnectionLoginBusy(true)
+    setAutomation({ phase: 'idle', message: '请在刚打开的 Chrome 或 Edge 中完成 ChatGPT 的 Google 登录；成功后窗口会自动关闭。' })
+    try {
+      const next = await window.speaksub.importWebConnectionLogin()
+      setConnection(next)
+      setAutomation({
+        phase: 'idle',
+        message: next.ready
+          ? 'Google 登录已传回 SpeakHub 并保存；以后重新认证会记住这个账号。'
+          : '登录会话已传回 SpeakHub；请等待右侧 ChatGPT 加载完成后检查状态。'
+      })
+    } catch (error) {
+      setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法把 ChatGPT 登录传回 SpeakHub。', recoverable: true })
+    } finally {
+      setConnectionLoginBusy(false)
+    }
+  }
   async function openConnection(): Promise<void> { if (source === 'api-direct') return; await window.speaksub.showConnectionPage() }
   async function skipWebConnection(): Promise<void> {
     setSource('api-direct')
@@ -710,8 +729,10 @@ export function App() {
     <div className="brand-lockup"><img className="brand-icon" src={brandIcon} alt="" /><span className="brand-copy"><strong>SpeakHub</strong><em>personal practice</em></span></div><p className="kicker">WEB MODEL CONNECTION</p>
     <h1>{connection.ready ? '连接页面已打开' : '先登录你的 ChatGPT'}</h1>
     <p>右侧页面用于登录和恢复网页模式。完成登录后回到 SpeakSub，选择难度并开始对话。</p>
+    <p role="status" aria-live="polite">{automation.message}</p>
     <div className="connection-steps"><span>01 登录 ChatGPT</span><span>02 确认账号状态</span><span>03 进入练习台</span></div>
-    {connection.ready ? <button className="primary-action" onClick={() => void window.speaksub.hideConnectionPage()}>返回练习台</button> : <button className="primary-action" onClick={() => void enterPractice()}>我已登录，进入练习台</button>}<button className="quiet-action connection-skip" onClick={() => void skipWebConnection()}>先使用 API 直连</button>
+    {!connection.ready && <><button className="primary-action" disabled={connectionLoginBusy} onClick={() => void startBrowserWebLogin()}>{connectionLoginBusy ? '等待浏览器登录…' : '使用 Google 登录 ChatGPT'}</button><button className="quiet-action" onClick={() => void enterPractice()}>我已在右侧登录，检查状态</button></>}
+    <button className={connection.ready ? 'primary-action' : 'quiet-action'} onClick={() => void window.speaksub.hideConnectionPage()}>返回主界面</button><button className="quiet-action connection-skip" onClick={() => void skipWebConnection()}>先使用 API 直连</button>
   </section></main>{updateDialog}</>
 
   return <>{mimoHelpDialog}{kokoroRemovalDialog}<main className="studio-shell"><header className="studio-topbar">

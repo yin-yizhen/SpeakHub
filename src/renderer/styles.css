@@ -343,6 +343,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .community-support-dialog header p:last-child { max-width: 42ch; margin: 0; line-height: 1.65; }
 .community-support-dialog img { display: block; width: min(270px, 72vw); border-radius: 12px; box-shadow: 0 10px 25px rgba(25, 93, 88, .12); }
 .community-support-dialog small { color: var(--ink-soft); font-size: 12px; }
+.settings-page > h1 { display: flex; align-items: center; gap: 34px; }
+.settings-page > h1::after { content: '喜欢 SpeakHub 的话，欢迎推荐给朋友。项目永久免费，持续更新中。'; max-width: 42ch; color: var(--ink-faint); font-size: 13px; font-weight: 520; letter-spacing: .01em; line-height: 1.55; }
+@media (max-width: 620px) { .settings-page > h1 { align-items: flex-start; flex-direction: column; gap: 9px; }.settings-page > h1::after { max-width: 34ch; font-size: 12px; } }
 @media (max-width: 720px) { .community-support-card { grid-template-columns: 1fr; gap: 18px; }.community-support-actions { justify-content: start; }.community-support-actions small { justify-self: start; } }
 .update-dialog { z-index: 40; }
 .update-dialog > div { width: min(620px, 100%); max-height: calc(100dvh - 60px); overflow: auto; border-color: var(--line-strong); color: var(--ink); background: rgba(251, 255, 254, .98); }

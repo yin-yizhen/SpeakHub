@@ -383,6 +383,8 @@ export interface SpeakSubApi {
   cancelPracticeStart: () => Promise<void>
   getState: () => Promise<{ session?: PracticeSession; settings: SubtitlePreferences; events: TranscriptEvent[]; connection: ConnectionState; automation: AutomationStatus; source: PracticeSource; mode: PracticeMode; lifecycle: PracticeLifecycle; microphone: MicrophoneGateState; speechAssets: SpeechAssetState; speechUsage: SpeechUsageState; voicePhase: VoiceTurnPhase }>
   completeConnection: () => Promise<ConnectionState>
+  clearWebConnectionLogin: () => Promise<ConnectionState>
+  importWebConnectionLogin: () => Promise<ConnectionState>
   showConnectionPage: () => Promise<ConnectionState>
   clearPendingCleanup: () => Promise<void>
   hideConnectionPage: () => Promise<ConnectionState>

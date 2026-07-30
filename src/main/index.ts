@@ -1,13 +1,14 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, net, Notification, screen, shell, WebContentsView, type OpenDialogOptions } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, net, Notification, screen, session, shell, WebContentsView, type OpenDialogOptions } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { z } from 'zod'
 import { ChatGPTAdapter, type SourceAdapter } from './chatgpt-adapter'
 import { ChatGPTAutomation } from './chatgpt-automation'
+import { clearSavedChatGptBrowserLogin, importChatGptLoginFromBrowser } from './chatgpt-browser-login'
 import { ChatGPTMarkerStore } from './chatgpt-marker'
 import { cleanRecordedConversations } from './background-cleanup'
-import { isCurrentConnectionPage, loadConnectionUrl } from './connection-navigation'
+import { chromeCompatibleUserAgent, connectionLoginCookieUrl, isAllowedConnectionUrl, isCurrentConnectionPage, loadConnectionUrl } from './connection-navigation'
 import { LearningService } from './learning-service'
 import { LocalSpeechService } from './local-speech-service'
 import { MimoTtsClient } from './mimo-tts-client'
@@ -89,6 +90,7 @@ let microphoneActive = false
 let microphoneShortcut = defaultMicrophoneShortcut
 let microphoneShortcutError: string | undefined
 let chatgptMicrophoneGateReady = false
+let browserLoginTask: Promise<ConnectionState> | undefined
 let analytics: AnonymousAnalytics | undefined
 let sessionSpeechUsageSeconds = 0
 let aliyunTaskUsageSeconds = 0
@@ -96,6 +98,7 @@ let aliyunTaskUsageSeconds = 0
 function rendererUrl(page: string): string { return process.env.ELECTRON_RENDERER_URL ? `${process.env.ELECTRON_RENDERER_URL}/${page}` : pathToFileURL(join(__dirname, `../renderer/${page}`)).toString() }
 function preloadPath(): string { return join(__dirname, '../preload/preload.js') }
 function chatgptMicrophonePreloadPath(): string { return join(__dirname, '../preload/chatgpt-microphone.js') }
+function chatgptBrowserProfileDirectory(): string { return join(app.getPath('userData'), 'chatgpt-login-browser') }
 function developmentAppIconPath(): string | undefined { return app.isPackaged ? undefined : join(app.getAppPath(), 'resources', 'app-icon-rounded.ico') }
 function broadcast(channel: string, payload: unknown): void { for (const window of [mainWindow, overlayWindow]) if (window && !window.isDestroyed()) window.webContents.send(channel, payload) }
 function microphoneGateState(): MicrophoneGateState { return { active: microphoneActive, available: Boolean(activeSession) && activeMode === 'voice', shortcut: microphoneShortcut } }
@@ -166,11 +169,19 @@ function createChatHostView(): void {
   if (!mainWindow) return
   chatHostView = new WebContentsView({ webPreferences: { partition: WEB_PRACTICE_PARTITION, preload: chatgptMicrophonePreloadPath(), contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false } })
   mainWindow.contentView.addChildView(chatHostView)
-  chatHostView.setVisible(false); chatHostView.webContents.setBackgroundThrottling(false)
-  const allowed = (value: string) => { try { const url = new URL(value); return url.protocol === 'https:' && ['chatgpt.com', 'auth.openai.com'].includes(url.hostname) } catch { return false } }
-  chatHostView.webContents.setWindowOpenHandler(({ url }) => allowed(url) ? { action: 'allow' } : { action: 'deny' })
-  chatHostView.webContents.on('will-navigate', (event, url) => { if (!allowed(url)) event.preventDefault() })
-  chatHostView.webContents.on('did-start-navigation', () => { chatgptMicrophoneGateReady = false })
+  const contents = chatHostView.webContents
+  chatHostView.setVisible(false); contents.setBackgroundThrottling(false)
+  contents.setUserAgent(chromeCompatibleUserAgent(process.versions.chrome))
+  contents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedConnectionUrl(url)) {
+      void loadConnectionUrl(contents, url).catch((error) => {
+        announceAutomation({ phase: 'failed', message: error instanceof Error ? error.message : 'Google sign-in could not be opened.', recoverable: true })
+      })
+    }
+    return { action: 'deny' }
+  })
+  contents.on('will-navigate', (event, url) => { if (!isAllowedConnectionUrl(url)) event.preventDefault() })
+  contents.on('did-start-navigation', () => { chatgptMicrophoneGateReady = false })
   ipcMain.on('speaksub:microphone-gate:ready', (event, result: { ok?: boolean; message?: string }) => {
     if (event.sender !== chatHostView?.webContents) return
     chatgptMicrophoneGateReady = result?.ok === true
@@ -531,6 +542,61 @@ async function completeConnection(): Promise<ConnectionState> {
   return setConnection(appSettings.connection(source, false))
 }
 
+async function clearEmbeddedWebConnectionLogin(): Promise<ConnectionState> {
+  if (activeSession) throw new Error('End the active practice before resetting the web login.')
+  const webSession = session.fromPartition(WEB_PRACTICE_PARTITION)
+  const cookies = await webSession.cookies.get({})
+  const targets = cookies.flatMap((cookie) => {
+    const url = connectionLoginCookieUrl(cookie)
+    return url ? [{ url, name: cookie.name }] : []
+  })
+  await Promise.all(targets.map(({ url, name }) => webSession.cookies.remove(url, name)))
+  await Promise.all([
+    webSession.clearStorageData({ origin: 'https://accounts.google.com' }),
+    webSession.clearStorageData({ origin: 'https://auth.openai.com' }),
+    webSession.clearStorageData({ origin: 'https://chatgpt.com' })
+  ])
+  webSession.flushStorageData()
+  appSettings.setProviderReady('chatgpt-web', false)
+  const next = setConnection(appSettings.connection('chatgpt-web', true))
+  if (chatHostView) await loadConnectionUrl(chatHostView.webContents, CHATGPT_URL)
+  return next
+}
+
+async function clearWebConnectionLogin(): Promise<ConnectionState> {
+  const next = await clearEmbeddedWebConnectionLogin()
+  await clearSavedChatGptBrowserLogin(chatgptBrowserProfileDirectory())
+  return next
+}
+
+async function importWebConnectionLogin(): Promise<ConnectionState> {
+  if (activeSession) throw new Error('请先结束当前练习，再重新登录 ChatGPT。')
+  if (browserLoginTask) return browserLoginTask
+  browserLoginTask = (async () => {
+    await clearEmbeddedWebConnectionLogin()
+    const webSession = session.fromPartition(WEB_PRACTICE_PARTITION)
+    const imported = await importChatGptLoginFromBrowser(webSession, chatgptBrowserProfileDirectory())
+    diagnostics?.write('chatgpt-browser-login', { cookieCount: imported.cookieCount, skippedCookieCount: imported.skippedCookieCount })
+    if (chatHostView && imported.userAgent && !/Electron|HeadlessChrome/i.test(imported.userAgent)) {
+      chatHostView.webContents.setUserAgent(imported.userAgent)
+    }
+    if (chatHostView) await loadConnectionUrl(chatHostView.webContents, CHATGPT_URL)
+    let ready = false
+    const deadline = Date.now() + 20_000
+    while (!ready && Date.now() < deadline) {
+      ready = await chatgptAutomation?.isReady() ?? false
+      if (!ready) await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    appSettings.setProviderReady('chatgpt-web', ready)
+    return setConnection(appSettings.connection('chatgpt-web', true))
+  })()
+  try {
+    return await browserLoginTask
+  } finally {
+    browserLoginTask = undefined
+  }
+}
+
 async function sendPracticeMessage(message: string): Promise<void> {
   if (!activeSession || activeMode !== 'text') throw new Error('Start a text practice first.')
   if (textMessagePromise) throw new Error('Wait for the current reply before sending another message.')
@@ -577,6 +643,14 @@ function installIpc(): void {
     return updateService.openRelease()
   })
   ipcMain.handle('connection:complete', () => completeConnection())
+  ipcMain.handle('connection:clear-web-login', (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('Only the main window can reset the web login.')
+    return clearWebConnectionLogin()
+  })
+  ipcMain.handle('connection:import-browser-login', (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('Only the main window can start browser login.')
+    return importWebConnectionLogin()
+  })
   ipcMain.handle('connection:show', () => {
     activeSource = 'chatgpt-web'
     const next = setConnection(appSettings.connection('chatgpt-web', true))
