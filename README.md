@@ -6,7 +6,7 @@
 
 [English](./README.en.md)
 
-> ⬇️ **Windows 安装包：** [点击下载最新版（v0.1.9）](https://github.com/yin-yizhen/SpeakHub/releases/download/v0.1.9/SpeakHub-0.1.9-Setup.exe) ｜ [查看 Release](https://github.com/yin-yizhen/SpeakHub/releases/latest)
+> ⬇️ **Windows 安装包：** [点击下载最新版（v0.1.9）](https://github.com/yin-yizhen/SpeakHub/releases/download/v0.2.0/SpeakHub-0.2.0-Setup.exe) ｜ [查看 Release](https://github.com/yin-yizhen/SpeakHub/releases/latest)
 
 SpeakHub（项目代码名 SpeakSub）是一款面向 Windows 的 AI 英语口语练习工具。它把自由对话、实时字幕、查词收藏、练习复盘和词汇复习串成一条完整的学习链路，让每一次开口都能留下可以继续利用的学习记录。
 
@@ -20,6 +20,7 @@ SpeakHub（项目代码名 SpeakSub）是一款面向 Windows 的 AI 英语口�
 - **完整练习复盘**：保存对话、纠错、总结、能力评估和下一次练习建议。
 - **本地学习中心**：查看练习趋势、历史记录、常见错误和词汇掌握情况。
 - **词汇复习**：把字幕中收藏的单词加入复习队列，根据熟悉程度安排后续练习。
+- **语句复习**：大模型对句子进行分析复盘，保留常用句型及高级表达等。
 - **可持续学习**：可将上一次复盘的薄弱点直接带入下一轮对话。
 
 ## 项目界面
