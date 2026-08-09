@@ -1,5 +1,13 @@
 # SpeakHub Code Map
 
+## Automatic Subtitle Lifecycle
+
+- Entry: practice IPC orchestration in `src/main/index.ts`; ordering helper in `src/main/practice-subtitle-lifecycle.ts`; manual subtitle controls still use `subtitle:update` and `subtitle:toggle` through `src/main/preload.ts`.
+- Flow: successful `practice:start` -> `startPracticeWithSubtitles()` -> show and persist the subtitle overlay. `practice:end` from either the main page or subtitle overlay -> `endPracticeWithSubtitles()` -> hide and persist the overlay before voice shutdown, review generation, and archive finalization begin.
+- Failure boundary: a failed/cancelled startup must not open subtitles. A subtitle-window or settings-persistence error is diagnostic-only and must not turn a successfully started or ended practice into a lifecycle failure.
+- Tests: `src/main/practice-subtitle-lifecycle.test.ts` covers successful/failed startup, end ordering, and visibility-error isolation; `src/renderer/App.voice.test.tsx` and `src/renderer/subtitle-overlay.test.tsx` cover the two end-practice entry points.
+- Verify: `pnpm exec vitest run src/main/practice-subtitle-lifecycle.test.ts src/renderer/App.voice.test.tsx src/renderer/subtitle-overlay.test.tsx src/main/practice-pipeline.integration.test.ts`, then `pnpm lint` and `pnpm build`. Real acceptance: keep subtitles hidden, start a practice and confirm the overlay appears only after startup succeeds; click end on both the main page and the overlay in separate sessions and confirm the overlay disappears immediately while review/archive completion continues.
+
 ## Practice Startup Cancellation
 
 - Entry: the main practice action in `src/renderer/App.tsx`; startup ownership in `src/main/practice-controller.ts`; IPC orchestration and partial-session cleanup in `src/main/index.ts`.

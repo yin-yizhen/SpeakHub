@@ -25,6 +25,7 @@ import { checkAliyunConnection, checkLlmConnection } from './provider-connection
 import { defaultMicrophoneShortcut, normalizeMicrophoneShortcut, replaceGlobalMicrophoneShortcut } from './microphone-shortcut'
 import { bargeInDelayMs } from './barge-in-policy'
 import { PracticeController } from './practice-controller'
+import { endPracticeWithSubtitles, startPracticeWithSubtitles } from './practice-subtitle-lifecycle'
 import { buildPracticePrompt, parsePracticeProfile } from './practice-profile'
 import { DiagnosticLog } from './diagnostic-log'
 import { AnonymousAnalytics } from './analytics'
@@ -267,7 +268,32 @@ function persistOverlayBounds(): void {
 }
 function setOverlayInteractive(interactive: boolean): void { overlayWindow?.setIgnoreMouseEvents(!interactive, { forward: true }) }
 function persistSubtitle(): void { appSettings?.saveSubtitle(subtitle) }
-function showOverlay(): SubtitlePreferences { if (!overlayWindow) return subtitle; const current = subtitle.bounds ?? overlayWindow.getBounds(); const bounds = subtitleBounds(screen.getPrimaryDisplay().workArea, current.width, Math.max(current.height, subtitleHeight(subtitle.fontSize, subtitle.maxLines))); overlayWindow.setBounds(bounds); subtitle = { ...subtitle, visible: true, bounds }; setOverlayInteractive(false); overlayWindow.show(); overlayWindow.moveTop(); mainWindow?.focus(); persistSubtitle(); broadcast('subtitle:settings', subtitle); return subtitle }
+function showOverlay(): SubtitlePreferences {
+  if (overlayWindow) {
+    const current = subtitle.bounds ?? overlayWindow.getBounds()
+    const bounds = subtitleBounds(screen.getPrimaryDisplay().workArea, current.width, Math.max(current.height, subtitleHeight(subtitle.fontSize, subtitle.maxLines)))
+    overlayWindow.setBounds(bounds)
+    subtitle = { ...subtitle, bounds }
+    setOverlayInteractive(false)
+    overlayWindow.show()
+    overlayWindow.moveTop()
+    mainWindow?.focus()
+  }
+  subtitle = { ...subtitle, visible: true }
+  persistSubtitle()
+  broadcast('subtitle:settings', subtitle)
+  return subtitle
+}
+function hideOverlay(): SubtitlePreferences {
+  subtitle = { ...subtitle, visible: false }
+  overlayWindow?.hide()
+  persistSubtitle()
+  broadcast('subtitle:settings', subtitle)
+  return subtitle
+}
+function reportSubtitleVisibilityError(error: unknown): void {
+  diagnostics?.write('subtitle-visibility', { error: error instanceof Error ? error.name : 'unknown' })
+}
 
 function handleEvent(event: Omit<TranscriptEvent, 'id' | 'sessionId'>): void {
   if (!activeSession) return
@@ -844,7 +870,7 @@ function installIpc(): void {
     else mainWindow.maximize()
   })
   ipcMain.handle('window:close', (event) => { if (event.sender === mainWindow?.webContents) mainWindow.close() })
-  ipcMain.handle('practice:start', (_event, topic: string, level: string, strength: CorrectionStrength, source: PracticeSource = 'chatgpt-web', mode: PracticeMode = 'text', focus?: string, prompt?: string, systemPrompt?: string) => practiceController.start(async (signal) => {
+  ipcMain.handle('practice:start', (_event, topic: string, level: string, strength: CorrectionStrength, source: PracticeSource = 'chatgpt-web', mode: PracticeMode = 'text', focus?: string, prompt?: string, systemPrompt?: string) => startPracticeWithSubtitles(() => practiceController.start(async (signal) => {
     assertPracticeStartActive(signal)
     const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source, mode, focus, prompt, systemPrompt })
     activeSource = profile.source; activeMode = profile.mode; activeTopic = profile.topic; activeLevel = profile.level; activePrompt = buildPracticePrompt(profile); activeSystemPrompt = profile.systemPrompt; activeTextReply = undefined; activeTextTtsGeneration = undefined
@@ -858,7 +884,7 @@ function installIpc(): void {
       const session = beginSession(profile); assertPracticeStartActive(signal); announceAutomation({ phase: 'idle', message: 'API direct text practice is ready. Type a message to begin.' }); return { session, voiceStarted: false, source: profile.source, mode: profile.mode }
     }
     return prepareWebPractice(profile.topic, profile.level, profile.correctionStrength, profile.mode, profile.focus, profile.prompt, signal)
-  }, () => activeSession ? { session: activeSession, voiceStarted: automationStatus.phase === 'voice-started', source: activeSource, mode: activeMode } : undefined))
+  }, () => activeSession ? { session: activeSession, voiceStarted: automationStatus.phase === 'voice-started', source: activeSource, mode: activeMode } : undefined), showOverlay, reportSubtitleVisibilityError))
   ipcMain.handle('practice:templates:get', () => appSettings.promptTemplates())
   ipcMain.handle('practice:templates:save', (_event, templates) => appSettings.setPromptTemplates(templates))
   ipcMain.handle('practice:preferences:get', () => appSettings.practicePreferences())
@@ -921,7 +947,7 @@ function installIpc(): void {
     if (!cancelledPendingStart) practiceController.reset()
     announceAutomation({ phase: 'idle', message: '已取消本次启动，可以重新开始。' })
   })
-  ipcMain.handle('practice:end', async () => {
+  ipcMain.handle('practice:end', () => endPracticeWithSubtitles(async () => {
     const result = await practiceController.end(async () => {
       if (!interruptVoiceResponse() && !interruptTextResponse()) {
         activeVoiceReply?.controller.abort()
@@ -958,9 +984,19 @@ function installIpc(): void {
     }, () => Boolean(activeSession))
     broadcast('practice:ended', result)
     return result
+  }, hideOverlay, reportSubtitleVisibilityError))
+  ipcMain.handle('subtitle:update', (_event, input: Partial<SubtitlePreferences>) => {
+    const wasLocked = subtitle.locked
+    const wasVisible = subtitle.visible
+    subtitle = parseSubtitleUpdate(subtitle, input)
+    if (wasLocked !== subtitle.locked) setOverlayInteractive(false)
+    if (!wasVisible && subtitle.visible) return showOverlay()
+    if (wasVisible && !subtitle.visible) return hideOverlay()
+    persistSubtitle()
+    broadcast('subtitle:settings', subtitle)
+    return subtitle
   })
-  ipcMain.handle('subtitle:update', (_event, input: Partial<SubtitlePreferences>) => { const wasLocked = subtitle.locked; subtitle = parseSubtitleUpdate(subtitle, input); if (overlayWindow) { if (wasLocked !== subtitle.locked) setOverlayInteractive(false); if (!subtitle.visible) overlayWindow.hide() }; persistSubtitle(); broadcast('subtitle:settings', subtitle); return subtitle })
-  ipcMain.handle('subtitle:toggle', () => { if (subtitle.visible) { subtitle = { ...subtitle, visible: false }; overlayWindow?.hide(); persistSubtitle(); broadcast('subtitle:settings', subtitle); return subtitle }; return showOverlay() })
+  ipcMain.handle('subtitle:toggle', () => subtitle.visible ? hideOverlay() : showOverlay())
   ipcMain.handle('subtitle:interactive', (_event, interactive: boolean) => setOverlayInteractive(z.boolean().parse(interactive)))
   ipcMain.handle('subtitle:move', (_event, origin, deltaX: number, deltaY: number) => { const parsedOrigin = z.object({ x: z.number(), y: z.number(), width: z.number().min(320), height: z.number().min(100) }).parse(origin); const dx = z.number().min(-10_000).max(10_000).parse(deltaX); const dy = z.number().min(-10_000).max(10_000).parse(deltaY); if (!overlayWindow || subtitle.locked) return subtitle; const bounds = { ...parsedOrigin, x: parsedOrigin.x + dx, y: parsedOrigin.y + dy }; overlayWindow.setBounds(bounds); subtitle = { ...subtitle, bounds }; scheduleOverlayBoundsPersistence(); return subtitle })
   ipcMain.handle('subtitle:resize', (_event, direction: ResizeDirection, origin, deltaX: number, deltaY: number) => { const parsedDirection = z.enum(['top', 'right', 'bottom', 'left', 'top-left', 'top-right', 'bottom-left', 'bottom-right']).parse(direction); const parsedOrigin = z.object({ x: z.number(), y: z.number(), width: z.number().min(320), height: z.number().min(100) }).parse(origin); const dx = z.number().min(-10_000).max(10_000).parse(deltaX); const dy = z.number().min(-10_000).max(10_000).parse(deltaY); if (!overlayWindow || subtitle.locked) return subtitle; const bounds = resizeBounds(parsedOrigin, parsedDirection, dx, dy, undefined, subtitleHeight(subtitle.fontSize, subtitle.maxLines)); overlayWindow.setBounds(bounds); subtitle = { ...subtitle, bounds }; scheduleOverlayBoundsPersistence(); return subtitle })
