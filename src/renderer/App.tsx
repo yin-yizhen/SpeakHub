@@ -133,6 +133,9 @@ export function App() {
   const [settings, setSettings] = useState<SubtitlePreferences>(defaultSubtitlePreferences)
   const [connection, setConnection] = useState<ConnectionState>({ ready: false, pageVisible: true, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': false } })
   const [connectionLoginBusy, setConnectionLoginBusy] = useState(false)
+  const [connectionRepairBusy, setConnectionRepairBusy] = useState<'reload' | 'reset'>()
+  const [connectionRepairAttempted, setConnectionRepairAttempted] = useState(false)
+  const [connectionResetOpen, setConnectionResetOpen] = useState(false)
   const [automation, setAutomation] = useState<AutomationStatus>({ phase: 'idle', message: '正在准备练习。' })
   const [session, setSession] = useState<string>()
   const [events, setEvents] = useState<TranscriptEvent[]>([])
@@ -166,6 +169,7 @@ export function App() {
   const [microphoneTestMessage, setMicrophoneTestMessage] = useState('')
   const [microphoneTestLevel, setMicrophoneTestLevel] = useState(0)
   const [lifecycle, setLifecycle] = useState<PracticeLifecycle>('idle')
+  const [practiceStartCancelBusy, setPracticeStartCancelBusy] = useState(false)
   const [archiveDirectory, setArchiveDirectory] = useState('')
   const [microphone, setMicrophone] = useState<MicrophoneGateState>(defaultMicrophone)
   const [shortcutDraft, setShortcutDraft] = useState(defaultMicrophone.shortcut)
@@ -188,6 +192,8 @@ export function App() {
   const player = useRef(new LocalSpeechAudioPlayer())
   const previewPlayer = useRef(new LocalSpeechAudioPlayer())
   const previousMicrophoneActive = useRef(false)
+  const practiceStartRequest = useRef(0)
+  const apiSendRequest = useRef(0)
   const llmCheckVersion = useRef(0)
   const aliyunCheckVersion = useRef(0)
   const mimoPreviewVersion = useRef(0)
@@ -289,6 +295,7 @@ export function App() {
     try {
       const next = await window.speaksub.importWebConnectionLogin()
       setConnection(next)
+      setConnectionRepairAttempted(false)
       setAutomation({
         phase: 'idle',
         message: next.ready
@@ -299,6 +306,32 @@ export function App() {
       setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法把 ChatGPT 登录传回 SpeakHub。', recoverable: true })
     } finally {
       setConnectionLoginBusy(false)
+    }
+  }
+  async function reloadWebConnectionPage(): Promise<void> {
+    setConnectionRepairBusy('reload')
+    setConnectionRepairAttempted(true)
+    setAutomation({ phase: 'idle', message: '正在绕过缓存刷新右侧 ChatGPT 页面。' })
+    try {
+      await window.speaksub.reloadWebConnectionPage()
+    } catch (error) {
+      setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法刷新 ChatGPT 连接页。', recoverable: true })
+    } finally {
+      setConnectionRepairBusy(undefined)
+    }
+  }
+  async function resetWebConnectionLogin(): Promise<void> {
+    setConnectionRepairBusy('reset')
+    try {
+      const next = await window.speaksub.clearWebConnectionLogin()
+      setConnection(next)
+      setConnectionRepairAttempted(false)
+      setConnectionResetOpen(false)
+      setAutomation({ phase: 'idle', message: '网页缓存和 ChatGPT 登录状态已清除，请重新登录。' })
+    } catch (error) {
+      setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法重置 ChatGPT 登录状态。', recoverable: true })
+    } finally {
+      setConnectionRepairBusy(undefined)
     }
   }
   async function openConnection(): Promise<void> { if (source === 'api-direct') return; await window.speaksub.showConnectionPage() }
@@ -352,9 +385,26 @@ export function App() {
     savePracticePreferences({ mode: next })
     requireApiVoiceSetup(source, next)
   }
+  async function cancelPracticeStartup(): Promise<void> {
+    if (practiceStartCancelBusy) return
+    practiceStartRequest.current += 1
+    setPracticeStartCancelBusy(true)
+    setAutomation({ phase: 'idle', message: '正在取消本次启动…' })
+    capture.current.stop(); player.current.stop()
+    try {
+      await window.speaksub.cancelPracticeStart()
+      setSession(undefined); setLifecycle('idle')
+      setAutomation({ phase: 'idle', message: '已取消本次启动，可以重新开始。' })
+    } catch (error) {
+      setLifecycle('error')
+      setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法取消本次启动。', recoverable: true })
+    } finally { setPracticeStartCancelBusy(false) }
+  }
   async function startPractice(): Promise<void> {
-    if (lifecycle === 'starting' || lifecycle === 'ending') return
+    if (lifecycle === 'starting') { await cancelPracticeStartup(); return }
+    if (lifecycle === 'ending') return
     if (!requireApiVoiceSetup(source, mode)) return
+    const request = ++practiceStartRequest.current
     setLifecycle('starting')
     try {
       setAutomation({ phase: 'filling-prompt', message: source === 'api-direct' ? '正在创建 API 直连练习…' : `正在启动 ${sourceLabels[source]} 练习…` })
@@ -364,19 +414,31 @@ export function App() {
       const selectedPrompt = [scenario?.prompt, difficulty?.prompt, correction?.prompt].filter(Boolean).join('\n\n')
       if (!scenario || !difficulty || !correction || !selectedPrompt) throw new Error('请先为场景、难度和纠错各选择一个提示词。')
       const prompt = source === 'chatgpt-web'
-        ? buildChatGptWebPrompt(scenario.name, difficulty.name, selectedPrompt)
+        ? buildChatGptWebPrompt(scenario.name, difficulty.name, selectedPrompt, templates?.systemPrompt)
         : selectedPrompt
       const correctionStrength: CorrectionStrength = ['light', 'normal', 'strict'].includes(correction.id) ? correction.id as CorrectionStrength : 'normal'
       const cefrLevel = ['A1', 'A2', 'B1', 'B2', 'C1'].includes(difficulty.name) ? difficulty.name : 'B1'
       const result = await window.speaksub.startPractice(scenario.name, cefrLevel, correctionStrength, source, mode, focusEnabled ? focus || undefined : undefined, prompt, source === 'api-direct' ? templates?.systemPrompt : undefined)
+      if (request !== practiceStartRequest.current) return
       setSession(result.session.id); setEvents([]); setReview(undefined); setLifecycle('active')
       if (result.warning) setAutomation({ phase: 'failed', message: result.warning, recoverable: true })
-    } catch (error) { capture.current.stop(); player.current.stop(); await window.speaksub.cancelPracticeStart().catch(() => undefined); setSession(undefined); setLifecycle('error'); setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法开始练习。', recoverable: true }) }
+    } catch (error) {
+      if (request !== practiceStartRequest.current) return
+      capture.current.stop(); player.current.stop(); await window.speaksub.cancelPracticeStart().catch(() => undefined); setSession(undefined); setLifecycle('error'); setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法开始练习。', recoverable: true })
+    }
   }
   async function sendApiMessage(): Promise<void> {
-    if (!apiMessage.trim() || apiBusy) return
-    const outgoing = apiMessage; setApiMessage(''); setApiBusy(true)
-    try { await window.speaksub.sendApiMessage(outgoing) } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : 'API 请求失败。', recoverable: true }) } finally { setApiBusy(false) }
+    const outgoing = apiMessage.trim()
+    if (!outgoing) return
+    const request = ++apiSendRequest.current
+    setApiMessage(''); setApiBusy(true)
+    try { await window.speaksub.sendApiMessage(outgoing) }
+    catch (error) {
+      if (request === apiSendRequest.current) {
+        setApiMessage((current) => current || outgoing)
+        setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : 'API 请求失败。', recoverable: true })
+      }
+    } finally { if (request === apiSendRequest.current) setApiBusy(false) }
   }
   async function endPractice(): Promise<void> { if (lifecycle === 'ending') return; setLifecycle('ending'); capture.current.stop(); player.current.stop(); await window.speaksub.stopVoiceCapture(); try { const result = await window.speaksub.endPractice(); setSession(undefined); setReview(result.review); setLifecycle('idle'); if (result.error) setAutomation({ phase: 'failed', message: result.error, recoverable: true }); else if (result.voiceWarning) setAutomation({ phase: 'failed', message: result.voiceWarning, recoverable: true }) } catch (error) { setLifecycle('error'); setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法结束练习。', recoverable: true }) } }
   async function toggleMicrophone(): Promise<void> { try { await window.speaksub.toggleMicrophoneGate() } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法切换麦克风。', recoverable: true }) } }
@@ -641,7 +703,7 @@ export function App() {
   const selectedPromptWithFocus = `${composedPrompt}${focusEnabled && focus.trim() ? `\n\n本次重点：\n${focus.trim()}` : ''}`
   const promptPreview = source === 'api-direct'
     ? buildDirectChatSystemPrompt(selected('scenario')?.name ?? '日常聊天', selected('difficulty')?.name ?? 'B1', selectedPromptWithFocus, templates?.systemPrompt)
-    : buildChatGptWebPrompt(selected('scenario')?.name ?? '日常聊天', selected('difficulty')?.name ?? 'B1', selectedPromptWithFocus)
+    : buildChatGptWebPrompt(selected('scenario')?.name ?? '日常聊天', selected('difficulty')?.name ?? 'B1', selectedPromptWithFocus, templates?.systemPrompt)
   function openTemplateEditor(category: PromptTemplateCategory): void { if (!templates) return; setTemplateDraft(structuredClone(templates)); setTemplateEditor(category) }
   function closeTemplateEditor(): void { setTemplateEditor(undefined); setTemplateDraft(undefined) }
   async function saveTemplates(): Promise<void> {
@@ -731,8 +793,17 @@ export function App() {
     <p>右侧页面用于登录和恢复网页模式。完成登录后回到 SpeakSub，选择难度并开始对话。</p>
     <p role="status" aria-live="polite">{automation.message}</p>
     <div className="connection-steps"><span>01 登录 ChatGPT</span><span>02 确认账号状态</span><span>03 进入练习台</span></div>
-    <button className="primary-action" disabled={connectionLoginBusy} onClick={() => void startBrowserWebLogin()}>{connectionLoginBusy ? '等待浏览器登录…' : '使用 Google 登录 ChatGPT'}</button>
-    {!connection.ready && <button className="quiet-action" onClick={() => void enterPractice()}>我已在右侧登录，检查状态</button>}
+    <button className="primary-action" disabled={connectionLoginBusy || Boolean(connectionRepairBusy)} onClick={() => void startBrowserWebLogin()}>{connectionLoginBusy ? '等待浏览器登录…' : '使用 Google 登录 ChatGPT'}</button>
+    {!connection.ready && <button className="quiet-action" disabled={Boolean(connectionRepairBusy)} onClick={() => void enterPractice()}>我已在右侧登录，检查状态</button>}
+    <div className="connection-recovery-actions" aria-label="连接页修复">
+      <button className="quiet-action" disabled={Boolean(session) || Boolean(connectionRepairBusy)} onClick={() => void reloadWebConnectionPage()}>{connectionRepairBusy === 'reload' ? '正在刷新…' : '刷新连接页'}</button>
+      {(connectionRepairAttempted || automation.phase === 'failed') && !connectionResetOpen && <button className="danger-action" disabled={Boolean(session) || Boolean(connectionRepairBusy)} onClick={() => setConnectionResetOpen(true)}>清除缓存并重新登录</button>}
+      {connectionResetOpen && <div className="connection-reset-inline" role="group" aria-labelledby="connection-reset-title">
+        <strong id="connection-reset-title">清除缓存并退出当前账号？</strong>
+        <small>将删除 SpeakHub 保存的 ChatGPT、OpenAI 和 Google 登录资料；练习记录和其他设置不受影响。</small>
+        <div><button className="quiet-action" type="button" disabled={connectionRepairBusy === 'reset'} onClick={() => setConnectionResetOpen(false)}>取消</button><button className="danger-action" type="button" disabled={connectionRepairBusy === 'reset'} onClick={() => void resetWebConnectionLogin()}>{connectionRepairBusy === 'reset' ? '正在清除…' : '确认清除并退出'}</button></div>
+      </div>}
+    </div>
     <button className="quiet-action" onClick={() => void window.speaksub.hideConnectionPage()}>返回主界面</button><button className="quiet-action connection-skip" onClick={() => void skipWebConnection()}>先使用 API 直连</button>
   </section></main>{updateDialog}</>
 
@@ -749,11 +820,11 @@ export function App() {
       <section className="template-workbench"><div className="workbench-heading"><h2>选择一次对话</h2><span>{source === 'api-direct' ? apiVoiceSummary : `${sourceLabels[source]} 在后台执行`}</span></div>
         <div className="source-picker">{(Object.keys(sourceLabels) as PracticeSource[]).map((item) => <button key={item} disabled={Boolean(session) || transitionBusy} className={source === item ? 'active' : ''} onClick={() => selectSource(item)}>{sourceLabels[item]}</button>)}</div>
         <div className="source-picker" aria-label="交流方式"><button disabled={Boolean(session) || transitionBusy} className={mode === 'voice' ? 'active' : ''} onClick={() => selectMode('voice')}>语音交流</button><button disabled={Boolean(session) || transitionBusy} className={mode === 'text' ? 'active' : ''} onClick={() => selectMode('text')}>文字交流</button></div>
-        {templates && <><div className="prompt-category"><div><strong>情景</strong><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('scenario')}>管理提示词</button>{source === 'api-direct' && <button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={openSystemPromptEditor}>管理系统提示词</button>}</div><div className="topic-grid">{templates.scenario.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.scenario === item.id ? 'topic active' : 'topic'} onClick={() => { setSelectedTemplates((value) => ({ ...value, scenario: item.id })); savePracticePreferences({ scenarioTemplateId: item.id }) }}>{item.name}</button>)}</div></div>
-        <div className="session-config"><div className="level-picker"><span>难度</span>{templates.difficulty.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.difficulty === item.id ? 'active' : ''} onClick={() => { setSelectedTemplates((value) => ({ ...value, difficulty: item.id })); savePracticePreferences({ difficultyTemplateId: item.id }) }}>{item.name}</button>)}</div><div className="correction-picker"><span>纠错</span>{templates.correction.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.correction === item.id ? 'active' : ''} onClick={() => { setSelectedTemplates((value) => ({ ...value, correction: item.id })); savePracticePreferences({ correctionTemplateId: item.id }) }}>{item.name}</button>)}</div><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('difficulty')}>管理难度</button><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('correction')}>管理纠错</button>{session ? <button className="finish-action" disabled={transitionBusy} onClick={() => void endPractice()}>{lifecycle === 'ending' ? '正在生成复盘…' : '结束并生成复盘'}</button> : <button className="primary-action" disabled={transitionBusy} onClick={() => void startPractice()}>{lifecycle === 'starting' ? '正在启动…' : '确认并开始'}</button>}</div>
-        <section className="prompt-preview"><strong>{source === 'api-direct' ? '将作为 system 发送给 AI 的完整提示词' : '将发送给 ChatGPT 的完整提示词'}</strong><p>{promptPreview}</p></section>{systemPromptEditorOpen && <div className="confirm-layer template-editor" role="dialog" aria-modal="true" aria-labelledby="system-prompt-editor-title"><div><header className="template-editor-header"><div><p className="kicker">SYSTEM PROMPT</p><h2 id="system-prompt-editor-title">管理系统提示词</h2><p>系统提示词会先与情景、难度和纠错提示词组合，再作为 API 直连的完整 system 提示词发送。</p></div><button className="template-editor-close" type="button" aria-label="关闭系统提示词管理" title="关闭" onClick={() => setSystemPromptEditorOpen(false)}>×</button></header><textarea value={systemPromptDraft} aria-label="系统提示词内容" rows={12} onChange={(event) => setSystemPromptDraft(event.target.value)}/><footer><button className="quiet-action" onClick={resetSystemPromptDraft}>恢复默认</button><button className="quiet-action" onClick={() => setSystemPromptEditorOpen(false)}>取消</button><button className="primary-action" disabled={!systemPromptDraft.trim()} onClick={() => void saveSystemPrompt()}>保存</button></footer></div></div>}
+        {templates && <><div className="prompt-category"><div><strong>情景</strong><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('scenario')}>管理提示词</button><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={openSystemPromptEditor}>管理系统提示词</button></div><div className="topic-grid">{templates.scenario.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.scenario === item.id ? 'topic active' : 'topic'} onClick={() => { setSelectedTemplates((value) => ({ ...value, scenario: item.id })); savePracticePreferences({ scenarioTemplateId: item.id }) }}>{item.name}</button>)}</div></div>
+        <div className="session-config"><div className="level-picker"><span>难度</span>{templates.difficulty.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.difficulty === item.id ? 'active' : ''} onClick={() => { setSelectedTemplates((value) => ({ ...value, difficulty: item.id })); savePracticePreferences({ difficultyTemplateId: item.id }) }}>{item.name}</button>)}</div><div className="correction-picker"><span>纠错</span>{templates.correction.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.correction === item.id ? 'active' : ''} onClick={() => { setSelectedTemplates((value) => ({ ...value, correction: item.id })); savePracticePreferences({ correctionTemplateId: item.id }) }}>{item.name}</button>)}</div><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('difficulty')}>管理难度</button><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('correction')}>管理纠错</button>{session ? <button className="finish-action" disabled={transitionBusy} onClick={() => void endPractice()}>{lifecycle === 'ending' ? '正在生成复盘与句子分析…' : '结束并生成复盘'}</button> : <button className="primary-action" disabled={lifecycle === 'ending' || practiceStartCancelBusy} aria-label={lifecycle === 'starting' ? '取消正在启动的练习' : '确认并开始'} onClick={() => void startPractice()}>{practiceStartCancelBusy ? '正在取消…' : lifecycle === 'starting' ? '正在启动… 再次点击取消' : '确认并开始'}</button>}</div>
+        <section className="prompt-preview"><strong>{source === 'api-direct' ? '将作为 system 发送给 AI 的完整提示词' : '将发送给 ChatGPT 的完整提示词'}</strong><p>{promptPreview}</p></section>{systemPromptEditorOpen && <div className="confirm-layer template-editor" role="dialog" aria-modal="true" aria-labelledby="system-prompt-editor-title"><div><header className="template-editor-header"><div><p className="kicker">SYSTEM PROMPT</p><h2 id="system-prompt-editor-title">管理系统提示词</h2><p>这份系统提示词会先与情景、难度和纠错提示词组合。API 直连会将其作为 system 发送；ChatGPT 网页会将相同内容合并进首条提示词。</p></div><button className="template-editor-close" type="button" aria-label="关闭系统提示词管理" title="关闭" onClick={() => setSystemPromptEditorOpen(false)}>×</button></header><textarea value={systemPromptDraft} aria-label="系统提示词内容" rows={12} onChange={(event) => setSystemPromptDraft(event.target.value)}/><footer><button className="quiet-action" onClick={resetSystemPromptDraft}>恢复默认</button><button className="quiet-action" onClick={() => setSystemPromptEditorOpen(false)}>取消</button><button className="primary-action" disabled={!systemPromptDraft.trim()} onClick={() => void saveSystemPrompt()}>保存</button></footer></div></div>}
         {!session && focus && <label className="practice-focus"><span><input type="checkbox" checked={focusEnabled} onChange={(event) => { setFocusEnabled(event.target.checked); savePracticePreferences({ focusEnabled: event.target.checked }) }}/> 带入上次复盘重点</span><textarea disabled={!focusEnabled} value={focus} onChange={(event) => { setFocus(event.target.value); savePracticePreferences({ focus: event.target.value }) }} rows={3}/><small>重点来自所选历史对话的薄弱点和“下一次练习”建议；勾选后会追加到最终提示词。</small></label>}</>}
-        {session && source === 'api-direct' && mode === 'text' && <div className="api-composer"><textarea value={apiMessage} disabled={apiBusy} onChange={(event) => setApiMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendApiMessage() } }} placeholder="用英语输入你的回答…" rows={3}/><button className="primary-action" disabled={apiBusy || !apiMessage.trim()} onClick={() => void sendApiMessage()}>{apiBusy ? '正在回复…' : '发送'}</button></div>}
+        {session && source === 'api-direct' && mode === 'text' && <div className="api-composer" aria-busy={apiBusy}><textarea value={apiMessage} onChange={(event) => setApiMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendApiMessage() } }} placeholder="用英语输入你的回答…" rows={3}/><button className="primary-action" aria-label={apiBusy ? '打断当前回复并发送' : '发送'} disabled={!apiMessage.trim()} onClick={() => void sendApiMessage()}>发送</button></div>}
         {session && mode === 'voice' && <div className="api-composer microphone-control"><div><strong>{microphone.active ? (source === 'api-direct' && voicePhase === 'listening' ? '正在听你说' : '麦克风已开启，可随时打断 AI') : '麦克风已暂停'}</strong><span>按 {microphone.shortcut} 开启或暂停；API 语音在 AI 思考和朗读时也会持续监听。</span></div><button className={microphone.active ? 'finish-action' : 'primary-action'} type="button" onClick={() => void toggleMicrophone()}>{microphone.active ? `暂停麦克风 · ${microphone.shortcut}` : `开启麦克风 · ${microphone.shortcut}`}</button></div>}
       </section>
       <section className="support-row"><div className="compact-panel"><div><p className="kicker">LIVE SUBTITLES</p><h3>{settings.visible ? '悬浮字幕已显示' : '悬浮字幕暂未显示'}</h3><p>主页面和悬浮窗使用同一组字幕事件。</p></div><button className="quiet-action" onClick={() => void window.speaksub.toggleOverlay()}>{settings.visible ? '隐藏' : '显示'}</button></div><div className="compact-panel transcript-preview dual-transcript"><div><p className="kicker">我</p><p>{latestUser || '开始说话后，中英混合识别字幕会显示在这里。'}</p></div><div><p className="kicker">AI {latestAssistantEvent?.interrupted && <span>· 已打断</span>}</p><p>{latestAssistant || 'DeepSeek 的流式回复会逐步显示在这里。'}</p></div></div></section>

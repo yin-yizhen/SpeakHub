@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   browserExecutableCandidates,
   browserLaunchArguments,
+  hasCompletedChatGptLogin,
   hasChatGptSessionCookie,
   isChatGptCookieDomain,
   selectChatGptCookiesForImport,
@@ -34,6 +35,21 @@ describe('one-time ChatGPT browser login handoff', () => {
     expect(hasChatGptSessionCookie([{ ...sessionCookie, name: '__Secure-authjs.session-token' }])).toBe(true)
     expect(hasChatGptSessionCookie([{ ...sessionCookie, name: '_account' }])).toBe(false)
     expect(hasChatGptSessionCookie([{ ...sessionCookie, domain: '.example.com' }])).toBe(false)
+  })
+
+  it('does not accept stale cookies while the browser is still in the login flow', () => {
+    expect(hasCompletedChatGptLogin([{ type: 'page', url: 'https://chatgpt.com/auth/login' }])).toBe(false)
+    expect(hasCompletedChatGptLogin([{ type: 'page', url: 'https://auth.openai.com/log-in' }])).toBe(false)
+    expect(hasCompletedChatGptLogin([
+      { type: 'page', url: 'https://chatgpt.com/' },
+      { type: 'page', url: 'https://accounts.google.com/o/oauth2/v2/auth' }
+    ])).toBe(false)
+  })
+
+  it('accepts cookies only after the browser reaches a signed-in ChatGPT page', () => {
+    expect(hasCompletedChatGptLogin([{ type: 'page', url: 'https://chatgpt.com/' }])).toBe(true)
+    expect(hasCompletedChatGptLogin([{ type: 'page', url: 'https://chatgpt.com/c/example' }])).toBe(true)
+    expect(hasCompletedChatGptLogin([{ type: 'service_worker', url: 'https://chatgpt.com/' }])).toBe(false)
   })
 
   it('imports only secure ChatGPT cookies and prefers an unpartitioned duplicate', () => {

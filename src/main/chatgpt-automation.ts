@@ -14,6 +14,12 @@ const endVoiceSelector = [
   'button[title*="end voice" i]', 'button[title*="leave voice" i]', 'button[title*="结束语音"]', 'button[title*="退出语音"]'
 ].join(', ')
 const newChatSelector = 'a[href="/"], button[data-testid*="new-chat" i], button[aria-label*="new chat" i], button[aria-label*="新聊天"]'
+const stopGeneratingScript = `(() => {
+  const button = document.querySelector(${JSON.stringify(stopSelector)});
+  if (!(button instanceof HTMLButtonElement) || button.disabled || button.getClientRects().length === 0) return false;
+  button.click();
+  return true;
+})()`
 
 const deleteLabels = ['delete', '删除']
 const conversationMenuSelector = 'button[data-testid*="conversation-options" i], button[data-testid*="conversation-menu" i], button[aria-label*="more" i], button[aria-label*="options" i], button[aria-label*="menu" i], button[aria-label*="更多"], button[aria-label*="选项"]'
@@ -89,6 +95,15 @@ const pageComposerLocator = `(() => {
   const candidates = [...document.querySelectorAll(selector)].filter(isVisible).map((element) => ({ element, score: score(element) })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score);
   const composer = candidates[0]?.element;
   return { composer, diagnostics: candidates.slice(0, 4).map(({ element, score }) => ({ tag: element.tagName, id: element.id, placeholder: element.getAttribute('placeholder'), ariaLabel: element.getAttribute('aria-label'), dataPlaceholder: element.getAttribute('data-placeholder'), score })) };
+})()`
+
+const authenticatedSessionScript = `(async () => {
+  try {
+    const response = await fetch('/api/auth/session', { credentials: 'include', cache: 'no-store' });
+    if (!response.ok) return false;
+    const session = await response.json();
+    return Boolean(session && typeof session === 'object' && (session.user || session.accessToken));
+  } catch { return false; }
 })()`
 
 const focusComposerScript = `(() => {
@@ -244,6 +259,8 @@ export class ChatGPTAutomation {
 
   async isReady(): Promise<boolean> { return this.contents.executeJavaScript(`Boolean((${pageComposerLocator}).composer)`, true) as Promise<boolean> }
 
+  async isAuthenticated(): Promise<boolean> { return this.contents.executeJavaScript(authenticatedSessionScript, true) as Promise<boolean> }
+
   async fillAndSendPrompt(prompt: string): Promise<AutomationResult> {
     const deadline = Date.now() + 45_000
     let latest: { focused: boolean; diagnostics: Array<Record<string, unknown>> } | undefined
@@ -264,6 +281,10 @@ export class ChatGPTAutomation {
     }
     if (!sent) return { ok: false, message: '已尝试点击 ChatGPT 发送键，但未确认提示词成为对话消息。草稿已保留，请打开连接页后重试。' }
     return { ok: true, message: clicked ? '提示词已发送，正在等待 ChatGPT 回复。' : '提示词已通过 Enter 发送，正在等待 ChatGPT 回复。' }
+  }
+
+  async stopGenerating(): Promise<boolean> {
+    return this.contents.executeJavaScript(stopGeneratingScript, true) as Promise<boolean>
   }
 
   async startNewChat(): Promise<AutomationResult> {

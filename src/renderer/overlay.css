@@ -226,9 +226,10 @@ body { margin: 0; background: transparent; }
 .subtitle-transcript::-webkit-scrollbar { display: none; }
 
 .subtitle-line {
-  display: flex;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 24px;
   align-items: flex-start;
-  gap: 9px;
+  column-gap: 9px;
   margin: 6px 0;
   line-height: 1.31;
   letter-spacing: -.015em;
@@ -251,7 +252,7 @@ body { margin: 0; background: transparent; }
 }
 
 .subtitle-text {
-  max-width: 86%;
+  min-width: 0;
   padding: .16em .42em .2em;
   border-radius: .32em;
   background: rgba(114, 175, 137, .13);
@@ -290,6 +291,33 @@ body { margin: 0; background: transparent; }
 }
 
 .subtitle-fragment { white-space: pre-wrap; }
+
+.subtitle-sentence-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: .72em;
+  border: 1px solid rgba(91, 172, 151, .42);
+  border-radius: 999px;
+  padding: 4px 7px;
+  color: #247c74;
+  background: rgba(247, 253, 251, .76);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .74);
+  font: 680 10px/1 "Segoe UI Variable", "Segoe UI", sans-serif;
+  text-shadow: none;
+  vertical-align: .18em;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: .82;
+  transition: color .18s ease, border-color .18s ease, background .18s ease, opacity .18s ease, transform .18s ease;
+}
+
+.subtitle-sentence-save svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-linejoin: round; stroke-width: 1.4; }
+.subtitle-sentence-save:hover:not(:disabled), .subtitle-sentence-save:focus-visible { color: #087f7a; border-color: rgba(21, 156, 147, .7); background: rgba(226, 248, 243, .96); opacity: 1; outline: none; transform: translateY(-1px); }
+.subtitle-sentence-save:disabled { cursor: default; }
+.subtitle-sentence-save.saved { color: #087f7a; border-color: rgba(21, 156, 147, .52); background: rgba(210, 243, 235, .88); opacity: 1; }
+.subtitle-sentence-save.saved svg { fill: currentColor; }
+.subtitle-sentence-save.error { color: #b55f4b; border-color: rgba(181, 95, 75, .45); }
 
 .lookup-popover {
   position: absolute;
@@ -363,7 +391,7 @@ body { margin: 0; background: transparent; }
   -webkit-app-region: no-drag;
 }
 
-.subtitle-composer input {
+.subtitle-composer > input {
   min-width: 0;
   flex: 1 1 auto;
   height: 34px;
@@ -376,7 +404,42 @@ body { margin: 0; background: transparent; }
   font: 500 14px/1 "Segoe UI Variable", "Segoe UI", sans-serif;
 }
 
-.subtitle-composer input::placeholder { color: rgba(226, 235, 229, .58); }
+.subtitle-composer > input::placeholder { color: rgba(226, 235, 229, .58); }
+
+.subtitle-tts-toggle {
+  display: grid;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid rgba(240, 200, 93, .55);
+  border-radius: 8px;
+  background: rgba(240, 200, 93, .1);
+  cursor: pointer;
+}
+
+.subtitle-tts-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.subtitle-tts-toggle span {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 2px solid rgba(240, 200, 93, .8);
+  border-radius: 4px;
+  color: transparent;
+  font: 800 13px/1 "Segoe UI Variable", "Segoe UI", sans-serif;
+}
+
+.subtitle-tts-toggle input:checked + span { color: #1d1b10; border-color: #f0c85d; background: #f0c85d; }
+.subtitle-tts-toggle:has(input:focus-visible) { outline: 2px solid rgba(240, 200, 93, .72); outline-offset: 2px; }
+.subtitle-tts-toggle:has(input:disabled) { cursor: wait; opacity: .62; }
 
 .subtitle-composer button {
   flex: 0 0 auto;
@@ -390,8 +453,9 @@ body { margin: 0; background: transparent; }
   cursor: pointer;
 }
 
-.subtitle-composer button:disabled,
-.subtitle-composer input:disabled { cursor: wait; opacity: .62; }
+.subtitle-composer button:disabled { cursor: not-allowed; opacity: .62; }
+.subtitle-composer > input:disabled,
+.subtitle-composer button[aria-busy="true"]:disabled { cursor: wait; opacity: .62; }
 
 .subtitle-composer p {
   position: absolute;
@@ -417,7 +481,7 @@ body { margin: 0; background: transparent; }
 .subtitle-line { text-shadow: 0 1px 10px rgba(255,255,255,.6); }.subtitle-line b { color: #159c93; }.subtitle-line.user b { color: #b76e52; }
 .subtitle-text { background: rgba(144, 224, 210, .24); }.subtitle-line.user .subtitle-text { background: rgba(255, 202, 170, .25); }.subtitle-word:hover, .subtitle-word:focus-visible { color: #087f7a; background: rgba(21,156,147,.16); }
 .lookup-popover { border-color: rgba(255,255,255,.78); color: #163943; background: rgba(249, 254, 252, .98); box-shadow: 0 12px 32px rgba(21,105,99,.2); }.lookup-popover p { color: #54747a; }.lookup-popover small { color: #159c93; }.lookup-actions button { color: white; background: #159c93; }.lookup-actions small { color: #bd6950; }
-.subtitle-empty { color: #78979c; }.subtitle-composer { border-color: rgba(21,156,147,.36); background: rgba(221,245,240,.65); box-shadow: inset 0 1px rgba(255,255,255,.8); }.subtitle-composer input { color: #163943; background: rgba(255,255,255,.83); }.subtitle-composer input::placeholder { color: #78979c; }.subtitle-composer button { color: white; background: #159c93; transition: transform .2s cubic-bezier(.16,1,.3,1), background .2s ease, box-shadow .2s ease; }.subtitle-composer button:hover:not(:disabled) { background: #087f7a; box-shadow: 0 7px 15px rgba(11,127,122,.18); transform: translateY(-1px); }.subtitle-composer button:active { transform: translateY(1px) scale(.975); }
+.subtitle-empty { color: #78979c; }.subtitle-composer { border-color: rgba(21,156,147,.36); background: rgba(221,245,240,.65); box-shadow: inset 0 1px rgba(255,255,255,.8); }.subtitle-composer > input { color: #163943; background: rgba(255,255,255,.83); }.subtitle-composer > input::placeholder { color: #78979c; }.subtitle-tts-toggle { border-color: rgba(21,156,147,.38); background: rgba(255,255,255,.7); }.subtitle-tts-toggle span { border-color: rgba(21,156,147,.62); }.subtitle-tts-toggle input:checked + span { color: white; border-color: #159c93; background: #159c93; }.subtitle-composer button { color: white; background: #159c93; transition: transform .2s cubic-bezier(.16,1,.3,1), background .2s ease, box-shadow .2s ease; }.subtitle-composer button:hover:not(:disabled) { background: #087f7a; box-shadow: 0 7px 15px rgba(11,127,122,.18); transform: translateY(-1px); }.subtitle-composer button:active { transform: translateY(1px) scale(.975); }
 
 /* Keep the subtitle panel's scrollable transcript and dictionary panel visible
    and consistent with the sea-glass theme. */

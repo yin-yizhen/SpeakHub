@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { PracticePreferences, ProviderSettings, ProviderSettingsInput, SpeakSubApi, SpeechAssetState, SubtitlePreferences, UpdateDownloadProgress, VoiceTurnPhase } from '../shared/types'
+import type { AutomationStatus, PracticePreferences, ProviderSettings, ProviderSettingsInput, SpeakSubApi, SpeechAssetState, SubtitlePreferences, UpdateDownloadProgress, VoiceTurnPhase } from '../shared/types'
 import { MIMO_HELP_LINKS, SPEECH_MODEL_DOWNLOAD_LINKS } from '../shared/help-links'
 
 const audio = vi.hoisted(() => ({ captureStart: vi.fn(async (_onAudio?: (chunk: { sampleRate: 16000; format: 'float32'; samples: ArrayBuffer }) => void) => ({ echoCancellation: true })), captureStop: vi.fn(), playTone: vi.fn(), playerPlay: vi.fn(), playerInterrupt: vi.fn(), playerStop: vi.fn() }))
@@ -50,8 +50,10 @@ let saveProviderSettings: ReturnType<typeof vi.fn>
 let connectionPageVisible: boolean
 let connectionReady: boolean
 let clearWebConnectionLogin: ReturnType<typeof vi.fn>
+let reloadWebConnectionPage: ReturnType<typeof vi.fn>
 let importWebConnectionLogin: ReturnType<typeof vi.fn>
 let hideConnectionPage: ReturnType<typeof vi.fn>
+let automationListener: ((status: AutomationStatus) => void) | undefined
 
 beforeEach(() => {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -59,10 +61,11 @@ beforeEach(() => {
   audio.captureStart.mockClear(); audio.captureStop.mockClear(); audio.playTone.mockClear(); audio.playerPlay.mockClear(); audio.playerInterrupt.mockClear(); audio.playerStop.mockClear()
   container = document.createElement('div'); document.body.append(container); root = createRoot(container)
   startVoiceCapture = vi.fn(async () => undefined); stopVoiceCapture = vi.fn(async () => undefined)
-  practiceEndedListener = undefined; microphoneListener = undefined; voicePhaseListener = undefined; practiceSource = 'api-direct'
+  practiceEndedListener = undefined; microphoneListener = undefined; voicePhaseListener = undefined; automationListener = undefined; practiceSource = 'api-direct'
   connectionPageVisible = false
   connectionReady = true
   clearWebConnectionLogin = vi.fn(async () => ({ ready: false, pageVisible: true, activeProvider: 'chatgpt-web' as const, providers: { 'chatgpt-web': false } }))
+  reloadWebConnectionPage = vi.fn(async () => undefined)
   importWebConnectionLogin = vi.fn(async () => ({ ready: true, pageVisible: true, activeProvider: 'chatgpt-web' as const, providers: { 'chatgpt-web': true } }))
   hideConnectionPage = vi.fn(async () => ({ ready: connectionReady, pageVisible: false, activeProvider: 'chatgpt-web' as const, providers: { 'chatgpt-web': connectionReady } }))
   providerSettings = { llmBaseUrl: 'https://api.example.com/v1', llmModel: 'example-chat', hasLlmKey: true, hasAliyunAsrKey: true, ttsProvider: 'kokoro', hasMimoTtsKey: false }
@@ -103,6 +106,7 @@ beforeEach(() => {
     getAppVersion,
     getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: connectionReady, pageVisible: connectionPageVisible, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': connectionReady } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone, speechAssets: speechAssetState, speechUsage: { provider: 'aliyun-fun-asr', sessionSeconds: 0, month: '2026-07', monthlySeconds: 0, estimatedCny: 0 }, voicePhase: 'listening' })),
     clearWebConnectionLogin,
+    reloadWebConnectionPage,
     importWebConnectionLogin,
     hideConnectionPage,
     getProviderSettings: vi.fn(async () => providerSettings),
@@ -122,13 +126,14 @@ beforeEach(() => {
       microphoneListener?.(microphone)
       return { session: { id: 'session-1', startedAt: 'now', correctionStrength: 'normal' }, voiceStarted: false, source: practiceSource, mode: 'voice' as const }
     }),
+    cancelPracticeStart: vi.fn(async () => undefined),
     startVoiceCapture,
     stopVoiceCapture,
     reportVoiceCaptureStatus: vi.fn(async () => undefined),
     sendVoiceAudio: vi.fn(async () => undefined),
     onTranscript: vi.fn(() => () => undefined),
     onSubtitleSettings: vi.fn(() => () => undefined),
-    onAutomationStatus: vi.fn(() => () => undefined),
+    onAutomationStatus: vi.fn((listener) => { automationListener = listener; return () => { automationListener = undefined } }),
     onPracticeEnded: vi.fn((listener) => { practiceEndedListener = listener; return () => { practiceEndedListener = undefined } }),
     onConnectionState: vi.fn(() => () => undefined),
     onVoiceAudio: vi.fn(() => () => undefined),
@@ -197,6 +202,38 @@ describe('unified voice microphone gate', () => {
     expect(container.textContent).toContain('返回主界面')
   })
 
+  it('refreshes the connection page before offering a login reset', async () => {
+    connectionPageVisible = true
+    act(() => root.render(<App/>)); await settle()
+
+    expect(container.textContent).toContain('刷新连接页')
+    expect(container.textContent).not.toContain('清除缓存并重新登录')
+
+    const refresh = [...container.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === '刷新连接页')!
+    await act(async () => { refresh.click(); await Promise.resolve() })
+
+    expect(reloadWebConnectionPage).toHaveBeenCalledOnce()
+    expect(container.textContent).toContain('正在绕过缓存刷新右侧 ChatGPT 页面')
+    expect(container.textContent).toContain('清除缓存并重新登录')
+  })
+
+  it('shows an inline cache-and-login reset only after a connection failure', async () => {
+    connectionPageVisible = true
+    act(() => root.render(<App/>)); await settle()
+
+    act(() => automationListener?.({ phase: 'failed', message: 'ChatGPT 页面加载失败。', recoverable: true }))
+    const reset = [...container.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === '清除缓存并重新登录')!
+    act(() => reset.click())
+
+    expect(container.querySelector('.confirm-layer')).toBeNull()
+    expect(container.querySelector('.connection-reset-inline')?.textContent).toContain('清除缓存并退出当前账号')
+    const confirm = [...container.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === '确认清除并退出')!
+    await act(async () => { confirm.click(); await Promise.resolve() })
+
+    expect(clearWebConnectionLogin).toHaveBeenCalledOnce()
+    expect(container.textContent).toContain('网页缓存和 ChatGPT 登录状态已清除')
+  })
+
   it('shows the packaged application version in the top bar', async () => {
     act(() => root.render(<App/>)); await settle()
 
@@ -212,8 +249,14 @@ describe('unified voice microphone gate', () => {
     act(() => root.render(<App/>)); await settle()
 
     expect(container.querySelector<HTMLButtonElement>('.source-picker button.active')?.textContent).toBe('ChatGPT 网页')
-    expect(container.querySelector('.prompt-preview')?.textContent).toContain('默认使用英语回复')
-    expect(container.querySelector('.prompt-preview')?.textContent).toContain('英文内容应占回复的至少 80%')
+    expect(container.querySelector('.prompt-preview')?.textContent).toContain('系统提示词')
+    expect(container.querySelector('.prompt-preview')?.textContent).toContain('场景提示词')
+
+    const manageButton = [...container.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === '管理系统提示词')!
+    await act(async () => { manageButton.click(); await Promise.resolve() })
+
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="系统提示词内容"]')?.value).toBe('系统提示词')
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain('ChatGPT 网页会将相同内容合并进首条提示词')
   })
 
   it('opens a separate system prompt editor for API direct practice', async () => {
@@ -631,6 +674,28 @@ describe('unified voice microphone gate', () => {
     expect(stopVoiceCapture).toHaveBeenCalled()
     expect(audio.playTone).toHaveBeenLastCalledWith(false)
     expect(container.textContent).toContain('麦克风已暂停')
+  })
+
+  it('lets a second click cancel a practice that is still starting and ignores its late result', async () => {
+    let finishStart!: (result: Awaited<ReturnType<SpeakSubApi['startPractice']>>) => void
+    vi.mocked(window.speaksub.startPractice).mockImplementationOnce(() => new Promise((resolve) => { finishStart = resolve }))
+    act(() => root.render(<App/>)); await settle()
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('.session-config .primary-action')!.click(); await Promise.resolve() })
+    const cancel = container.querySelector<HTMLButtonElement>('[aria-label="取消正在启动的练习"]')!
+    expect(cancel.disabled).toBe(false)
+    expect(cancel.textContent).toContain('再次点击取消')
+
+    await act(async () => { cancel.click(); await Promise.resolve() })
+    expect(window.speaksub.cancelPracticeStart).toHaveBeenCalledOnce()
+    expect(container.querySelector<HTMLButtonElement>('.session-config .primary-action')?.textContent).toBe('确认并开始')
+
+    await act(async () => {
+      finishStart({ session: { id: 'late-session', startedAt: 'now', correctionStrength: 'normal' }, voiceStarted: false, source: 'api-direct', mode: 'voice' })
+      await Promise.resolve()
+    })
+    expect(container.querySelector('.finish-action')).toBeNull()
+    expect(container.textContent).toContain('已取消本次启动')
   })
 
   it('uses the same gate for ChatGPT voice without starting the API audio capture', async () => {

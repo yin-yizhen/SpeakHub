@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildDirectChatSystemPrompt } from './direct-chat-prompt'
+import { buildChatGptWebPrompt, buildDirectChatSystemPrompt } from './direct-chat-prompt'
 
 describe('buildDirectChatSystemPrompt', () => {
   it('requires speech-friendly plain text without Markdown decoration', () => {
@@ -12,5 +12,12 @@ describe('buildDirectChatSystemPrompt', () => {
     expect(prompt).toContain('1 到 2 个简短句子')
     expect(prompt).toContain('英文不超过约 20 个单词')
     expect(prompt).toContain('不要连续教学、长篇解释')
+  })
+
+  it('uses the saved system prompt for a ChatGPT web prompt too', () => {
+    const prompt = buildChatGptWebPrompt('旅行英语', 'A2', '围绕机场办理值机进行对话。', '这是共享的系统提示词。')
+
+    expect(prompt).toContain('这是共享的系统提示词。')
+    expect(prompt).toContain('围绕机场办理值机进行对话。')
   })
 })

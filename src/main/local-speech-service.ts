@@ -42,6 +42,7 @@ export class LocalSpeechService {
     private readonly paths: { vad: string; tts: string },
     private readonly options: {
       aliyunApiKey?: string
+      recognitionEnabled?: boolean
       ttsProvider?: SpeechSynthesisProvider
       mimoTtsApiKey?: string
       mimoTtsVoice?: string
@@ -59,12 +60,12 @@ export class LocalSpeechService {
 
   start(): Promise<void> {
     if (this.ready) return this.ready
-    const vadWorker = this.workerFactory(join(__dirname, 'speech-vad-worker.js'), { workerData: { vad: this.paths.vad } })
-    this.vadWorker = vadWorker
-    const services: Array<Promise<void>> = [
-      this.waitUntilReady(vadWorker, 'VAD', (message) => this.handleVadMessage(message)),
-      this.startCloudRecognizer()
-    ]
+    const services: Array<Promise<void>> = []
+    if (this.options.recognitionEnabled !== false) {
+      const vadWorker = this.workerFactory(join(__dirname, 'speech-vad-worker.js'), { workerData: { vad: this.paths.vad } })
+      this.vadWorker = vadWorker
+      services.push(this.waitUntilReady(vadWorker, 'VAD', (message) => this.handleVadMessage(message)), this.startCloudRecognizer())
+    }
     if (this.ttsProvider() === 'mimo') {
       this.startCloudSynthesizer()
     } else {

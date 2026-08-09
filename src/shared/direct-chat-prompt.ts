@@ -16,7 +16,7 @@ export function buildDirectChatSystemPrompt(topic: string, level: string, select
   return selected ? `${foundation}\n\n以下是学习者选择的场景、难度、纠错方式和本次练习重点，请一并遵守：\n${selected}` : foundation
 }
 
-// ChatGPT 网页没有 system 消息入口，仍使用基础规则作为首条提示词发送。
-export function buildChatGptWebPrompt(topic: string, level: string, selectedPrompt?: string): string {
-  return buildDirectChatSystemPrompt(topic, level, selectedPrompt)
+// ChatGPT 网页没有 system 消息入口，因此把同一份系统规则合并进首条提示词发送。
+export function buildChatGptWebPrompt(topic: string, level: string, selectedPrompt?: string, systemPrompt = defaultDirectChatSystemPrompt): string {
+  return buildDirectChatSystemPrompt(topic, level, selectedPrompt, systemPrompt)
 }

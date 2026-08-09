@@ -3,7 +3,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SpeakSubApi, SubtitlePreferences } from '../shared/types'
-import { SubtitleOverlay } from './subtitle-overlay'
+import { SubtitleOverlay, subtitleCharactersPerLine } from './subtitle-overlay'
 
 const initialSettings: SubtitlePreferences = {
   mode: 'assistant', background: 'glass', backgroundColor: '#0e1713', backgroundOpacity: 0.86,
@@ -20,7 +20,10 @@ let setOverlayInteractive: ReturnType<typeof vi.fn>
 let moveOverlay: ReturnType<typeof vi.fn>
 let lookup: ReturnType<typeof vi.fn>
 let practiceActive = false
+let practiceMode: 'text' | 'voice' = 'text'
 let endPractice: ReturnType<typeof vi.fn>
+let sendPracticeMessage: ReturnType<typeof vi.fn>
+let saveSessionSentence: ReturnType<typeof vi.fn>
 let practiceEndedListener: ((result: Parameters<SpeakSubApi['onPracticeEnded']>[0] extends (result: infer Result) => void ? Result : never) => void) | undefined
 
 beforeEach(() => {
@@ -28,7 +31,10 @@ beforeEach(() => {
   container = document.createElement('div'); document.body.append(container); root = createRoot(container)
   settings = { ...initialSettings }
   practiceActive = false
+  practiceMode = 'text'
   endPractice = vi.fn(async () => undefined)
+  sendPracticeMessage = vi.fn(async () => undefined)
+  saveSessionSentence = vi.fn(async (sourceMessageId: string) => ({ sourceMessageId, speaker: 'assistant' as const, text: 'hello world', savedAt: 'now' }))
   setOverlayInteractive = vi.fn(async () => undefined)
   moveOverlay = vi.fn(async () => settings)
   lookup = vi.fn(async (query: string) => ({ query, definitions: ['definition'] }))
@@ -38,16 +44,21 @@ beforeEach(() => {
     return settings
   })
   const api = {
-    getState: vi.fn(async () => ({ session: practiceActive ? { id: 'session-1', startedAt: 'now', correctionStrength: 'normal' } : undefined, settings, events: [], connection: {}, automation: {}, source: 'api-direct', mode: 'text', lifecycle: practiceActive ? 'active' : 'idle' })),
+    getState: vi.fn(async () => ({ session: practiceActive ? { id: 'session-1', startedAt: 'now', correctionStrength: 'normal' } : undefined, settings, events: [], connection: {}, automation: {}, source: 'api-direct', mode: practiceMode, lifecycle: practiceActive ? 'active' : 'idle' })),
     updateSubtitle,
     setOverlayInteractive,
     moveOverlay,
     lookup,
     endPractice,
+    sendPracticeMessage,
+    saveSessionSentence,
     onTranscript: vi.fn((listener) => { transcriptListener = listener; return () => { transcriptListener = undefined } }),
     onSubtitleSettings: vi.fn((listener) => { settingsListener = listener; return () => { settingsListener = undefined } }),
     onAutomationStatus: vi.fn(() => () => undefined),
-    onPracticeEnded: vi.fn((listener) => { practiceEndedListener = listener; return () => { practiceEndedListener = undefined } })
+    onPracticeEnded: vi.fn((listener) => { practiceEndedListener = listener; return () => { practiceEndedListener = undefined } }),
+    onVoiceAudio: vi.fn(() => () => undefined),
+    onVoiceInterrupt: vi.fn(() => () => undefined),
+    notifyVoicePlaybackEnded: vi.fn(async () => undefined)
   } as unknown as SpeakSubApi
   window.speaksub = api
 })
@@ -56,6 +67,12 @@ afterEach(() => { act(() => root.unmount()); container.remove() })
 
 const renderOverlay = async () => {
   await act(async () => { root.render(<SubtitleOverlay/>); await Promise.resolve(); await Promise.resolve() })
+}
+
+const pointerEvent = (type: string, input: { pointerId: number; screenX: number; screenY: number; buttons?: number }) => {
+  const event = new MouseEvent(type, { bubbles: true, button: 0, buttons: input.buttons ?? 1, screenX: input.screenX, screenY: input.screenY })
+  Object.defineProperty(event, 'pointerId', { value: input.pointerId })
+  return event
 }
 
 describe('SubtitleOverlay lock controls', () => {
@@ -153,20 +170,33 @@ describe('SubtitleOverlay mouse passthrough', () => {
     expect(container.querySelector('.lookup-popover')).toBeNull()
   })
 
-  it('moves the unlocked overlay from the three-bar drag handle', async () => {
+  it('keeps moving the unlocked overlay after the pointer leaves the narrow drag handle', async () => {
     settings = { ...initialSettings, bounds: { x: 100, y: 200, width: 600, height: 240 } }
     await renderOverlay()
     const dragHandle = container.querySelector<HTMLDivElement>('.subtitle-drag-zone')!
+    const setPointerCapture = vi.fn()
+    const releasePointerCapture = vi.fn()
+    dragHandle.setPointerCapture = setPointerCapture
+    dragHandle.hasPointerCapture = vi.fn(() => true)
+    dragHandle.releasePointerCapture = releasePointerCapture
     await act(async () => {
-      dragHandle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, buttons: 1, screenX: 300, screenY: 400 }))
-      dragHandle.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1, screenX: 326, screenY: 418 }))
+      dragHandle.dispatchEvent(pointerEvent('pointerdown', { pointerId: 7, screenX: 300, screenY: 400 }))
+      dragHandle.dispatchEvent(pointerEvent('pointermove', { pointerId: 7, screenX: 900, screenY: 50 }))
+      dragHandle.dispatchEvent(pointerEvent('pointerup', { pointerId: 7, screenX: 900, screenY: 50, buttons: 0 }))
       await Promise.resolve()
     })
-    expect(moveOverlay).toHaveBeenCalledWith({ x: 100, y: 200, width: 600, height: 240 }, 26, 18)
+    expect(setPointerCapture).toHaveBeenCalledWith(7)
+    expect(moveOverlay).toHaveBeenCalledWith({ x: 100, y: 200, width: 600, height: 240 }, 600, -350)
+    expect(releasePointerCapture).toHaveBeenCalledWith(7)
   })
 })
 
 describe('SubtitleOverlay transcript display', () => {
+  it('uses equal 57px text gutters without reserving extra wrapping width', () => {
+    expect(subtitleCharactersPerLine(1664, 24)).toBe(64)
+    expect(subtitleCharactersPerLine(320, 38)).toBe(10)
+  })
+
   it('collapses paragraph breaks from an AI response in the compact overlay', async () => {
     await renderOverlay()
 
@@ -176,6 +206,33 @@ describe('SubtitleOverlay transcript display', () => {
     expect(container.querySelector('.subtitle-text')?.textContent).toBe('First sentence. Second sentence.')
   })
 
+  it('updates one assistant subtitle repeatedly before the reply is complete', async () => {
+    practiceActive = true
+    await renderOverlay()
+
+    await act(async () => {
+      transcriptListener?.({ id: 'stream-1', sessionId: 'session-1', sourceMessageId: 'assistant-stream', speaker: 'assistant', text: 'The weather', status: 'streaming', receivedAt: 'now' })
+      await Promise.resolve()
+    })
+    expect(container.querySelector('.subtitle-text')?.textContent).toBe('The weather')
+    expect(container.querySelector('.subtitle-sentence-save')).toBeNull()
+
+    await act(async () => {
+      transcriptListener?.({ id: 'stream-2', sessionId: 'session-1', sourceMessageId: 'assistant-stream', speaker: 'assistant', text: 'The weather is perfect for your interview.', status: 'streaming', receivedAt: 'later' })
+      await Promise.resolve()
+    })
+    expect(container.querySelectorAll('.subtitle-line')).toHaveLength(1)
+    expect(container.querySelector('.subtitle-text')?.textContent).toBe('The weather is perfect for your interview.')
+    expect(container.querySelector('.subtitle-sentence-save')).toBeNull()
+
+    await act(async () => {
+      transcriptListener?.({ id: 'stream-3', sessionId: 'session-1', sourceMessageId: 'assistant-stream', speaker: 'assistant', text: 'The weather is perfect for your interview.', status: 'complete', receivedAt: 'done' })
+      await Promise.resolve()
+    })
+    expect(container.querySelectorAll('.subtitle-line')).toHaveLength(1)
+    expect(container.querySelector('.subtitle-sentence-save')).not.toBeNull()
+  })
+
   it('marks an assistant subtitle that was interrupted by the user', async () => {
     await renderOverlay()
 
@@ -183,5 +240,74 @@ describe('SubtitleOverlay transcript display', () => {
     await act(async () => { transcriptListener?.(event); await Promise.resolve() })
 
     expect(container.querySelector('.subtitle-line.interrupted b')?.textContent).toBe('AI · 已打断')
+  })
+
+  it.each(['text', 'voice'] as const)('saves a complete %s conversation sentence from the subtitle ending', async (mode) => {
+    practiceActive = true
+    practiceMode = mode
+    await renderOverlay()
+
+    const event = { id: 'event-save', sessionId: 'session-1', sourceMessageId: `message-${mode}`, speaker: 'assistant' as const, text: 'Keep this whole sentence.', status: 'complete' as const, receivedAt: 'now' }
+    await act(async () => { transcriptListener?.(event); await Promise.resolve() })
+
+    const save = container.querySelector<HTMLButtonElement>('.subtitle-sentence-save')!
+    expect(save.textContent).toBe('收藏句子')
+    await act(async () => { save.click(); await Promise.resolve(); await Promise.resolve() })
+
+    expect(saveSessionSentence).toHaveBeenCalledWith(`message-${mode}`)
+    expect(save.textContent).toBe('已收藏')
+    expect(save.disabled).toBe(true)
+  })
+})
+
+describe('SubtitleOverlay text composer', () => {
+  it('keeps the composer editable and sends a replacement while AI is replying', async () => {
+    practiceActive = true
+    const completeSends: Array<() => void> = []
+    sendPracticeMessage.mockImplementation(() => new Promise<void>((resolve) => { completeSends.push(resolve) }))
+    await renderOverlay()
+
+    const form = container.querySelector<HTMLFormElement>('.subtitle-composer')!
+    const input = form.querySelector<HTMLInputElement>('input')!
+    const send = form.querySelector<HTMLButtonElement>('button')!
+    expect(send.disabled).toBe(true)
+    expect(form.getAttribute('aria-busy')).toBe('false')
+    const speakReply = form.querySelector<HTMLInputElement>('[aria-label="朗读 AI 回复"]')!
+    expect(speakReply.checked).toBe(false)
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'Hello')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(send.disabled).toBe(false)
+
+    await act(async () => { speakReply.click(); await Promise.resolve() })
+    expect(speakReply.checked).toBe(true)
+
+    await act(async () => { send.click(); await Promise.resolve() })
+    expect(sendPracticeMessage).toHaveBeenCalledWith('Hello', true)
+    expect(input.disabled).toBe(false)
+    expect(speakReply.disabled).toBe(false)
+    expect(send.disabled).toBe(true)
+    expect(form.getAttribute('aria-busy')).toBe('true')
+    expect(send.textContent).toBe('发送')
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'Wait')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(send.disabled).toBe(false)
+    expect(send.getAttribute('aria-label')).toBe('打断当前回复并发送')
+
+    await act(async () => { send.click(); await Promise.resolve() })
+    expect(sendPracticeMessage).toHaveBeenNthCalledWith(2, 'Wait', true)
+
+    await act(async () => { completeSends[0](); await Promise.resolve() })
+    expect(form.getAttribute('aria-busy')).toBe('true')
+
+    await act(async () => { completeSends[1](); await Promise.resolve() })
+    expect(form.getAttribute('aria-busy')).toBe('false')
   })
 })

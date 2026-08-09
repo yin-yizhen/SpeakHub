@@ -159,8 +159,45 @@ export interface SessionArchiveSummary {
 
 export interface SessionArchiveDetail extends SessionArchiveSummary {
   transcript: Array<{ speaker: Speaker; text: string; receivedAt?: string; interrupted?: boolean }>
+  favoriteSentences?: SessionFavoriteSentence[]
   review?: ReviewResult
   focus?: string
+}
+
+export type SentenceLearningStatus = 'learning' | 'mastered'
+
+export interface SentenceAnalysis {
+  translation: string
+  structure: string
+  reusablePattern: string
+  expressions: Array<{ phrase: string; meaning: string }>
+  breakdown: Array<{ part: string; explanation: string }>
+  examples: string[]
+  tip?: string
+}
+
+export interface SessionSentenceAnalysis {
+  sourceMessageId: string
+  analysis: SentenceAnalysis
+}
+
+export interface SessionFavoriteSentence {
+  sourceMessageId: string
+  speaker: Speaker
+  text: string
+  savedAt: string
+  learningStatus?: SentenceLearningStatus
+  learnedAt?: string
+  analysis?: SentenceAnalysis
+}
+
+export interface SavedSentenceItem extends SessionFavoriteSentence {
+  id: string
+  sessionId: string
+  sessionStartedAt: string
+  source?: PracticeSource
+  mode?: PracticeMode
+  learningStatus: SentenceLearningStatus
 }
 
 export interface HistorySearchQuery {
@@ -367,7 +404,7 @@ export interface SpeakSubApi {
   savePromptTemplates: (templates: PromptTemplates) => Promise<PromptTemplates>
   getPracticePreferences: () => Promise<PracticePreferences>
   savePracticePreferences: (preferences: PracticePreferences) => Promise<PracticePreferences>
-  sendPracticeMessage: (message: string) => Promise<void>
+  sendPracticeMessage: (message: string, speakReply?: boolean) => Promise<void>
   sendApiMessage: (message: string) => Promise<void>
   startVoiceCapture: () => Promise<void>
   stopVoiceCapture: () => Promise<void>
@@ -384,6 +421,7 @@ export interface SpeakSubApi {
   getState: () => Promise<{ session?: PracticeSession; settings: SubtitlePreferences; events: TranscriptEvent[]; connection: ConnectionState; automation: AutomationStatus; source: PracticeSource; mode: PracticeMode; lifecycle: PracticeLifecycle; microphone: MicrophoneGateState; speechAssets: SpeechAssetState; speechUsage: SpeechUsageState; voicePhase: VoiceTurnPhase }>
   completeConnection: () => Promise<ConnectionState>
   clearWebConnectionLogin: () => Promise<ConnectionState>
+  reloadWebConnectionPage: () => Promise<void>
   importWebConnectionLogin: () => Promise<ConnectionState>
   showConnectionPage: () => Promise<ConnectionState>
   clearPendingCleanup: () => Promise<void>
@@ -398,10 +436,14 @@ export interface SpeakSubApi {
   resizeOverlay: (direction: import('../main/window-layout').ResizeDirection, origin: { x: number; y: number; width: number; height: number }, deltaX: number, deltaY: number) => Promise<SubtitlePreferences>
   lookup: (selection: string, sentence?: string) => Promise<DictionaryResult>
   saveSessionFavorite: (word: string) => Promise<void>
+  saveSessionSentence: (sourceMessageId: string) => Promise<SessionFavoriteSentence>
   searchSessions: (query?: HistorySearchQuery) => Promise<SessionArchiveSummary[]>
   getSessionDetail: (id: string) => Promise<SessionArchiveDetail>
+  regenerateSessionReview: (id: string) => Promise<SessionArchiveDetail>
   deleteSession: (id: string) => Promise<void>
   listVocabulary: (filter?: { familiarity?: VocabularyFamiliarity; dueOnly?: boolean; text?: string }) => Promise<VocabularyItem[]>
+  listSavedSentences: (filter?: { text?: string; learningStatus?: SentenceLearningStatus }) => Promise<SavedSentenceItem[]>
+  updateSavedSentenceStatus: (id: string, learningStatus: SentenceLearningStatus) => Promise<SavedSentenceItem>
   updateVocabularyFamiliarity: (id: string, familiarity: VocabularyFamiliarity) => Promise<VocabularyItem>
   reviewVocabulary: (id: string, rating: VocabularyReviewRating) => Promise<VocabularyItem>
   getReviewQueue: () => Promise<VocabularyItem[]>

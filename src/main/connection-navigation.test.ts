@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  clearConnectionCaches,
   chromeCompatibleUserAgent,
+  connectionDiagnosticOrigin,
   connectionLoginCookieUrl,
   isAbortedNavigationError,
   isAllowedConnectionUrl,
   isCurrentConnectionPage,
-  loadConnectionUrl
+  loadConnectionUrl,
+  reloadConnectionPage,
+  shouldReportConnectionLoadFailure
 } from './connection-navigation'
 
 describe('connection page navigation', () => {
@@ -28,6 +32,54 @@ describe('connection page navigation', () => {
     expect(isCurrentConnectionPage('https://auth.openai.com/log-in', 'chatgpt-web')).toBe(true)
     expect(isCurrentConnectionPage('https://accounts.google.com/o/oauth2/v2/auth', 'chatgpt-web')).toBe(true)
     expect(isCurrentConnectionPage('https://example.com/', 'chatgpt-web')).toBe(false)
+  })
+
+  it('reloads an existing connection page without using its HTTP cache', async () => {
+    const contents = {
+      getURL: vi.fn(() => 'https://chatgpt.com/c/example'),
+      isDestroyed: vi.fn(() => false),
+      loadURL: vi.fn(),
+      reloadIgnoringCache: vi.fn()
+    }
+
+    await reloadConnectionPage(contents, 'https://chatgpt.com/')
+
+    expect(contents.reloadIgnoringCache).toHaveBeenCalledOnce()
+    expect(contents.loadURL).not.toHaveBeenCalled()
+  })
+
+  it('loads the safe fallback when the current connection URL is unusable', async () => {
+    const contents = {
+      getURL: vi.fn(() => 'about:blank'),
+      isDestroyed: vi.fn(() => false),
+      loadURL: vi.fn(async () => undefined),
+      reloadIgnoringCache: vi.fn()
+    }
+
+    await reloadConnectionPage(contents, 'https://chatgpt.com/')
+
+    expect(contents.loadURL).toHaveBeenCalledWith('https://chatgpt.com/')
+    expect(contents.reloadIgnoringCache).not.toHaveBeenCalled()
+  })
+
+  it('clears the HTTP and code caches used by a full connection reset', async () => {
+    const webSession = {
+      clearCache: vi.fn(async () => undefined),
+      clearCodeCaches: vi.fn(async () => undefined)
+    }
+
+    await clearConnectionCaches(webSession)
+
+    expect(webSession.clearCache).toHaveBeenCalledOnce()
+    expect(webSession.clearCodeCaches).toHaveBeenCalledWith({})
+  })
+
+  it('reports only real main-frame failures and logs origins without sensitive paths', () => {
+    expect(shouldReportConnectionLoadFailure(-105, true)).toBe(true)
+    expect(shouldReportConnectionLoadFailure(-105, false)).toBe(false)
+    expect(shouldReportConnectionLoadFailure(-3, true)).toBe(false)
+    expect(connectionDiagnosticOrigin('https://auth.openai.com/oauth/callback?code=secret')).toBe('https://auth.openai.com')
+    expect(connectionDiagnosticOrigin('not a url')).toBe('unknown')
   })
 
   it('allows only the exact HTTPS hosts required by ChatGPT and Google sign-in', () => {

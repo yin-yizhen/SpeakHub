@@ -36,6 +36,15 @@ type CookieResponse = {
   cookies: ChromeCookie[]
 }
 
+export type BrowserTargetInfo = {
+  type: string
+  url: string
+}
+
+type TargetResponse = {
+  targetInfos: BrowserTargetInfo[]
+}
+
 export type ImportedChatGptLogin = {
   cookieCount: number
   skippedCookieCount: number
@@ -119,6 +128,29 @@ export function isChatGptCookieDomain(domain: string): boolean {
 
 export function hasChatGptSessionCookie(cookies: ChromeCookie[]): boolean {
   return cookies.some((cookie) => isChatGptCookieDomain(cookie.domain) && SESSION_COOKIE_PATTERN.test(cookie.name))
+}
+
+function isAuthenticationFlowUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    if (url.hostname === 'auth.openai.com' || url.hostname === 'accounts.google.com') return true
+    return url.hostname === 'chatgpt.com' && (url.pathname === '/auth' || url.pathname.startsWith('/auth/'))
+  } catch {
+    return false
+  }
+}
+
+export function hasCompletedChatGptLogin(targets: BrowserTargetInfo[]): boolean {
+  const pages = targets.filter((target) => target.type === 'page')
+  if (pages.some((target) => isAuthenticationFlowUrl(target.url))) return false
+  return pages.some((target) => {
+    try {
+      const url = new URL(target.url)
+      return url.protocol === 'https:' && url.hostname === 'chatgpt.com' && url.pathname !== '/auth' && !url.pathname.startsWith('/auth/')
+    } catch {
+      return false
+    }
+  })
 }
 
 export function selectChatGptCookiesForImport(cookies: ChromeCookie[]): ChromeCookie[] {
@@ -250,8 +282,11 @@ async function waitForChatGptCookies(client: DevToolsClient): Promise<ChromeCook
   const deadline = Date.now() + LOGIN_TIMEOUT_MS
   let previousSessionSignature: string | undefined
   while (Date.now() < deadline) {
-    const result = await client.command<CookieResponse>('Storage.getCookies')
-    if (hasChatGptSessionCookie(result.cookies)) {
+    const [result, targets] = await Promise.all([
+      client.command<CookieResponse>('Storage.getCookies'),
+      client.command<TargetResponse>('Target.getTargets')
+    ])
+    if (hasChatGptSessionCookie(result.cookies) && hasCompletedChatGptLogin(targets.targetInfos)) {
       const signature = result.cookies
         .filter((cookie) => isChatGptCookieDomain(cookie.domain) && SESSION_COOKIE_PATTERN.test(cookie.name))
         .sort((left, right) => left.name.localeCompare(right.name))

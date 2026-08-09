@@ -3,6 +3,15 @@ import { describe, expect, it, vi } from 'vitest'
 import { ChatGPTAutomation, fillComposer, findComposer, findConversationMenuButton, findConversationRow, findDeleteConfirmationButton, findDeleteMenuItem, findEndVoiceButton, findSendButton, findStopButton, findVoiceButton } from './chatgpt-automation'
 
 describe('ChatGPT page automation selectors', () => {
+  it('checks the real ChatGPT session instead of treating the logged-out composer as signed in', async () => {
+    const executeJavaScript = vi.fn().mockResolvedValue(false)
+    const automation = new ChatGPTAutomation({ executeJavaScript } as never)
+
+    await expect(automation.isAuthenticated()).resolves.toBe(false)
+    expect(executeJavaScript.mock.calls[0][0]).toContain("fetch('/api/auth/session'")
+    expect(executeJavaScript.mock.calls[0][0]).toContain('session.user')
+  })
+
   it('fills the composer and finds send and voice controls', () => {
     document.body.innerHTML = '<div id="prompt-textarea" contenteditable="true"></div><button aria-label="发送消息"></button><button aria-label="开始语音聊天"></button>'
     const composer = findComposer(document)
@@ -82,6 +91,16 @@ describe('ChatGPT page automation selectors', () => {
     document.body.innerHTML = '<button data-testid="stop-button" aria-label="停止生成"></button><button data-testid="voice-mode-button" aria-label="开始语音聊天"></button>'
     expect(findStopButton(document)).toBeTruthy()
     expect(findVoiceButton(document)).toBeTruthy()
+  })
+
+  it('clicks the visible generation stop control before a replacement prompt', async () => {
+    const executeJavaScript = vi.fn(async () => true)
+    const automation = new ChatGPTAutomation({ executeJavaScript } as never)
+
+    await expect(automation.stopGenerating()).resolves.toBe(true)
+    const [script] = (executeJavaScript.mock.calls as unknown as Array<[string]>)[0]!
+    expect(script).toContain('data-testid*')
+    expect(script).toContain('button.click()')
   })
 
   it('recognises the dedicated voice-session end control', () => {

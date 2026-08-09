@@ -29,4 +29,18 @@ describe('PracticeController', () => {
     const ending = controller.end(async () => { active = undefined; return endResult() }, () => Boolean(active))
     release(); await starting; await expect(ending).resolves.toMatchObject({ voiceStopped: true }); expect(controller.lifecycle).toBe('idle')
   })
+
+  it('cancels a pending start immediately and ignores its late completion', async () => {
+    const controller = new PracticeController(); let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const starting = controller.start(async (signal) => { await gate; expect(signal.aborted).toBe(true); return startResult() }, () => undefined)
+
+    expect(controller.cancelStart()).toBe(true)
+    await expect(starting).rejects.toThrow('Practice startup was cancelled.')
+    expect(controller.lifecycle).toBe('idle')
+
+    await expect(controller.start(async () => startResult(), () => undefined)).resolves.toMatchObject({ session: { id: 's1' } })
+    release(); await Promise.resolve()
+    expect(controller.lifecycle).toBe('active')
+  })
 })

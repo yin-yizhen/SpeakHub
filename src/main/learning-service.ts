@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { DictionaryResult, ReviewResult, TranscriptEvent } from '../shared/types'
+import type { DictionaryResult, ReviewResult, SessionFavoriteSentence, SessionSentenceAnalysis, TranscriptEvent } from '../shared/types'
 import { buildDirectChatSystemPrompt } from '../shared/direct-chat-prompt'
 import { LocalDictionary } from './local-dictionary'
 import { SecureSettings } from './secure-settings'
@@ -17,7 +17,86 @@ const reviewSchema = z.object({
   }).optional()
 })
 
+const sentenceAnalysisSchema = z.object({
+  translation: z.string().min(1).max(500),
+  structure: z.string().min(1).max(300),
+  reusablePattern: z.string().min(1).max(300),
+  expressions: z.array(z.object({ phrase: z.string().min(1).max(100), meaning: z.string().min(1).max(200) })).max(4),
+  breakdown: z.array(z.object({ part: z.string().min(1).max(200), explanation: z.string().min(1).max(300) })).max(5),
+  examples: z.array(z.string().min(1).max(300)).max(3),
+  tip: z.string().max(300).optional()
+})
+
+const reviewWithSentencesSchema = reviewSchema.extend({
+  sentenceAnalyses: z.array(z.object({ sourceMessageId: z.string().min(1).max(2_000), analysis: sentenceAnalysisSchema })).max(100)
+})
+
 type LlmMessage = { role: 'system' | 'user' | 'assistant'; content: string }
+
+const DEFAULT_LLM_TIMEOUT_MS = 30_000
+const REVIEW_LLM_TIMEOUT_MS = 120_000
+
+function timeoutError(timeoutMs: number): Error {
+  return new Error(`大模型请求超过 ${Math.round(timeoutMs / 1000)} 秒仍未完成，请检查网络后稍后重试。`)
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'TimeoutError' || /aborted due to timeout|timed out/i.test(error.message))
+}
+
+const SUBTITLE_DELTA_TARGET_CHARACTERS = 18
+const SUBTITLE_DELTA_MAX_CHARACTERS = 28
+const SUBTITLE_DELTA_DELAY_MS = 24
+
+function abortError(): Error {
+  const error = new Error('Aborted')
+  error.name = 'AbortError'
+  return error
+}
+
+function subtitleDeltaChunks(text: string): string[] {
+  if ([...text].length <= SUBTITLE_DELTA_MAX_CHARACTERS) return [text]
+  const chunks: string[] = []
+  let chunk = ''
+  let length = 0
+  for (const character of text) {
+    chunk += character
+    length += 1
+    const naturalBoundary = length >= SUBTITLE_DELTA_TARGET_CHARACTERS && /[\s,.!?;:，。！？；：]/u.test(character)
+    if (naturalBoundary || length >= SUBTITLE_DELTA_MAX_CHARACTERS) {
+      chunks.push(chunk)
+      chunk = ''
+      length = 0
+    }
+  }
+  if (chunk) chunks.push(chunk)
+  return chunks
+}
+
+function waitForSubtitleFrame(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError())
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, SUBTITLE_DELTA_DELAY_MS)
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      reject(abortError())
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+async function emitSubtitleDeltas(text: string, onDelta: (delta: string) => void, signal?: AbortSignal): Promise<void> {
+  const chunks = subtitleDeltaChunks(text)
+  for (let index = 0; index < chunks.length; index += 1) {
+    if (signal?.aborted) throw abortError()
+    onDelta(chunks[index])
+    if (index < chunks.length - 1) await waitForSubtitleFrame(signal)
+  }
+}
 
 export class LearningService {
   private readonly localDictionary?: LocalDictionary
@@ -44,10 +123,30 @@ export class LearningService {
 
   async review(archiveMarkdown: string, strength: string, favorites: string[] = []): Promise<ReviewResult> {
     const savedVocabulary = favorites.length ? favorites.map((word) => `- ${word}`).join('\n') : '(none)'
-    const result = await this.askLlm(`You are a concise English speaking coach. Analyze this complete practice archive at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]}}. Scores are integer-like values from 0 to 100 based only on language visible in the transcript; do not claim acoustic pronunciation analysis. Use Chinese for explanations. The vocabulary array must contain explanations only for the saved vocabulary below. Give each saved word a short English example sentence. Do not add other vocabulary; when none is saved, return an empty vocabulary array. Saved vocabulary:\n${savedVocabulary}\nPractice archive Markdown:\n${archiveMarkdown}`)
+    const result = await this.askLlm(`You are a concise English speaking coach. Analyze this complete practice archive at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]}}. Scores are integer-like values from 0 to 100 based only on language visible in the transcript; do not claim acoustic pronunciation analysis. Use Chinese for explanations. The vocabulary array must contain explanations only for the saved vocabulary below. Give each saved word a short English example sentence. Do not add other vocabulary; when none is saved, return an empty vocabulary array. Saved vocabulary:\n${savedVocabulary}\nPractice archive Markdown:\n${archiveMarkdown}`, REVIEW_LLM_TIMEOUT_MS)
     const review = reviewSchema.parse(result)
     const saved = new Set(favorites.map((word) => word.toLocaleLowerCase()))
     return { ...review, vocabulary: review.vocabulary.filter((item) => saved.has(item.term.toLocaleLowerCase())) }
+  }
+
+  async reviewWithSentences(archiveMarkdown: string, strength: string, favorites: string[] = [], sentences: Array<Pick<SessionFavoriteSentence, 'sourceMessageId' | 'text'>> = []): Promise<{ review: ReviewResult; sentenceAnalyses: SessionSentenceAnalysis[] }> {
+    if (!sentences.length) return { review: await this.review(archiveMarkdown, strength, favorites), sentenceAnalyses: [] }
+    const savedVocabulary = favorites.length ? favorites.map((word) => `- ${word}`).join('\n') : '(none)'
+    const savedSentences = JSON.stringify(sentences)
+    const result = await this.askLlm(`You are a concise English speaking coach. Analyze this complete practice archive and every saved sentence in one response at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]},"sentenceAnalyses":[{"sourceMessageId":"copy the supplied id exactly","analysis":{"translation":"自然中文意思","structure":"一句简短的句型结构说明","reusablePattern":"一个可以替换内容复用的英文句型","expressions":[{"phrase":"原句中的常用表达","meaning":"简短中文含义和使用场景"}],"breakdown":[{"part":"原句片段","explanation":"该片段在句中的作用"}],"examples":["使用可复用句型的新例句"],"tip":"一个简短的易错点或更自然表达建议"}}]}. Scores are integer-like values from 0 to 100 based only on visible language; do not claim acoustic pronunciation analysis. Use Chinese for explanations. Vocabulary must explain only the saved vocabulary. Return exactly one sentenceAnalyses item for each saved sentence, preserving its sourceMessageId exactly. Keep structure and reusablePattern concise enough for a three-line list preview. Return at most 4 expressions, 5 breakdown items, and 3 examples per sentence. Saved vocabulary:\n${savedVocabulary}\nSaved sentences:\n${savedSentences}\nPractice archive Markdown:\n${archiveMarkdown}`, REVIEW_LLM_TIMEOUT_MS)
+    const parsed = reviewWithSentencesSchema.parse(result)
+    const savedWords = new Set(favorites.map((word) => word.toLocaleLowerCase()))
+    const sentenceIds = new Set(sentences.map((sentence) => sentence.sourceMessageId))
+    const seenSentenceIds = new Set<string>()
+    const { sentenceAnalyses: rawSentenceAnalyses, ...rawReview } = parsed
+    const review = { ...rawReview, vocabulary: rawReview.vocabulary.filter((item) => savedWords.has(item.term.toLocaleLowerCase())) }
+    const sentenceAnalyses = rawSentenceAnalyses.filter((item) => {
+      if (!sentenceIds.has(item.sourceMessageId) || seenSentenceIds.has(item.sourceMessageId)) return false
+      seenSentenceIds.add(item.sourceMessageId)
+      return true
+    })
+    if (sentenceAnalyses.length !== sentenceIds.size) throw new Error('大模型返回的收藏句子分析不完整，请重新生成复盘。')
+    return { review, sentenceAnalyses }
   }
 
   async chat(events: TranscriptEvent[], topic: string, level: string, prompt?: string, systemPrompt?: string): Promise<string> {
@@ -66,8 +165,8 @@ export class LearningService {
         throw new Error(`LLM request failed (${response.status})`)
       }
       const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-      if (!contentType.includes('text/event-stream')) return this.readNonStreamingResponse(response, options.onDelta)
-      received = await readSseResponse(response, options.onDelta)
+      if (!contentType.includes('text/event-stream')) return this.readNonStreamingResponse(response, options.onDelta, options.signal)
+      received = await readSseResponse(response, options.onDelta, options.signal)
       if (received) return received
       return this.nonStreamingFallback(messages, options)
     } catch (error) {
@@ -77,17 +176,22 @@ export class LearningService {
     }
   }
 
-  private async askLlm(prompt: string): Promise<unknown> {
-    const content = await this.requestLlm([{ role: 'user', content: prompt }], true)
+  private async askLlm(prompt: string, timeoutMs = DEFAULT_LLM_TIMEOUT_MS): Promise<unknown> {
+    const content = await this.requestLlm([{ role: 'user', content: prompt }], true, timeoutMs)
     try { return JSON.parse(content) } catch { throw new Error('LLM returned invalid JSON.') }
   }
 
-  private async requestLlm(messages: LlmMessage[], json = false): Promise<string> {
+  private async requestLlm(messages: LlmMessage[], json = false, timeoutMs = DEFAULT_LLM_TIMEOUT_MS): Promise<string> {
     const config = this.requireLlmConfig()
     const body = { model: config.model, messages, ...(json ? { response_format: { type: 'json_object' } } : {}) }
-    const response = await this.post(config.url, config.apiKey, body)
-    if (!response.ok) throw new Error(`LLM request failed (${response.status})`)
-    return this.readNonStreamingResponse(response)
+    try {
+      const response = await this.post(config.url, config.apiKey, body, undefined, timeoutMs)
+      if (!response.ok) throw new Error(`LLM request failed (${response.status})`)
+      return await this.readNonStreamingResponse(response)
+    } catch (error) {
+      if (isTimeoutError(error)) throw timeoutError(timeoutMs)
+      throw error
+    }
   }
 
   private chatMessages(events: TranscriptEvent[], topic: string, level: string, prompt?: string, systemPrompt?: string): LlmMessage[] {
@@ -105,13 +209,13 @@ export class LearningService {
     return { url, model: config.llmModel, apiKey: secrets.llmApiKey }
   }
 
-  private async post(url: URL, apiKey: string, body: unknown, signal?: AbortSignal): Promise<Response> {
-    const timeout = AbortSignal.timeout(30_000)
+  private async post(url: URL, apiKey: string, body: unknown, signal?: AbortSignal, timeoutMs = DEFAULT_LLM_TIMEOUT_MS): Promise<Response> {
+    const timeout = AbortSignal.timeout(timeoutMs)
     const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
     try {
       return await this.fetcher(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body), signal: requestSignal })
     } catch (error) {
-      if (timeout.aborted && !signal?.aborted) throw new Error('LLM request timed out after 30 seconds.')
+      if (timeout.aborted && !signal?.aborted) throw timeoutError(timeoutMs)
       throw error
     }
   }
@@ -120,32 +224,32 @@ export class LearningService {
     const config = this.requireLlmConfig()
     const response = await this.post(config.url, config.apiKey, { model: config.model, messages }, options.signal)
     if (!response.ok) throw new Error(`LLM request failed (${response.status})`)
-    return this.readNonStreamingResponse(response, options.onDelta)
+    return this.readNonStreamingResponse(response, options.onDelta, options.signal)
   }
 
-  private async readNonStreamingResponse(response: Response, onContent?: (content: string) => void): Promise<string> {
+  private async readNonStreamingResponse(response: Response, onContent?: (content: string) => void, signal?: AbortSignal): Promise<string> {
     const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
     const content = payload.choices?.[0]?.message?.content
     if (!content) throw new Error('LLM returned no message content.')
-    onContent?.(content)
+    if (onContent) await emitSubtitleDeltas(content, onContent, signal)
     return content
   }
 }
 
-async function readSseResponse(response: Response, onDelta: (delta: string) => void): Promise<string> {
+async function readSseResponse(response: Response, onDelta: (delta: string) => void, signal?: AbortSignal): Promise<string> {
   if (!response.body) throw new Error('LLM streaming response had no body.')
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
   let result = ''
-  const consume = (block: string): boolean => {
+  const consume = async (block: string): Promise<boolean> => {
     const data = block.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n').trim()
     if (!data) return false
     if (data === '[DONE]') return true
     let payload: { choices?: Array<{ delta?: { content?: string } }> }
     try { payload = JSON.parse(data) as typeof payload } catch { return false }
     const delta = payload.choices?.[0]?.delta?.content
-    if (delta) { result += delta; onDelta(delta) }
+    if (delta) { result += delta; await emitSubtitleDeltas(delta, onDelta, signal) }
     return false
   }
   while (true) {
@@ -153,9 +257,9 @@ async function readSseResponse(response: Response, onDelta: (delta: string) => v
     buffer += decoder.decode(value, { stream: !done })
     const blocks = buffer.split(/\r?\n\r?\n/)
     buffer = blocks.pop() ?? ''
-    for (const block of blocks) if (consume(block)) return result
+    for (const block of blocks) if (await consume(block)) return result
     if (done) break
   }
-  if (buffer) consume(buffer)
+  if (buffer) await consume(buffer)
   return result
 }

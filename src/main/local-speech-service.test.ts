@@ -127,6 +127,26 @@ describe('LocalSpeechService', () => {
     expect(cloudTts.synthesize).toHaveBeenCalledWith('Hello', expect.any(AbortSignal))
   })
 
+  it('starts TTS by itself for typed conversations without VAD or an Aliyun key', async () => {
+    const workerFactory = vi.fn(() => { throw new Error('A synthesis-only MiMo service must not start a worker.') })
+    const recognizerFactory = vi.fn(() => fakeCloud().api)
+    const cloudTts = { synthesize: vi.fn(async () => ({ samples: Float32Array.from([0.2]), sampleRate: 24000 as const })) }
+    const service = new LocalSpeechService(
+      { vad: 'D:/models/silero-vad/silero_vad.onnx', tts: 'D:/models/tts' },
+      { recognitionEnabled: false, ttsProvider: 'mimo', mimoTtsApiKey: 'mimo-secret', mimoTtsVoice: 'Mia' },
+      workerFactory as never,
+      recognizerFactory as never,
+      (() => cloudTts) as never
+    )
+
+    await service.start()
+    await expect(service.synthesize('Typed reply', 'message-text-1', 0, 2)).resolves.toMatchObject({ sampleRate: 24000 })
+
+    expect(workerFactory).not.toHaveBeenCalled()
+    expect(recognizerFactory).not.toHaveBeenCalled()
+    expect(cloudTts.synthesize).toHaveBeenCalledWith('Typed reply', expect.any(AbortSignal))
+  })
+
   it('aborts an in-flight MiMo request when speech is interrupted', async () => {
     const workers: FakeWorker[] = []
     const cloud = fakeCloud()

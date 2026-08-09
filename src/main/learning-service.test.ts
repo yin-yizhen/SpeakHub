@@ -26,6 +26,38 @@ describe('review response boundary', () => {
     const request = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1]
     expect(JSON.parse(String(request.body)).messages[0].content).toContain('Practice archive Markdown:\n# Speaking practice')
   })
+
+  it('uses the review-specific timeout and translates a body timeout into a recoverable message', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => { throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }) }
+    }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'review-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
+
+    await expect(service.review('# Speaking practice', 'normal')).rejects.toThrow('120 秒')
+  })
+})
+
+describe('review with saved sentence analysis boundary', () => {
+  it('returns review and all saved sentence analyses from one model request', async () => {
+    const analysis = { translation: '慢慢来。', structure: '祈使句', reusablePattern: 'Take your time to + 动词', expressions: [{ phrase: 'take your time', meaning: '慢慢来，不用着急' }], breakdown: [{ part: 'Take your time', explanation: '用于安慰或允许对方从容处理' }], examples: ['Take your time to think about it.'], tip: '不表示占用别人的时间。' }
+    const response = { topic: 'travel', summary: 'summary', issues: [], vocabulary: [{ term: 'persistent', meaning: '坚持的' }, { term: 'extra', meaning: '不应保留' }], nextPractice: 'next time', sentenceAnalyses: [{ sourceMessageId: 'sentence-1', analysis }], assessment: { estimatedCefr: 'B1', scores: { accuracy: 72, vocabulary: 68, fluency: 75, interaction: 80 }, errorCategories: [], weakPoints: [] } }
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(response) } }] }) }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'analysis-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
+
+    await expect(service.reviewWithSentences('# Speaking practice', 'normal', ['persistent'], [{ sourceMessageId: 'sentence-1', text: 'Take your time.' }])).resolves.toMatchObject({ review: { vocabulary: [{ term: 'persistent' }] }, sentenceAnalyses: [{ sourceMessageId: 'sentence-1', analysis }] })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const request = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1]
+    expect(JSON.parse(String(request.body)).messages[0].content).toContain('Saved sentences:\n[{"sourceMessageId":"sentence-1","text":"Take your time."}]')
+  })
+
+  it('rejects a combined review that omits a saved sentence analysis', async () => {
+    const response = { topic: 'travel', summary: 'summary', issues: [], vocabulary: [], nextPractice: 'next time', sentenceAnalyses: [], assessment: { estimatedCefr: 'B1', scores: { accuracy: 72, vocabulary: 68, fluency: 75, interaction: 80 }, errorCategories: [], weakPoints: [] } }
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(response) } }] }) }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'analysis-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
+
+    await expect(service.reviewWithSentences('# Speaking practice', 'normal', [], [{ sourceMessageId: 'sentence-1', text: 'Take your time.' }])).rejects.toThrow('句子分析不完整')
+  })
 })
 
 describe('lookup response boundary', () => {
@@ -112,6 +144,34 @@ describe('OpenAI-compatible direct chat', () => {
     await expect(service.streamChat([], 'daily', 'B1', { onDelta: (delta) => deltas.push(delta) })).resolves.toBe('你好，world!')
     expect(deltas).toEqual(['你好，', 'world!'])
     expect(JSON.parse(String((fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1].body))).toMatchObject({ stream: true })
+  })
+
+  it('paces a compatible non-SSE response into multiple subtitle deltas', async () => {
+    const content = 'This complete compatibility response should still appear progressively in the subtitle overlay.'
+    const fetchMock = vi.fn(async () => Response.json({ choices: [{ message: { content } }] }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'practice-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as typeof fetch)
+    const snapshots: string[] = []
+    let displayed = ''
+
+    await expect(service.streamChat([], 'daily', 'B1', { onDelta: (delta) => { displayed += delta; snapshots.push(displayed) } })).resolves.toBe(content)
+
+    expect(snapshots.length).toBeGreaterThan(1)
+    expect(snapshots[0]).not.toBe(content)
+    expect(snapshots.at(-1)).toBe(content)
+  })
+
+  it('can interrupt while a complete provider response is being paced into subtitle deltas', async () => {
+    const content = 'This complete compatibility response is intentionally long enough to require several subtitle updates.'
+    const fetchMock = vi.fn(async () => Response.json({ choices: [{ message: { content } }] }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'practice-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as typeof fetch)
+    const controller = new AbortController()
+    const deltas: string[] = []
+
+    const request = service.streamChat([], 'daily', 'B1', { signal: controller.signal, onDelta: (delta) => { deltas.push(delta); controller.abort() } })
+
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' })
+    expect(deltas).toHaveLength(1)
+    expect(deltas[0]).not.toBe(content)
   })
 
   it('falls back once to a normal response when streaming is rejected before any delta', async () => {

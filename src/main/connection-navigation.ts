@@ -2,6 +2,17 @@ type NavigableWebContents = {
   loadURL(url: string): Promise<unknown>
 }
 
+type RecoverableWebContents = NavigableWebContents & {
+  getURL(): string
+  isDestroyed(): boolean
+  reloadIgnoringCache(): void
+}
+
+type ConnectionCacheSession = {
+  clearCache(): Promise<void>
+  clearCodeCaches(options: { urls?: string[] }): Promise<void>
+}
+
 type ConnectionCookie = {
   domain?: string
   name: string
@@ -25,6 +36,18 @@ const CONNECTION_LOGIN_COOKIE_DOMAINS = [
 
 export function isAbortedNavigationError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ERR_ABORTED'
+}
+
+export function shouldReportConnectionLoadFailure(errorCode: number, isMainFrame: boolean): boolean {
+  return isMainFrame && errorCode !== -3
+}
+
+export function connectionDiagnosticOrigin(value: string): string {
+  try {
+    return new URL(value).origin
+  } catch {
+    return 'unknown'
+  }
 }
 
 export function chromeCompatibleUserAgent(chromeVersion: string): string {
@@ -55,6 +78,20 @@ export async function loadConnectionUrl(contents: NavigableWebContents, url: str
     // Electron rejects the previous load when a new login/navigation request replaces it.
     if (!isAbortedNavigationError(error)) throw error
   }
+}
+
+export async function reloadConnectionPage(contents: RecoverableWebContents, fallbackUrl: string): Promise<void> {
+  if (contents.isDestroyed()) return
+  if (!isAllowedConnectionUrl(contents.getURL())) {
+    await loadConnectionUrl(contents, fallbackUrl)
+    return
+  }
+  contents.reloadIgnoringCache()
+}
+
+export async function clearConnectionCaches(webSession: ConnectionCacheSession): Promise<void> {
+  await webSession.clearCache()
+  await webSession.clearCodeCaches({})
 }
 
 export function isCurrentConnectionPage(url: string, source: WebPracticeSource): boolean {

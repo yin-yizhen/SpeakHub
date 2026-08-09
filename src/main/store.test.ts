@@ -24,6 +24,42 @@ describe('Markdown learning archive', () => {
     } finally { rmSync(directory, { recursive: true, force: true }) }
   })
 
+  it('saves a complete transcript sentence once and rebuilds it for the learning center', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speaksub-sentences-'))
+    try {
+      const now = new Date('2026-07-10T10:02:00.000Z')
+      const store = new SpeakSubStore(directory, () => now)
+      const session = store.createSession({ ...profile, mode: 'voice' })
+      store.upsertEvent({ id: 'event-1', sessionId: session.id, sourceMessageId: 'source-1', speaker: 'assistant', text: 'That makes sense.\n\nTell me more.', status: 'complete', receivedAt: '2026-07-10T10:01:00.000Z' })
+
+      store.saveSentenceFavorite(session.id, 'source-1')
+      store.saveSentenceFavorite(session.id, 'source-1')
+
+      const activeMarkdown = readFileSync(join(directory, 'current-practice.md'), 'utf8')
+      expect(activeMarkdown).toContain('## Saved sentences\n\n- AI: That makes sense. Tell me more.')
+      expect(activeMarkdown.match(/- AI: That makes sense/g)).toHaveLength(1)
+
+      store.endSession(session)
+      store.saveReview(session.id, review, [{ sourceMessageId: 'source-1', analysis: { translation: '有道理，请继续。', structure: '陈述句 + 祈使句', reusablePattern: 'That makes sense. + 动词原形', expressions: [{ phrase: 'make sense', meaning: '有道理' }], breakdown: [{ part: 'Tell me more', explanation: '邀请对方继续说明' }], examples: ['That makes sense. Tell me what happened.'] } }])
+      store.finalizeSession(session.id)
+      const saved = store.listSavedSentences()[0]
+      expect(saved).toMatchObject({ text: 'That makes sense. Tell me more.', speaker: 'assistant', mode: 'voice', source: 'api-direct', sessionId: session.id, learningStatus: 'learning', analysis: { structure: '陈述句 + 祈使句' } })
+      expect(store.updateSavedSentenceStatus(saved.id, 'mastered')).toMatchObject({ learningStatus: 'mastered', learnedAt: now.toISOString() })
+      expect(store.listSavedSentences({ learningStatus: 'learning' })).toEqual([])
+      expect(new SpeakSubStore(directory).listSavedSentences()).toMatchObject([{ text: 'That makes sense. Tell me more.', sessionId: session.id, learningStatus: 'mastered', analysis: { reusablePattern: 'That makes sense. + 动词原形' } }])
+    } finally { rmSync(directory, { recursive: true, force: true }) }
+  })
+
+  it('rejects a sentence before its transcript event is complete', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speaksub-sentence-streaming-'))
+    try {
+      const store = new SpeakSubStore(directory)
+      const session = store.createSession(profile)
+      store.upsertEvent({ id: 'partial', sessionId: session.id, sourceMessageId: 'source-1', speaker: 'assistant', text: 'Still streaming', status: 'streaming', receivedAt: '2026-07-10T10:01:00.000Z' })
+      expect(() => store.saveSentenceFavorite(session.id, 'source-1')).toThrow('Wait for the sentence to finish')
+    } finally { rmSync(directory, { recursive: true, force: true }) }
+  })
+
   it('keeps streaming subtitles in memory but archives only finalized turn text', () => {
     const directory = mkdtempSync(join(tmpdir(), 'speaksub-streaming-'))
     try {
@@ -69,6 +105,27 @@ describe('Markdown learning archive', () => {
       expect(readFileSync(finalPath!, 'utf8')).toContain('## Review')
       expect(readFileSync(finalPath!, 'utf8')).toContain('Example: Hello, Sam.')
       expect(readdirSync(directory)).toContain('learning-index.json')
+    } finally { rmSync(directory, { recursive: true, force: true }) }
+  })
+
+  it('adds a regenerated review to an existing archive and refreshes dashboard scores', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speaksub-review-retry-'))
+    try {
+      const store = new SpeakSubStore(directory, () => new Date('2026-07-10T10:00:00.000Z'))
+      const session = store.createSession(profile)
+      store.upsertEvent({ id: 'u1', sessionId: session.id, sourceMessageId: 'u1', speaker: 'user', text: 'I go yesterday.', status: 'complete', receivedAt: '2026-07-10T10:01:00.000Z' })
+      store.saveSentenceFavorite(session.id, 'u1')
+      store.endSession(session)
+      const finalPath = store.finalizeSession(session.id)!
+      expect(store.getSessionDetail(session.id).hasReview).toBe(false)
+
+      const updated = store.saveArchivedReview(session.id, review, [{ sourceMessageId: 'u1', analysis: { translation: '我昨天去。', structure: '一般过去时陈述句', reusablePattern: 'I + 过去式 + 时间', expressions: [], breakdown: [{ part: 'yesterday', explanation: '过去时间状语' }], examples: ['I visited London yesterday.'] } }])
+
+      expect(updated).toMatchObject({ hasReview: true, review: { assessment: { estimatedCefr: 'B1' } }, favoriteSentences: [{ analysis: { structure: '一般过去时陈述句' } }] })
+      expect(store.readArchivedSessionMarkdown(session.id)).toContain('I go yesterday.')
+      expect(readFileSync(finalPath, 'utf8')).toContain('## Review')
+      expect(store.getLearningDashboard('week').averageScores).toMatchObject({ accuracy: 72 })
+      expect(new SpeakSubStore(directory).listSavedSentences()).toMatchObject([{ analysis: { reusablePattern: 'I + 过去式 + 时间' } }])
     } finally { rmSync(directory, { recursive: true, force: true }) }
   })
 
@@ -120,11 +177,11 @@ describe('Markdown learning archive', () => {
     const directory = mkdtempSync(join(tmpdir(), 'speaksub-'))
     try {
       let now = new Date('2026-07-10T10:00:00.000Z'); const store = new SpeakSubStore(directory, () => now)
-      const session = store.createSession(profile); store.saveFavorite(session.id, 'persistent'); now = new Date('2026-07-10T10:10:00.000Z'); store.endSession(session); store.saveReview(session.id, review); store.finalizeSession(session.id)
+      const session = store.createSession(profile); store.saveFavorite(session.id, 'persistent'); store.upsertEvent({ id: 'a1', sessionId: session.id, sourceMessageId: 'a1', speaker: 'assistant', text: 'A saved sentence.', status: 'complete', receivedAt: now.toISOString() }); store.saveSentenceFavorite(session.id, 'a1'); now = new Date('2026-07-10T10:10:00.000Z'); store.endSession(session); store.saveReview(session.id, review); store.finalizeSession(session.id)
       const dashboard = store.getLearningDashboard('week')
       expect(dashboard).toMatchObject({ sessionCount: 1, totalMinutes: 10, newVocabulary: 1, dueVocabulary: 1, averageScores: { accuracy: 72 }, topErrors: [{ category: 'tense', count: 2 }] })
       const archived = store.searchSessions()[0]; store.deleteSession(archived.id)
-      expect(store.searchSessions()).toEqual([]); expect(store.listVocabulary()).toEqual([])
+      expect(store.searchSessions()).toEqual([]); expect(store.listVocabulary()).toEqual([]); expect(store.listSavedSentences()).toEqual([])
       expect(readdirSync(directory).some((file) => file.startsWith('speaksub-practice-'))).toBe(false)
     } finally { rmSync(directory, { recursive: true, force: true }) }
   })
