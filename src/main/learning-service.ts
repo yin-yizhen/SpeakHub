@@ -6,7 +6,7 @@ import { SecureSettings } from './secure-settings'
 
 const reviewSchema = z.object({
   topic: z.string(), summary: z.string(),
-  issues: z.array(z.object({ original: z.string(), improved: z.string(), reason: z.string() })).min(0).max(8),
+  issues: z.array(z.object({ original: z.string(), improved: z.string(), reason: z.string() })),
   vocabulary: z.array(z.object({ term: z.string(), meaning: z.string(), example: z.string().optional() })).max(12),
   nextPractice: z.string(),
   assessment: z.object({
@@ -47,6 +47,18 @@ function isTimeoutError(error: unknown): boolean {
 const SUBTITLE_DELTA_TARGET_CHARACTERS = 18
 const SUBTITLE_DELTA_MAX_CHARACTERS = 28
 const SUBTITLE_DELTA_DELAY_MS = 24
+
+function archiveForReview(archiveMarkdown: string): string {
+  const withoutEmbeddedMetadata = archiveMarkdown.replace(/\n?<!-- speaksub-session:[A-Za-z0-9+/=]+ -->\n?/g, '\n')
+  const withoutExistingReview = withoutEmbeddedMetadata.replace(/\n\n## Review\n\n[\s\S]*$/, '')
+  if (!/^source:\s*chatgpt-web\s*$/m.test(withoutExistingReview)) return withoutExistingReview
+  const transcriptStart = withoutExistingReview.indexOf('## Transcript')
+  if (transcriptStart < 0) return withoutExistingReview
+  const transcript = withoutExistingReview.slice(transcriptStart)
+  const firstSetupTurn = /### Me at [^\n]+\n\n[\s\S]*?(?=\n\n### (?:AI|Me)(?: · 已打断)? at |\n\n## |$)/
+  if (!firstSetupTurn.test(transcript)) return withoutExistingReview
+  return `${withoutExistingReview.slice(0, transcriptStart)}${transcript.replace(firstSetupTurn, '_Initial practice setup prompt omitted from learner review._')}`
+}
 
 function abortError(): Error {
   const error = new Error('Aborted')
@@ -123,7 +135,7 @@ export class LearningService {
 
   async review(archiveMarkdown: string, strength: string, favorites: string[] = []): Promise<ReviewResult> {
     const savedVocabulary = favorites.length ? favorites.map((word) => `- ${word}`).join('\n') : '(none)'
-    const result = await this.askLlm(`You are a concise English speaking coach. Analyze this complete practice archive at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]}}. Scores are integer-like values from 0 to 100 based only on language visible in the transcript; do not claim acoustic pronunciation analysis. Use Chinese for explanations. The vocabulary array must contain explanations only for the saved vocabulary below. Give each saved word a short English example sentence. Do not add other vocabulary; when none is saved, return an empty vocabulary array. Saved vocabulary:\n${savedVocabulary}\nPractice archive Markdown:\n${archiveMarkdown}`, REVIEW_LLM_TIMEOUT_MS)
+    const result = await this.askLlm(`You are a concise English speaking coach. Analyze this complete practice archive at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]}}. Scores are integer-like values from 0 to 100 based only on language visible in the transcript; do not claim acoustic pronunciation analysis. Use Chinese for explanations. Correct only learner language in the remaining ### Me transcript turns. Never treat frontmatter, saved items, metadata, or practice setup instructions as learner output. Include every distinct, meaningful correction supported by the transcript; do not impose a fixed 8- or 10-item limit, and avoid duplicate issues. The vocabulary array must contain explanations only for the saved vocabulary below. Give each saved word a short English example sentence. Do not add other vocabulary; when none is saved, return an empty vocabulary array. Saved vocabulary:\n${savedVocabulary}\nPractice archive Markdown:\n${archiveForReview(archiveMarkdown)}`, REVIEW_LLM_TIMEOUT_MS)
     const review = reviewSchema.parse(result)
     const saved = new Set(favorites.map((word) => word.toLocaleLowerCase()))
     return { ...review, vocabulary: review.vocabulary.filter((item) => saved.has(item.term.toLocaleLowerCase())) }
@@ -133,7 +145,7 @@ export class LearningService {
     if (!sentences.length) return { review: await this.review(archiveMarkdown, strength, favorites), sentenceAnalyses: [] }
     const savedVocabulary = favorites.length ? favorites.map((word) => `- ${word}`).join('\n') : '(none)'
     const savedSentences = JSON.stringify(sentences)
-    const result = await this.askLlm(`You are a concise English speaking coach. Analyze this complete practice archive and every saved sentence in one response at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]},"sentenceAnalyses":[{"sourceMessageId":"copy the supplied id exactly","analysis":{"translation":"自然中文意思","structure":"一句简短的句型结构说明","reusablePattern":"一个可以替换内容复用的英文句型","expressions":[{"phrase":"原句中的常用表达","meaning":"简短中文含义和使用场景"}],"breakdown":[{"part":"原句片段","explanation":"该片段在句中的作用"}],"examples":["使用可复用句型的新例句"],"tip":"一个简短的易错点或更自然表达建议"}}]}. Scores are integer-like values from 0 to 100 based only on visible language; do not claim acoustic pronunciation analysis. Use Chinese for explanations. Vocabulary must explain only the saved vocabulary. Return exactly one sentenceAnalyses item for each saved sentence, preserving its sourceMessageId exactly. Keep structure and reusablePattern concise enough for a three-line list preview. Return at most 4 expressions, 5 breakdown items, and 3 examples per sentence. Saved vocabulary:\n${savedVocabulary}\nSaved sentences:\n${savedSentences}\nPractice archive Markdown:\n${archiveMarkdown}`, REVIEW_LLM_TIMEOUT_MS)
+    const result = await this.askLlm(`You are a concise English speaking coach. Analyze this complete practice archive and every saved sentence in one response at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]},"sentenceAnalyses":[{"sourceMessageId":"copy the supplied id exactly","analysis":{"translation":"自然中文意思","structure":"一句简短的句型结构说明","reusablePattern":"一个可以替换内容复用的英文句型","expressions":[{"phrase":"原句中的常用表达","meaning":"简短中文含义和使用场景"}],"breakdown":[{"part":"原句片段","explanation":"该片段在句中的作用"}],"examples":["使用可复用句型的新例句"],"tip":"一个简短的易错点或更自然表达建议"}}]}. Scores are integer-like values from 0 to 100 based only on visible language; do not claim acoustic pronunciation analysis. Use Chinese for explanations. Correct only learner language in the remaining ### Me transcript turns. Never treat frontmatter, saved items, metadata, or practice setup instructions as learner output. Include every distinct, meaningful correction supported by the transcript; do not impose a fixed 8- or 10-item limit, and avoid duplicate issues. Vocabulary must explain only the saved vocabulary. Return exactly one sentenceAnalyses item for each saved sentence, preserving its sourceMessageId exactly. Keep structure and reusablePattern concise enough for a three-line list preview. Return at most 4 expressions, 5 breakdown items, and 3 examples per sentence. Saved vocabulary:\n${savedVocabulary}\nSaved sentences:\n${savedSentences}\nPractice archive Markdown:\n${archiveForReview(archiveMarkdown)}`, REVIEW_LLM_TIMEOUT_MS)
     const parsed = reviewWithSentencesSchema.parse(result)
     const savedWords = new Set(favorites.map((word) => word.toLocaleLowerCase()))
     const sentenceIds = new Set(sentences.map((sentence) => sentence.sourceMessageId))

@@ -13,7 +13,7 @@ afterEach(() => {
 
 describe('review response boundary', () => {
   it('rejects malformed review JSON', () => {
-    const schema = z.object({ topic: z.string(), issues: z.array(z.object({ original: z.string() })).max(8) })
+    const schema = z.object({ topic: z.string(), issues: z.array(z.object({ original: z.string() })) })
     expect(() => schema.parse({ topic: 'travel', issues: [{ original: 2 }] })).toThrow()
   })
 
@@ -25,6 +25,35 @@ describe('review response boundary', () => {
     await expect(service.review('# Speaking practice\n\n## Transcript\n\nMe: I keep practicing.', 'normal', ['persistent'])).resolves.toMatchObject({ vocabulary: [{ term: 'persistent' }], assessment: { estimatedCefr: 'B1', scores: { accuracy: 72 } } })
     const request = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1]
     expect(JSON.parse(String(request.body)).messages[0].content).toContain('Practice archive Markdown:\n# Speaking practice')
+  })
+
+  it('omits the generated ChatGPT setup prompt but keeps later learner turns', async () => {
+    const response = { topic: 'interview', summary: 'summary', issues: [], vocabulary: [], nextPractice: 'next time' }
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(response) } }] }) }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'review-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
+    const archive = `---\nsource: chatgpt-web\n---\n\n<!-- speaksub-session:YWJj -->\n\n# Speaking practice\n\n## Transcript\n\n### Me at 2026-08-09T11:36:13.981Z\n\nGENERATED_SETUP_PROMPT\n\n### AI at 2026-08-09T11:36:15.444Z\n\nTell me about yourself.\n\n### Me at 2026-08-09T11:36:23.250Z\n\nI am a graduate student.\n\n## Review\n\nOLD_INCORRECT_REVIEW`
+
+    await service.review(archive, 'normal')
+
+    const request = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1]
+    const prompt = JSON.parse(String(request.body)).messages[0].content as string
+    expect(prompt).not.toContain('GENERATED_SETUP_PROMPT')
+    expect(prompt).not.toContain('speaksub-session:YWJj')
+    expect(prompt).not.toContain('OLD_INCORRECT_REVIEW')
+    expect(prompt).toContain('I am a graduate student.')
+    expect(prompt).toContain('Correct only learner language')
+  })
+
+  it('keeps the first learner turn for API direct archives', async () => {
+    const response = { topic: 'interview', summary: 'summary', issues: [], vocabulary: [], nextPractice: 'next time' }
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(response) } }] }) }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'review-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
+    const archive = `---\nsource: api-direct\n---\n\n## Transcript\n\n### Me at 2026-08-09T11:36:23.250Z\n\nFIRST_REAL_API_ANSWER`
+
+    await service.review(archive, 'normal')
+
+    const request = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1]
+    expect(JSON.parse(String(request.body)).messages[0].content).toContain('FIRST_REAL_API_ANSWER')
   })
 
   it('uses the review-specific timeout and translates a body timeout into a recoverable message', async () => {
@@ -57,6 +86,22 @@ describe('review with saved sentence analysis boundary', () => {
     const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'analysis-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
 
     await expect(service.reviewWithSentences('# Speaking practice', 'normal', [], [{ sourceMessageId: 'sentence-1', text: 'Take your time.' }])).rejects.toThrow('句子分析不完整')
+  })
+
+  it('preserves every valid correction when a long review returns more than ten issues', async () => {
+    const analysis = { translation: '慢慢来。', structure: '祈使句', reusablePattern: 'Take your time to + 动词', expressions: [], breakdown: [], examples: ['Take your time to think.'] }
+    const issues = Array.from({ length: 12 }, (_, index) => ({ original: `issue-${index + 1}`, improved: `fixed-${index + 1}`, reason: `reason-${index + 1}` }))
+    const response = { topic: 'travel', summary: 'summary', issues, vocabulary: [], nextPractice: 'next time', sentenceAnalyses: [{ sourceMessageId: 'sentence-1', analysis }], assessment: { estimatedCefr: 'B1', scores: { accuracy: 72, vocabulary: 68, fluency: 75, interaction: 80 }, errorCategories: [], weakPoints: [] } }
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(response) } }] }) }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'analysis-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
+
+    const result = await service.reviewWithSentences('# Speaking practice', 'normal', [], [{ sourceMessageId: 'sentence-1', text: 'Take your time.' }])
+
+    expect(result.review.issues).toHaveLength(12)
+    expect(result.review.issues.at(-1)?.original).toBe('issue-12')
+    expect(result.sentenceAnalyses).toHaveLength(1)
+    const request = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1]
+    expect(JSON.parse(String(request.body)).messages[0].content).toContain('do not impose a fixed 8- or 10-item limit')
   })
 })
 
