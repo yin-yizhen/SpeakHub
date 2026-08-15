@@ -47,6 +47,7 @@ interface PracticeSessionProfile {
   focus?: string
   prompt?: string
   systemPrompt?: string
+  topicDocument?: string
 }
 
 export interface PracticeProfile extends PracticeSessionProfile {}
@@ -399,7 +400,8 @@ export interface UpdateInstallResult {
 
 export interface SpeakSubApi {
   getAppVersion: () => Promise<string>
-  startPractice: (topic: string, level: string, strength: CorrectionStrength, source: PracticeSource, mode: PracticeMode, focus?: string, prompt?: string, systemPrompt?: string) => Promise<PracticeStartResult>
+  parseTopicDocument: (fileName: string, data: Uint8Array) => Promise<string>
+  startPractice: (topic: string, level: string, strength: CorrectionStrength, source: PracticeSource, mode: PracticeMode, focus?: string, prompt?: string, systemPrompt?: string, topicDocument?: string) => Promise<PracticeStartResult>
   getPromptTemplates: () => Promise<PromptTemplates>
   savePromptTemplates: (templates: PromptTemplates) => Promise<PromptTemplates>
   getPracticePreferences: () => Promise<PracticePreferences>

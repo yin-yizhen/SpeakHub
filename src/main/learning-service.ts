@@ -300,12 +300,12 @@ export class LearningService {
     }
   }
 
-  async chat(events: TranscriptEvent[], topic: string, level: string, prompt?: string, systemPrompt?: string): Promise<string> {
-    return this.requestLlm(this.chatMessages(events, topic, level, prompt, systemPrompt))
+  async chat(events: TranscriptEvent[], topic: string, level: string, prompt?: string, systemPrompt?: string, topicDocument?: string): Promise<string> {
+    return this.requestLlm(this.chatMessages(events, topic, level, prompt, systemPrompt, topicDocument))
   }
 
-  async streamChat(events: TranscriptEvent[], topic: string, level: string, options: { onDelta: (delta: string) => void; signal?: AbortSignal }, prompt?: string, systemPrompt?: string): Promise<string> {
-    const messages = this.chatMessages(events, topic, level, prompt, systemPrompt)
+  async streamChat(events: TranscriptEvent[], topic: string, level: string, options: { onDelta: (delta: string) => void; signal?: AbortSignal }, prompt?: string, systemPrompt?: string, topicDocument?: string): Promise<string> {
+    const messages = this.chatMessages(events, topic, level, prompt, systemPrompt, topicDocument)
     const config = this.requireLlmConfig()
     const body = { model: config.model, messages, stream: true }
     let received = ''
@@ -369,9 +369,9 @@ export class LearningService {
     }
   }
 
-  private chatMessages(events: TranscriptEvent[], topic: string, level: string, prompt?: string, systemPrompt?: string): LlmMessage[] {
+  private chatMessages(events: TranscriptEvent[], topic: string, level: string, prompt?: string, systemPrompt?: string, topicDocument?: string): LlmMessage[] {
     return [
-      { role: 'system', content: buildDirectChatSystemPrompt(topic, level, prompt, systemPrompt) },
+      { role: 'system', content: buildDirectChatSystemPrompt(topic, level, prompt, systemPrompt, topicDocument) },
       ...events.filter((event) => event.status === 'complete').map((event) => ({ role: event.speaker === 'assistant' ? 'assistant' as const : 'user' as const, content: event.text }))
     ]
   }

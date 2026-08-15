@@ -27,6 +27,7 @@ import { bargeInDelayMs } from './barge-in-policy'
 import { PracticeController } from './practice-controller'
 import { endPracticeWithSubtitles, startPracticeWithSubtitles } from './practice-subtitle-lifecycle'
 import { buildPracticePrompt, parsePracticeProfile } from './practice-profile'
+import { parseTopicDocument } from './topic-document-parser'
 import { DiagnosticLog } from './diagnostic-log'
 import { AnonymousAnalytics } from './analytics'
 import { ALIYUN_FUN_ASR_CNY_PER_SECOND } from './aliyun-fun-asr'
@@ -64,6 +65,7 @@ let activeTopic = '日常聊天'
 let activeLevel = 'A1'
 let activePrompt: string | undefined
 let activeSystemPrompt: string | undefined
+let activeTopicDocument: string | undefined
 let events: TranscriptEvent[] = []
 let localSpeech: LocalSpeechService | undefined
 let mimoPreviewController: AbortController | undefined
@@ -639,7 +641,7 @@ async function streamApiReply(addUserMessage: boolean, userText?: string, speakT
         handleEvent({ sourceMessageId: messageId, speaker: 'assistant', text: reply, status: 'streaming', receivedAt: new Date().toISOString() })
         for (const segment of segmenter.push(delta)) queueSpeech(segment)
       }
-    }, activePrompt, activeSystemPrompt)
+    }, activePrompt, activeSystemPrompt, activeTopicDocument)
     for (const segment of segmenter.flush()) queueSpeech(segment)
     if (reply) handleEvent({ sourceMessageId: messageId, speaker: 'assistant', text: reply, status: 'complete', receivedAt: new Date().toISOString() })
     if (textTurn) textTurn.complete = true
@@ -870,10 +872,11 @@ function installIpc(): void {
     else mainWindow.maximize()
   })
   ipcMain.handle('window:close', (event) => { if (event.sender === mainWindow?.webContents) mainWindow.close() })
-  ipcMain.handle('practice:start', (_event, topic: string, level: string, strength: CorrectionStrength, source: PracticeSource = 'chatgpt-web', mode: PracticeMode = 'text', focus?: string, prompt?: string, systemPrompt?: string) => startPracticeWithSubtitles(() => practiceController.start(async (signal) => {
+  ipcMain.handle('practice:parse-topic-document', async (_event, fileName: string, data: Uint8Array) => parseTopicDocument(fileName, data))
+  ipcMain.handle('practice:start', (_event, topic: string, level: string, strength: CorrectionStrength, source: PracticeSource = 'chatgpt-web', mode: PracticeMode = 'text', focus?: string, prompt?: string, systemPrompt?: string, topicDocument?: string) => startPracticeWithSubtitles(() => practiceController.start(async (signal) => {
     assertPracticeStartActive(signal)
-    const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source, mode, focus, prompt, systemPrompt })
-    activeSource = profile.source; activeMode = profile.mode; activeTopic = profile.topic; activeLevel = profile.level; activePrompt = buildPracticePrompt(profile); activeSystemPrompt = profile.systemPrompt; activeTextReply = undefined; activeTextTtsGeneration = undefined
+    const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source, mode, focus, prompt, systemPrompt, topicDocument })
+    activeSource = profile.source; activeMode = profile.mode; activeTopic = profile.topic; activeLevel = profile.level; activePrompt = buildPracticePrompt(profile); activeSystemPrompt = profile.systemPrompt; activeTopicDocument = profile.topicDocument; activeTextReply = undefined; activeTextTtsGeneration = undefined
     microphoneActive = profile.mode === 'voice'
     if (profile.source === 'chatgpt-web' && profile.mode === 'voice') chatHostView?.webContents.send('speaksub:microphone-gate', true)
     announceMicrophone()

@@ -9,7 +9,8 @@ const practiceProfileSchema = z.object({
   mode: z.enum(['text', 'voice']),
   focus: z.string().trim().max(2_000).optional(),
   prompt: z.string().trim().min(1).max(8_000).optional(),
-  systemPrompt: z.string().trim().min(1).max(8_000).optional()
+  systemPrompt: z.string().trim().min(1).max(8_000).optional(),
+  topicDocument: z.string().trim().max(20_000).optional()
 })
 
 const prompts: Record<PracticeProfile['topic'], string> = {
