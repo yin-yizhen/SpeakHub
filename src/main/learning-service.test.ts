@@ -56,6 +56,21 @@ describe('review response boundary', () => {
     expect(JSON.parse(String(request.body)).messages[0].content).toContain('FIRST_REAL_API_ANSWER')
   })
 
+  it('keeps a sparse one-hour transcript in one complete request', async () => {
+    const response = { topic: 'daily', summary: 'summary', issues: [], vocabulary: [], nextPractice: 'next time' }
+    const fetchMock = vi.fn(async () => Response.json({ choices: [{ message: { content: JSON.stringify(response) } }] }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'review-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
+    const archive = `---\nstartedAt: 2026-08-15T00:00:00.000Z\nendedAt: 2026-08-15T01:00:00.000Z\nsource: api-direct\n---\n\n## Transcript\n\n### Me at 2026-08-15T00:01:00.000Z\n\nFIRST_SPARSE_TURN\n\n### AI at 2026-08-15T00:30:00.000Z\n\nA short reply.\n\n### Me at 2026-08-15T00:59:00.000Z\n\nLAST_SPARSE_TURN`
+
+    await service.review(archive, 'normal')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const request = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1]
+    const prompt = JSON.parse(String(request.body)).messages[0].content as string
+    expect(prompt).toContain('FIRST_SPARSE_TURN')
+    expect(prompt).toContain('LAST_SPARSE_TURN')
+  })
+
   it('uses the review-specific timeout and translates a body timeout into a recoverable message', async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -63,7 +78,73 @@ describe('review response boundary', () => {
     }))
     const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'review-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
 
-    await expect(service.review('# Speaking practice', 'normal')).rejects.toThrow('120 秒')
+    await expect(service.review('# Speaking practice', 'normal')).rejects.toThrow('300 秒')
+  })
+
+  it('streams one complete request for a long transcript when the provider can handle it', async () => {
+    const review = JSON.stringify({ topic: 'overall', summary: '完整总评', issues: [{ original: 'wrong', improved: 'right', reason: 'reason' }], vocabulary: [], nextPractice: 'next time' })
+    const midpoint = Math.floor(review.length / 2)
+    const sse = [review.slice(0, midpoint), review.slice(midpoint)].map((content) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`).join('') + 'data: [DONE]\n\n'
+    const fetchMock = vi.fn(async () => new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } }))
+    const longTurn = (marker: string) => `### Me at 2026-08-15T00:00:00.000Z\n\n${marker} ${'learner words '.repeat(280)}`
+    const archive = `---\nsource: api-direct\n---\n\n## Transcript\n\n${longTurn('FIRST_LONG_SEGMENT')}\n\n${longTurn('SECOND_LONG_SEGMENT')}\n\n${longTurn('THIRD_LONG_SEGMENT')}`
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'review-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
+
+    await expect(service.review(archive, 'normal')).resolves.toMatchObject({ topic: 'overall', issues: [{ original: 'wrong' }] })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const request = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1]
+    const body = JSON.parse(String(request.body)) as { stream: boolean; messages: Array<{ content: string }> }
+    expect(body.stream).toBe(true)
+    expect(body.messages[0].content).toContain('FIRST_LONG_SEGMENT')
+    expect(body.messages[0].content).toContain('THIRD_LONG_SEGMENT')
+  })
+
+  it('splits a long transcript, retries a gateway-timed-out segment at a smaller boundary, and merges every correction locally', async () => {
+    const analysis = { translation: '慢慢来。', structure: '祈使句', reusablePattern: 'Take your time to + 动词', expressions: [], breakdown: [], examples: ['Take your time to think.'] }
+    const assessment = { estimatedCefr: 'B1', scores: { accuracy: 72, vocabulary: 68, fluency: 75, interaction: 80 }, errorCategories: [], weakPoints: [] }
+    let rejectedFullReview = false
+    let rejectedLargeSegment = false
+    let continuedSegment = 0
+    const fetchMock = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      const prompt = (JSON.parse(String(init?.body)).messages[0].content as string)
+      if (prompt.includes('Synthesize the overall review')) {
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ topic: 'overall', summary: '完整总评', vocabulary: [{ term: 'persistent', meaning: '坚持的' }, { term: 'extra', meaning: '不应保留' }], nextPractice: '继续练习', assessment, sentenceAnalyses: [{ sourceMessageId: 'sentence-1', analysis }] }) } }] })
+      }
+      if (!rejectedFullReview && prompt.includes('Analyze this complete practice archive')) {
+        rejectedFullReview = true
+        return new Response('', { status: 504 })
+      }
+      if (!rejectedLargeSegment && prompt.includes('Analyze transcript segment') && prompt.includes('RETRY_SEGMENT')) {
+        rejectedLargeSegment = true
+        return new Response('', { status: 504 })
+      }
+      let original: string
+      if (prompt.includes('RETRY_SEGMENT')) original = 'retry issue'
+      else if (prompt.includes('SECOND_SEGMENT')) original = 'second issue'
+      else if (prompt.includes('THIRD_SEGMENT')) original = 'third issue'
+      else original = `continued issue ${++continuedSegment}`
+      const partial = { topic: 'part', summary: 'part summary', issues: [{ original, improved: `${original} fixed`, reason: 'reason' }], vocabulary: [], nextPractice: 'part next', assessment }
+      return Response.json({ choices: [{ message: { content: JSON.stringify(partial) } }] })
+    })
+    const longTurn = (marker: string) => `### Me at 2026-08-15T00:00:00.000Z\n\n${marker} ${'learner words '.repeat(280)}`
+    const archive = `---\nsource: api-direct\n---\n\n## Transcript\n\n${longTurn('RETRY_SEGMENT')}\n\n${longTurn('SECOND_SEGMENT')}\n\n${longTurn('THIRD_SEGMENT')}`
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'review-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
+
+    const result = await service.reviewWithSentences(archive, 'normal', ['persistent'], [{ sourceMessageId: 'sentence-1', text: 'Take your time.' }])
+
+    expect(rejectedFullReview).toBe(true)
+    expect(rejectedLargeSegment).toBe(true)
+    expect(result.review).toMatchObject({ topic: 'overall', vocabulary: [{ term: 'persistent' }] })
+    expect(result.review.issues.map((issue) => issue.original)).toEqual(expect.arrayContaining(['retry issue', 'second issue', 'third issue']))
+    expect(result.review.issues.length).toBeGreaterThanOrEqual(4)
+    expect(result.sentenceAnalyses).toEqual([{ sourceMessageId: 'sentence-1', analysis }])
+    const prompts = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>).map(([, request]) => JSON.parse(String(request.body)).messages[0].content as string)
+    const synthesisPrompt = prompts.find((prompt) => prompt.includes('Synthesize the overall review'))
+    expect(synthesisPrompt).not.toContain('RETRY_SEGMENT')
+    expect(synthesisPrompt).toContain('Saved vocabulary:\n- persistent')
+    expect(prompts.filter((prompt) => prompt.includes('Analyze transcript segment')).length).toBeGreaterThan(3)
+    expect(prompts.filter((prompt) => prompt.includes('Analyze transcript segment')).every((prompt) => !prompt.includes('Saved vocabulary:\n- persistent'))).toBe(true)
   })
 })
 

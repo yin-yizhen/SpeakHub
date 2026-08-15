@@ -7,6 +7,7 @@ const familiarityLabels: Record<VocabularyFamiliarity, string> = { unfamiliar: '
 const sourceLabels = { 'chatgpt-web': 'ChatGPT 网页', 'api-direct': 'API 直连' }
 const errorLabels: Record<string, string> = { grammar: '语法', 'word-choice': '用词', tense: '时态', articles: '冠词', prepositions: '介词', fluency: '流畅度', coherence: '连贯性', interaction: '互动', other: '其他' }
 const localDateBoundary = (value: string, end = false): string | undefined => value ? new Date(`${value}T${end ? '23:59:59.999' : '00:00:00.000'}`).toISOString() : undefined
+const REVIEW_ISSUES_COLLAPSE_THRESHOLD = 5
 
 function ActivityChart({ dashboard }: { dashboard: LearningDashboard }) {
   const max = Math.max(1, ...dashboard.activity.map((item) => item.minutes))
@@ -15,6 +16,18 @@ function ActivityChart({ dashboard }: { dashboard: LearningDashboard }) {
     <svg viewBox="0 0 100 40" preserveAspectRatio="none" role="img"><path d="M0 36H100"/><polyline points={points || '0,36 100,36'}/>{dashboard.activity.map((item, index) => <circle key={item.date} cx={dashboard.activity.length === 1 ? 50 : (index / (dashboard.activity.length - 1)) * 100} cy={36 - (item.minutes / max) * 30} r="1.2"/>)}</svg>
     <div><span>{dashboard.from.slice(5, 10)}</span><span>{dashboard.to.slice(5, 10)}</span></div>
   </div>
+}
+
+function ReviewIssues({ issues, expanded, onToggle, controlId }: { issues: NonNullable<SessionArchiveDetail['review']>['issues']; expanded: boolean; onToggle: () => void; controlId: string }) {
+  const collapsible = issues.length > REVIEW_ISSUES_COLLAPSE_THRESHOLD
+  const visible = !collapsible || expanded
+  return <section className="review-issues-section">
+    <div className="review-issues-heading">
+      <h3>全部纠错 <span>{issues.length} 条</span></h3>
+      {collapsible && <button type="button" aria-expanded={expanded} aria-controls={controlId} onClick={onToggle}>{expanded ? '收起纠错' : '展开全部'}</button>}
+    </div>
+    {visible && <div id={controlId}>{issues.map((issue, index) => <div className="review-issue" key={`${issue.original}:${issue.improved}:${index}`}><span>{issue.original}</span><strong>{issue.improved}</strong><small>{issue.reason}</small></div>)}</div>}
+  </section>
 }
 
 export function LearningCenter({ onUseDraft }: { onUseDraft: (draft: NextPracticeDraft) => void }) {
@@ -46,6 +59,7 @@ export function LearningCenter({ onUseDraft }: { onUseDraft: (draft: NextPractic
   const [reviewRevealed, setReviewRevealed] = useState(false)
   const [reviewedCount, setReviewedCount] = useState(0)
   const [generatingReview, setGeneratingReview] = useState(false)
+  const [reviewIssuesExpanded, setReviewIssuesExpanded] = useState(false)
 
   const refresh = async () => {
     setLoading(true); setError(undefined)
@@ -67,7 +81,7 @@ export function LearningCenter({ onUseDraft }: { onUseDraft: (draft: NextPractic
 
   const recent = sessions.slice(0, 4)
   const openSession = async (id: string) => {
-    try { setSelected(await window.speaksub.getSessionDetail(id)); setError(undefined) }
+    try { setSelected(await window.speaksub.getSessionDetail(id)); setReviewIssuesExpanded(false); setError(undefined) }
     catch (reason) { setError(reason instanceof Error ? reason.message : '无法读取这次练习。') }
   }
   const useDraft = async (id: string) => {
@@ -79,6 +93,7 @@ export function LearningCenter({ onUseDraft }: { onUseDraft: (draft: NextPractic
     try {
       const detail = await window.speaksub.regenerateSessionReview(id)
       setSelected(detail)
+      setReviewIssuesExpanded(false)
       await refresh()
     } catch (reason) { setError(reason instanceof Error ? reason.message : '复盘生成失败，请检查大模型连接后重试。') }
     finally { setGeneratingReview(false) }
@@ -135,7 +150,7 @@ export function LearningCenter({ onUseDraft }: { onUseDraft: (draft: NextPractic
 
     {!loading && view === 'history' && <div className="history-layout">
       <aside className="history-browser"><div className="learning-search"><input aria-label="搜索历史练习" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对话、复盘、错误或收藏词"/><select aria-label="练习状态" value={status ?? ''} onChange={(event) => setStatus((event.target.value || undefined) as HistorySearchQuery['status'])}><option value="">全部状态</option><option value="completed">已完成</option><option value="interrupted">未完成</option></select></div><div className="history-filters"><select aria-label="练习来源" value={source ?? ''} onChange={(event) => setSource((event.target.value || undefined) as PracticeSource | undefined)}><option value="">全部来源</option><option value="chatgpt-web">ChatGPT</option><option value="api-direct">API</option></select><select aria-label="交流方式" value={mode ?? ''} onChange={(event) => setMode((event.target.value || undefined) as PracticeMode | undefined)}><option value="">全部方式</option><option value="text">文字</option><option value="voice">语音</option></select><select aria-label="CEFR 等级" value={level ?? ''} onChange={(event) => setLevel((event.target.value || undefined) as CefrLevel | undefined)}><option value="">全部等级</option>{['A1','A2','B1','B2','C1'].map((item) => <option key={item}>{item}</option>)}</select><input aria-label="开始日期" title="开始日期" type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)}/><input aria-label="结束日期" title="结束日期" type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)}/></div>{sessions.length ? sessions.map((item) => <article className={selected?.id === item.id ? 'history-row active' : 'history-row'} key={item.id}><button onClick={() => void openSession(item.id)}><small>{new Date(item.startedAt).toLocaleString()} · {item.status === 'interrupted' ? '未完成' : `${Math.max(1, Math.round(item.durationSeconds / 60))} 分钟`}</small><strong>{item.topic}</strong><p>{item.summary ?? `${item.favoriteWords.length} 个收藏词 · ${item.hasReview ? '已有复盘' : '暂无复盘'}`}</p></button><button className="row-delete" title="删除练习" onClick={() => setDeleteTarget(item)}>删除</button></article>) : <p className="learning-empty">没有匹配的练习记录。</p>}</aside>
-      <section className="session-detail">{selected ? <><header><div><p className="kicker">FULL SESSION REVIEW</p><h2>{selected.topic}</h2><span>{new Date(selected.startedAt).toLocaleString()} · {selected.source ? sourceLabels[selected.source] : '旧记录'} · {selected.level ?? '未记录等级'}</span></div>{selected.status === 'completed' ? <div className="session-detail-actions">{selected.review && <button className="quiet-action" disabled={generatingReview} onClick={() => void regenerateReview(selected.id)}>{generatingReview ? '正在重新生成…' : '重新生成复盘'}</button>}{selected.review ? <button className="primary-action" onClick={() => void useDraft(selected.id)}>准备下一次练习</button> : <button className="primary-action" disabled={generatingReview} onClick={() => void regenerateReview(selected.id)}>{generatingReview ? '正在生成复盘…' : '重新生成复盘'}</button>}</div> : null}</header>{selected.review?.assessment && <div className="assessment-line"><strong>{selected.review.assessment.estimatedCefr}</strong>{Object.entries(selected.review.assessment.scores).map(([key, value]) => <span key={key}>{key} {value}</span>)}</div>}<section><h3>复盘总结</h3><p>{selected.review?.summary ?? '这次练习没有生成模型复盘。可以点击右上角重新生成；成功后能力趋势会自动更新。'}</p></section>{selected.review?.issues.length ? <section><h3>全部纠错</h3>{selected.review.issues.map((issue, index) => <div className="review-issue" key={index}><span>{issue.original}</span><strong>{issue.improved}</strong><small>{issue.reason}</small></div>)}</section> : null}{selected.favoriteWords.length ? <section><h3>收藏词汇</h3><div className="word-chips">{selected.favoriteWords.map((word) => <span key={word}>{word}</span>)}</div></section> : null}<section><h3>完整对话</h3><div className="full-transcript">{selected.transcript.length ? selected.transcript.map((line, index) => <p className={line.speaker} key={index}><b>{line.speaker === 'assistant' ? 'AI' : 'Me'}</b><span>{line.text}</span></p>) : <p className="learning-empty">没有捕获到对话文本。</p>}</div></section>{selected.review?.nextPractice && <section className="next-practice-note"><h3>下一次重点</h3><p>{selected.review.nextPractice}</p></section>}</> : <div className="detail-placeholder"><span>选择一条练习</span><p>这里会显示完整对话、所有纠错、收藏词和下一次建议。</p></div>}</section>
+      <section className="session-detail">{selected ? <><header><div><p className="kicker">FULL SESSION REVIEW</p><h2>{selected.topic}</h2><span>{new Date(selected.startedAt).toLocaleString()} · {selected.source ? sourceLabels[selected.source] : '旧记录'} · {selected.level ?? '未记录等级'}</span></div>{selected.status === 'completed' ? <div className="session-detail-actions">{selected.review && <button className="quiet-action" disabled={generatingReview} onClick={() => void regenerateReview(selected.id)}>{generatingReview ? '正在重新生成…' : '重新生成复盘'}</button>}{selected.review ? <button className="primary-action" onClick={() => void useDraft(selected.id)}>准备下一次练习</button> : <button className="primary-action" disabled={generatingReview} onClick={() => void regenerateReview(selected.id)}>{generatingReview ? '正在生成复盘…' : '重新生成复盘'}</button>}</div> : null}</header>{selected.review?.assessment && <div className="assessment-line"><strong>{selected.review.assessment.estimatedCefr}</strong>{Object.entries(selected.review.assessment.scores).map(([key, value]) => <span key={key}>{key} {value}</span>)}</div>}<section><h3>复盘总结</h3><p>{selected.review?.summary ?? '这次练习没有生成模型复盘。可以点击右上角重新生成；成功后能力趋势会自动更新。'}</p></section>{selected.review?.issues.length ? <ReviewIssues issues={selected.review.issues} expanded={reviewIssuesExpanded} onToggle={() => setReviewIssuesExpanded((value) => !value)} controlId={`review-issues-${selected.id}`}/> : null}{selected.favoriteWords.length ? <section><h3>收藏词汇</h3><div className="word-chips">{selected.favoriteWords.map((word) => <span key={word}>{word}</span>)}</div></section> : null}<section><h3>完整对话</h3><div className="full-transcript">{selected.transcript.length ? selected.transcript.map((line, index) => <p className={line.speaker} key={index}><b>{line.speaker === 'assistant' ? 'AI' : 'Me'}</b><span>{line.text}</span></p>) : <p className="learning-empty">没有捕获到对话文本。</p>}</div></section>{selected.review?.nextPractice && <section className="next-practice-note"><h3>下一次重点</h3><p>{selected.review.nextPractice}</p></section>}</> : <div className="detail-placeholder"><span>选择一条练习</span><p>这里会显示完整对话、所有纠错、收藏词和下一次建议。</p></div>}</section>
     </div>}
 
     {!loading && view === 'vocabulary' && <div className="vocabulary-view">{reviewQueue ? (() => {

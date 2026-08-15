@@ -112,10 +112,10 @@
 
 - Entry: the bookmark action at the end of each completed subtitle in `src/renderer/subtitle-overlay.tsx`; learning-center list in `src/renderer/LearningCenter.tsx`.
 - Flow: completed voice or text `TranscriptEvent` -> renderer sends only `sourceMessageId` through `saveSessionSentence()` in `src/main/preload.ts` -> `session:save-sentence` in `src/main/index.ts` validates the active session -> `SpeakSubStore.saveSentenceFavorite()` resolves the authoritative completed transcript text -> current Markdown `## Saved sentences` and embedded metadata -> archive reconciliation builds `learning-index.json.sentences` -> `learning:sentences:list` -> learning-center “句子” tab. New sentences default to `learning`; `learning:sentences:update-status` persists reversible `learning`/`mastered` grouping and `learnedAt` in the owning archive.
-- Analysis flow: list refresh and sentence clicks are local-only and must never call the LLM. Ending a practice collects the completed archive, saved vocabulary, and all saved sentences -> one `LearningService.reviewWithSentences()` request returns the review plus one validated analysis per saved `sourceMessageId` -> `SpeakSubStore.saveReview()` writes both into current archive metadata -> `finalizeSession()` rebuilds the index -> the three-line preview and detail drawer read the cached analysis. Archived “重新生成复盘” uses the same combined request and `saveArchivedReview()` path, including for older sentences without analysis. An incomplete sentence-analysis result fails the combined review instead of silently storing a partial set; the saved transcript and sentences still finalize safely.
+- Analysis flow: list refresh and sentence clicks are local-only and must never call the LLM. Ending a practice collects the completed archive, saved vocabulary, and all saved sentences -> `LearningService.reviewWithSentences()` returns the review plus one validated analysis per saved `sourceMessageId` -> `SpeakSubStore.saveReview()` writes both into current archive metadata -> `finalizeSession()` rebuilds the index -> the three-line preview and detail drawer read the cached analysis. Every transcript is first sent to the model in one complete request. Long transcripts over 8,000 characters use streaming JSON reception and a 300-second review timeout so the gateway does not need to buffer the entire structured result; the threshold is based on text size, never elapsed practice time, so a one-hour practice with only a few lines remains a normal complete request. Only when that complete request actually receives HTTP 504 or times out does recovery split it on complete AI/Me turn boundaries into requests of at most about 6,000 transcript characters. A failed segment is split again down to the 2,000-character retry floor. Every segment is analyzed; segment corrections are parsed and locally deduplicated without an item-count cap, while a compact final request synthesizes the overall summary, assessment, saved vocabulary, and saved-sentence analyses without resending the raw transcript or correction list. Archived “重新生成复盘” uses the same path and `saveArchivedReview()`, including for older sentences without analysis. An incomplete sentence-analysis result fails the review instead of silently storing a partial set; the saved transcript and sentences still finalize safely.
 - Storage and safety: streaming events cannot be saved; repeated clicks on the same source message are idempotent; saved text is normalized to the compact subtitle form. Deleting an archived session also removes its sentence entries. Legacy indexes or archive metadata without `sentences`/`learningStatus` migrate to an empty list or default each saved sentence to `learning` during rebuild.
-- Tests: `src/main/store.test.ts` covers completed/streaming boundaries, Markdown, deduplication, combined review/analysis persistence, status changes, restart rebuild, and archive deletion; `src/main/learning-service.test.ts` covers the single-request combined response, incomplete-analysis rejection, preservation of more than ten valid corrections, and exclusion of the generated ChatGPT setup prompt while retaining API/user turns; `src/renderer/subtitle-overlay.test.tsx` covers both voice and text entry points plus symmetric wrap-width calculation; `src/renderer/LearningCenter.test.tsx` covers cached analysis display, source/mode metadata, and learning/mastered grouping.
-- Verify: `pnpm exec vitest run src/main/store.test.ts src/main/learning-service.test.ts src/renderer/subtitle-overlay.test.tsx src/renderer/LearningCenter.test.tsx src/main/practice-pipeline.integration.test.ts src/main/speech-segments.test.ts`, then `pnpm lint` and `pnpm build`. Real acceptance: save one AI and one user sentence in both voice and text practices, finish each practice, and confirm the ending progress waits for one combined review request; then confirm all four appear under learning center -> “句子” -> “正在学” with analysis already present before any sentence click and remain after restart. Mark one “已学会”, confirm it moves groups and can be moved back. Resize the subtitle overlay and confirm the text begins and wraps with equal 57 px left/right gutters.
+- Tests: `src/main/store.test.ts` covers completed/streaming boundaries, Markdown, deduplication, combined review/analysis persistence, status changes, restart rebuild, and archive deletion; `src/main/learning-service.test.ts` covers the short single-request response, complete long-transcript streaming, 504 fallback chunking/adaptive re-splitting, local correction merge, incomplete-analysis rejection, preservation of more than ten valid corrections, and exclusion of the generated ChatGPT setup prompt while retaining API/user turns; `src/renderer/subtitle-overlay.test.tsx` covers both voice and text entry points plus symmetric wrap-width calculation; `src/renderer/LearningCenter.test.tsx` covers cached analysis display, per-session long-correction collapse/expand, source/mode metadata, and learning/mastered grouping.
+- Verify: `pnpm exec vitest run src/main/store.test.ts src/main/learning-service.test.ts src/renderer/subtitle-overlay.test.tsx src/renderer/LearningCenter.test.tsx src/main/practice-pipeline.integration.test.ts src/main/speech-segments.test.ts`, then `pnpm lint` and `pnpm build`. Real acceptance: save one AI and one user sentence in both voice and text practices, finish each practice, and confirm the ending progress first sends one complete review request; then confirm all four appear under learning center -> “句子” -> “正在学” with analysis already present before any sentence click and remain after restart. Open a history detail with more than five corrections, confirm only that session's correction count is initially visible, expand to see every correction, and collapse it again without affecting the global sentence list. Mark one sentence “已学会”, confirm it moves groups and can be moved back. Resize the subtitle overlay and confirm the text begins and wraps with equal 57 px left/right gutters.
 
 本文件按“要改什么”定位入口、数据流、测试和验收方式。最近完整验收提交：`unknown (v0.1.0 release validation, 2026-07-28)`。
 
@@ -160,7 +160,10 @@ LearningCenter.createNextPracticeDraft()
 复盘超时恢复链路：
 
 ```text
-practice:end 保存完整对话 -> LearningService.review() 使用 120 秒复盘专用超时
+practice:end 保存完整对话 -> LearningService.review() 使用 300 秒复盘专用超时
+-> 先将完整转写单次发送；超过 8,000 字符时以流式 JSON 接收，避免网关等待整份结果
+-> 仅完整请求遇到 504/超时才按完整 turn 分成约 6,000 字符的片段
+-> 片段仍失败则继续缩小；每段均送入模型，本地合并全部纠错，再以精简证据生成总评
 -> 成功：store.saveReview() -> finalizeSession() -> review.assessment 写入 learning-index.json
 -> 失败：仍归档完整对话并标记暂无复盘
 -> LearningCenter 历史详情“重新生成复盘”
@@ -251,8 +254,8 @@ App 启动 5 秒 / 设置页手动检查
 
 - `src/main/store.ts`：`current-practice.md`、最终 Markdown 和 `learning-index.json` 的唯一写入入口；历史复盘重试也必须通过 `saveArchivedReview()` 同步回写 Markdown 与索引。
 - `src/main/session-checkpoint.ts`：练习中的增量落盘。
-- `src/main/learning-service.ts`：LLM 消息角色组装、SSE 解析和复盘结构化；对话历史必须保持 `system -> user / assistant` 顺序。普通对话请求为 30 秒超时，完整复盘为 120 秒专用超时。
-- `src/renderer/LearningCenter.tsx`：历史、完整复盘、缺失复盘的显式重试、词汇和复习 UI。
+- `src/main/learning-service.ts`：LLM 消息角色组装、SSE 解析和复盘结构化；对话历史必须保持 `system -> user / assistant` 顺序。普通对话请求为 30 秒超时，复盘请求为 300 秒专用超时。长转写先完整流式请求；只有 504/超时才走 turn 对齐的分段分析、失败段递归缩小和精简总评链路，是否进入流式模式与练习持续时间无关。
+- `src/renderer/LearningCenter.tsx`：历史、完整复盘、缺失复盘的显式重试、词汇和复习 UI。单次历史复盘超过五条纠错时默认收起，按该次复盘独立展开全部；这不是全局“句子”列表。
 
 ### 渲染与共享配置
 
@@ -273,13 +276,13 @@ App 启动 5 秒 / 设置页手动检查
 | `src/main/store.test.ts` | chunk 合并、Markdown、复盘、历史复盘回写、搜索、词汇和索引持久化 |
 | `src/main/speech-segments.test.ts` | TTS 分段边界 |
 | `src/main/chatgpt-automation.test.ts` | 网页 DOM、发送确认、回复稳定和清理 |
-| `src/main/learning-service.test.ts` | 完整 system 组合、user/assistant 历史顺序、SSE、非流式回退、复盘超时、ChatGPT 启动提示词排除与长对话完整纠错列表 |
+| `src/main/learning-service.test.ts` | 完整 system 组合、user/assistant 历史顺序、SSE、非流式回退、复盘超时、长转写分段/504 重试/纠错合并、ChatGPT 启动提示词排除与完整纠错列表 |
 | `src/main/provider-connection-check.test.ts` | 大模型最小对话、HTTP/超时错误、已保存 Key 回退，以及阿里握手与安全关闭 |
 | `src/renderer/local-speech-audio.test.ts` | 麦克风采集重采样、输入强度阈值、提示音和播放 generation |
 | `src/renderer/App.voice.test.tsx` | 来源、模式、语音门控、设置和客户端事件 |
 | `src/renderer/app-state.test.ts` | 生命周期忙碌状态、下一次练习模板映射 |
 | `src/renderer/subtitle-overlay.test.tsx` | 字幕、查词、收藏和交互状态 |
-| `src/renderer/LearningCenter.test.tsx` | 历史详情、缺失复盘重试、词汇列表和复习卡 |
+| `src/renderer/LearningCenter.test.tsx` | 历史详情、单次长纠错列表折叠/完整展开、缺失复盘重试、词汇列表和复习卡 |
 | `src/main/update-service.test.ts` | Release 解析、版本比较、下载通道、大小/SHA-256/MZ 校验与残留清理 |
 | `src/renderer/update-prompt.test.ts` | 跳过版本的持久化与新版本重新提示 |
 | `src/renderer/App.voice.test.tsx` | 启动检查、更新正文、手动检查、下载进度和失败回退 |
@@ -357,6 +360,7 @@ pnpm dev
 - `store.ts` 是学习索引和复习日期的唯一写入点；列表刷新不得触发 LLM 网络回退。
 - 结束练习时复盘失败不会丢失对话；历史详情必须保留显式“重新生成复盘”入口。真实验收要确认重试成功后同一 Markdown 出现 `## Review`、详情出现评分，学习中心能力趋势随即更新。
 - 长对话的 `issues` 不设 8 条或 10 条硬上限；模型返回的全部有效、非重复纠错都应通过解析并写入归档。首页可单独截取少量摘要，但历史详情保存和展示完整列表；每条纠错的字段类型与收藏句子分析完整性仍必须严格校验。
+- 长对话的上下文容量与网关等待时间是两个边界：只要模型支持，先把完整转写一次发送并流式接收 JSON；不要因持续时间长而主动删减或分段。仅在完整请求收到 504/超时时，才按 Markdown 的完整 AI/Me turn 分段提取纠错并继续缩小失败段。每段内容都送入模型，最终总评只携带精简证据；各段 `issues` 在本地按原句和改写去重合并，避免汇总模型截断或重新施加数量上限。
 - ChatGPT 网页归档的第一条 `Me` 是应用发送的练习启动提示词，不是学习者口语。复盘输入副本必须移除嵌入的 Base64 元数据、已有 `## Review` 和这条首轮提示词，只分析余下 `### Me`；API 直连没有这条网页启动消息，第一条真实回答不得删除。原始 Markdown 归档保持不变。
 - 设置页“探测可用模型”只验证 `/models`；“检测大模型”才验证实际 `/chat/completions`。阿里检测只验证 Key、网络和服务握手，不代表麦克风或扬声器可用。
 - 大模型连通性检测只要求成功返回标准 `choices[0].message`；不要要求极短测试请求必须有非空 `message.content`，推理模型可能先耗尽测试输出额度但真实流式对话仍完全可用。

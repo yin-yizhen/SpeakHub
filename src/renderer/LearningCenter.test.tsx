@@ -44,6 +44,28 @@ describe('LearningCenter', () => {
     expect(container.textContent).toContain('完整对话')
   })
 
+  it('collapses a long correction list within one session and expands every issue on demand', async () => {
+    const issues = Array.from({ length: 12 }, (_, index) => ({ original: `original-${index + 1}`, improved: `improved-${index + 1}`, reason: `reason-${index + 1}` }))
+    window.speaksub.getSessionDetail = vi.fn(async () => ({ ...detail, review: { ...detail.review!, issues } }))
+
+    act(() => root.render(<LearningCenter onUseDraft={() => undefined}/>)); await settle()
+    act(() => [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '历史')!.click()); await settle()
+    act(() => container.querySelector<HTMLButtonElement>('.history-row > button')!.click()); await settle()
+
+    const expand = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '展开全部')!
+    expect(expand.getAttribute('aria-expanded')).toBe('false')
+    expect(container.textContent).toContain('全部纠错 12 条')
+    expect(container.textContent).not.toContain('improved-12')
+
+    act(() => expand.click())
+    expect(container.textContent).toContain('improved-1')
+    expect(container.textContent).toContain('improved-12')
+    const collapse = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '收起纠错')!
+    expect(collapse.getAttribute('aria-expanded')).toBe('true')
+    act(() => collapse.click())
+    expect(container.textContent).not.toContain('improved-12')
+  })
+
   it('shows all saved vocabulary, then reveals the answer only after rating a review card', async () => {
     act(() => root.render(<LearningCenter onUseDraft={() => undefined}/>)); await settle()
     const vocabulary = [...container.querySelectorAll('button')].find((button) => button.textContent === '词汇')!

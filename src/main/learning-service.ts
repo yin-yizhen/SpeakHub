@@ -31,10 +31,17 @@ const reviewWithSentencesSchema = reviewSchema.extend({
   sentenceAnalyses: z.array(z.object({ sourceMessageId: z.string().min(1).max(2_000), analysis: sentenceAnalysisSchema })).max(100)
 })
 
+const reviewSynthesisSchema = reviewSchema.omit({ issues: true }).extend({
+  sentenceAnalyses: reviewWithSentencesSchema.shape.sentenceAnalyses
+})
+
 type LlmMessage = { role: 'system' | 'user' | 'assistant'; content: string }
 
 const DEFAULT_LLM_TIMEOUT_MS = 30_000
-const REVIEW_LLM_TIMEOUT_MS = 120_000
+const REVIEW_LLM_TIMEOUT_MS = 300_000
+const REVIEW_DIRECT_MAX_CHARACTERS = 8_000
+const REVIEW_CHUNK_MAX_CHARACTERS = 6_000
+const REVIEW_RETRY_MIN_CHARACTERS = 2_000
 
 function timeoutError(timeoutMs: number): Error {
   return new Error(`大模型请求超过 ${Math.round(timeoutMs / 1000)} 秒仍未完成，请检查网络后稍后重试。`)
@@ -58,6 +65,80 @@ function archiveForReview(archiveMarkdown: string): string {
   const firstSetupTurn = /### Me at [^\n]+\n\n[\s\S]*?(?=\n\n### (?:AI|Me)(?: · 已打断)? at |\n\n## |$)/
   if (!firstSetupTurn.test(transcript)) return withoutExistingReview
   return `${withoutExistingReview.slice(0, transcriptStart)}${transcript.replace(firstSetupTurn, '_Initial practice setup prompt omitted from learner review._')}`
+}
+
+function splitAtNaturalBoundary(text: string, maxCharacters: number): string[] {
+  const chunks: string[] = []
+  let remaining = text.trim()
+  while (remaining.length > maxCharacters) {
+    const paragraphBoundary = remaining.lastIndexOf('\n\n', maxCharacters)
+    const sentenceBoundary = Math.max(remaining.lastIndexOf('. ', maxCharacters), remaining.lastIndexOf('? ', maxCharacters), remaining.lastIndexOf('! ', maxCharacters))
+    const wordBoundary = remaining.lastIndexOf(' ', maxCharacters)
+    const preferredBoundary = Math.max(paragraphBoundary, sentenceBoundary >= 0 ? sentenceBoundary + 1 : -1, wordBoundary)
+    const boundary = preferredBoundary >= Math.floor(maxCharacters * 0.6) ? preferredBoundary : maxCharacters
+    chunks.push(remaining.slice(0, boundary).trim())
+    remaining = remaining.slice(boundary).trim()
+  }
+  if (remaining) chunks.push(remaining)
+  return chunks
+}
+
+function splitOversizedTurn(turn: string, maxCharacters: number): string[] {
+  if (turn.length <= maxCharacters) return [turn]
+  const heading = /^(### (?:AI|Me)(?: · 已打断)? at [^\n]+\n\n)/.exec(turn)?.[1]
+  if (!heading) return splitAtNaturalBoundary(turn, maxCharacters)
+  const bodyMaxCharacters = Math.max(500, maxCharacters - heading.length)
+  return splitAtNaturalBoundary(turn.slice(heading.length), bodyMaxCharacters).map((part) => `${heading}${part}`)
+}
+
+function reviewTranscriptLength(reviewArchive: string): number {
+  const transcriptStart = reviewArchive.indexOf('## Transcript')
+  if (transcriptStart < 0) return reviewArchive.length
+  const afterHeading = reviewArchive.slice(transcriptStart + '## Transcript'.length)
+  const nextSection = /\n\n## (?!Transcript)/.exec(afterHeading)
+  return (nextSection ? afterHeading.slice(0, nextSection.index) : afterHeading).trim().length
+}
+
+function reviewArchiveChunks(archiveMarkdown: string, directMaxCharacters = REVIEW_DIRECT_MAX_CHARACTERS, chunkMaxCharacters = REVIEW_CHUNK_MAX_CHARACTERS): string[] {
+  const reviewArchive = archiveForReview(archiveMarkdown)
+  const transcriptStart = reviewArchive.indexOf('## Transcript')
+  if (transcriptStart < 0 || reviewTranscriptLength(reviewArchive) <= directMaxCharacters) return [reviewArchive]
+  const header = reviewArchive.slice(0, transcriptStart).trim()
+  const afterHeading = reviewArchive.slice(transcriptStart + '## Transcript'.length)
+  const nextSection = /\n\n## (?!Transcript)/.exec(afterHeading)
+  const transcript = (nextSection ? afterHeading.slice(0, nextSection.index) : afterHeading).trim()
+  const turns = transcript.split(/(?=^### (?:AI|Me)(?: · 已打断)? at )/m).map((turn) => turn.trim()).filter(Boolean)
+    .flatMap((turn) => splitOversizedTurn(turn, chunkMaxCharacters))
+  if (turns.length <= 1) return [reviewArchive]
+  const chunkTurns: string[][] = []
+  let current: string[] = []
+  let currentLength = 0
+  for (const turn of turns) {
+    if (current.length && currentLength + 2 + turn.length > chunkMaxCharacters) {
+      chunkTurns.push(current)
+      current = []
+      currentLength = 0
+    }
+    current.push(turn)
+    currentLength += (currentLength ? 2 : 0) + turn.length
+  }
+  if (current.length) chunkTurns.push(current)
+  const prefix = header ? `${header}\n\n## Transcript\n\n` : '## Transcript\n\n'
+  return chunkTurns.map((chunk) => `${prefix}${chunk.join('\n\n')}`)
+}
+
+function isReviewTimeout(error: unknown): boolean {
+  return error instanceof Error && (/LLM request failed \(504\)/.test(error.message) || /大模型请求超过 \d+ 秒/.test(error.message) || isTimeoutError(error))
+}
+
+function uniqueReviewIssues(reviews: ReviewResult[]): ReviewResult['issues'] {
+  const seen = new Set<string>()
+  return reviews.flatMap((review) => review.issues).filter((issue) => {
+    const key = `${issue.original.trim().toLocaleLowerCase().replace(/\s+/g, ' ')}\u0000${issue.improved.trim().toLocaleLowerCase().replace(/\s+/g, ' ')}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 function abortError(): Error {
@@ -134,31 +215,89 @@ export class LearningService {
   }
 
   async review(archiveMarkdown: string, strength: string, favorites: string[] = []): Promise<ReviewResult> {
+    const archiveChunks = reviewArchiveChunks(archiveMarkdown)
     const savedVocabulary = favorites.length ? favorites.map((word) => `- ${word}`).join('\n') : '(none)'
-    const result = await this.askLlm(`You are a concise English speaking coach. Analyze this complete practice archive at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]}}. Scores are integer-like values from 0 to 100 based only on language visible in the transcript; do not claim acoustic pronunciation analysis. Use Chinese for explanations. Correct only learner language in the remaining ### Me transcript turns. Never treat frontmatter, saved items, metadata, or practice setup instructions as learner output. Include every distinct, meaningful correction supported by the transcript; do not impose a fixed 8- or 10-item limit, and avoid duplicate issues. The vocabulary array must contain explanations only for the saved vocabulary below. Give each saved word a short English example sentence. Do not add other vocabulary; when none is saved, return an empty vocabulary array. Saved vocabulary:\n${savedVocabulary}\nPractice archive Markdown:\n${archiveForReview(archiveMarkdown)}`, REVIEW_LLM_TIMEOUT_MS)
-    const review = reviewSchema.parse(result)
-    const saved = new Set(favorites.map((word) => word.toLocaleLowerCase()))
-    return { ...review, vocabulary: review.vocabulary.filter((item) => saved.has(item.term.toLocaleLowerCase())) }
+    const prompt = `You are a concise English speaking coach. Analyze this complete practice archive at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]}}. Scores are integer-like values from 0 to 100 based only on language visible in the transcript; do not claim acoustic pronunciation analysis. Use Chinese for explanations. Correct only learner language in the remaining ### Me transcript turns. Never treat frontmatter, saved items, metadata, or practice setup instructions as learner output. Include every distinct, meaningful correction supported by the transcript; do not impose a fixed 8- or 10-item limit, and avoid duplicate issues. The vocabulary array must contain explanations only for the saved vocabulary below. Give each saved word a short English example sentence. Do not add other vocabulary; when none is saved, return an empty vocabulary array. Saved vocabulary:\n${savedVocabulary}\nPractice archive Markdown:\n${archiveForReview(archiveMarkdown)}`
+    try {
+      const result = archiveChunks.length > 1 ? await this.askStreamingLlm(prompt, REVIEW_LLM_TIMEOUT_MS) : await this.askLlm(prompt, REVIEW_LLM_TIMEOUT_MS)
+      const review = reviewSchema.parse(result)
+      const saved = new Set(favorites.map((word) => word.toLocaleLowerCase()))
+      return { ...review, vocabulary: review.vocabulary.filter((item) => saved.has(item.term.toLocaleLowerCase())) }
+    } catch (error) {
+      if (archiveChunks.length > 1 && isReviewTimeout(error)) return (await this.reviewLongArchive(archiveChunks, strength, favorites, [])).review
+      throw error
+    }
   }
 
   async reviewWithSentences(archiveMarkdown: string, strength: string, favorites: string[] = [], sentences: Array<Pick<SessionFavoriteSentence, 'sourceMessageId' | 'text'>> = []): Promise<{ review: ReviewResult; sentenceAnalyses: SessionSentenceAnalysis[] }> {
+    const archiveChunks = reviewArchiveChunks(archiveMarkdown)
     if (!sentences.length) return { review: await this.review(archiveMarkdown, strength, favorites), sentenceAnalyses: [] }
     const savedVocabulary = favorites.length ? favorites.map((word) => `- ${word}`).join('\n') : '(none)'
     const savedSentences = JSON.stringify(sentences)
-    const result = await this.askLlm(`You are a concise English speaking coach. Analyze this complete practice archive and every saved sentence in one response at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]},"sentenceAnalyses":[{"sourceMessageId":"copy the supplied id exactly","analysis":{"translation":"自然中文意思","structure":"一句简短的句型结构说明","reusablePattern":"一个可以替换内容复用的英文句型","expressions":[{"phrase":"原句中的常用表达","meaning":"简短中文含义和使用场景"}],"breakdown":[{"part":"原句片段","explanation":"该片段在句中的作用"}],"examples":["使用可复用句型的新例句"],"tip":"一个简短的易错点或更自然表达建议"}}]}. Scores are integer-like values from 0 to 100 based only on visible language; do not claim acoustic pronunciation analysis. Use Chinese for explanations. Correct only learner language in the remaining ### Me transcript turns. Never treat frontmatter, saved items, metadata, or practice setup instructions as learner output. Include every distinct, meaningful correction supported by the transcript; do not impose a fixed 8- or 10-item limit, and avoid duplicate issues. Vocabulary must explain only the saved vocabulary. Return exactly one sentenceAnalyses item for each saved sentence, preserving its sourceMessageId exactly. Keep structure and reusablePattern concise enough for a three-line list preview. Return at most 4 expressions, 5 breakdown items, and 3 examples per sentence. Saved vocabulary:\n${savedVocabulary}\nSaved sentences:\n${savedSentences}\nPractice archive Markdown:\n${archiveForReview(archiveMarkdown)}`, REVIEW_LLM_TIMEOUT_MS)
-    const parsed = reviewWithSentencesSchema.parse(result)
+    const prompt = `You are a concise English speaking coach. Analyze this complete practice archive and every saved sentence in one response at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]},"sentenceAnalyses":[{"sourceMessageId":"copy the supplied id exactly","analysis":{"translation":"自然中文意思","structure":"一句简短的句型结构说明","reusablePattern":"一个可以替换内容复用的英文句型","expressions":[{"phrase":"原句中的常用表达","meaning":"简短中文含义和使用场景"}],"breakdown":[{"part":"原句片段","explanation":"该片段在句中的作用"}],"examples":["使用可复用句型的新例句"],"tip":"一个简短的易错点或更自然表达建议"}}]}. Scores are integer-like values from 0 to 100 based only on visible language; do not claim acoustic pronunciation analysis. Use Chinese for explanations. Correct only learner language in the remaining ### Me transcript turns. Never treat frontmatter, saved items, metadata, or practice setup instructions as learner output. Include every distinct, meaningful correction supported by the transcript; do not impose a fixed 8- or 10-item limit, and avoid duplicate issues. Vocabulary must explain only the saved vocabulary. Return exactly one sentenceAnalyses item for each saved sentence, preserving its sourceMessageId exactly. Keep structure and reusablePattern concise enough for a three-line list preview. Return at most 4 expressions, 5 breakdown items, and 3 examples per sentence. Saved vocabulary:\n${savedVocabulary}\nSaved sentences:\n${savedSentences}\nPractice archive Markdown:\n${archiveForReview(archiveMarkdown)}`
+    try {
+      const result = archiveChunks.length > 1 ? await this.askStreamingLlm(prompt, REVIEW_LLM_TIMEOUT_MS) : await this.askLlm(prompt, REVIEW_LLM_TIMEOUT_MS)
+      const parsed = reviewWithSentencesSchema.parse(result)
+      const savedWords = new Set(favorites.map((word) => word.toLocaleLowerCase()))
+      const sentenceIds = new Set(sentences.map((sentence) => sentence.sourceMessageId))
+      const seenSentenceIds = new Set<string>()
+      const { sentenceAnalyses: rawSentenceAnalyses, ...rawReview } = parsed
+      const review = { ...rawReview, vocabulary: rawReview.vocabulary.filter((item) => savedWords.has(item.term.toLocaleLowerCase())) }
+      const sentenceAnalyses = rawSentenceAnalyses.filter((item) => {
+        if (!sentenceIds.has(item.sourceMessageId) || seenSentenceIds.has(item.sourceMessageId)) return false
+        seenSentenceIds.add(item.sourceMessageId)
+        return true
+      })
+      if (sentenceAnalyses.length !== sentenceIds.size) throw new Error('大模型返回的收藏句子分析不完整，请重新生成复盘。')
+      return { review, sentenceAnalyses }
+    } catch (error) {
+      if (archiveChunks.length > 1 && isReviewTimeout(error)) return this.reviewLongArchive(archiveChunks, strength, favorites, sentences)
+      throw error
+    }
+  }
+
+  private async reviewLongArchive(archiveChunks: string[], strength: string, favorites: string[], sentences: Array<Pick<SessionFavoriteSentence, 'sourceMessageId' | 'text'>>): Promise<{ review: ReviewResult; sentenceAnalyses: SessionSentenceAnalysis[] }> {
+    const partialReviews: ReviewResult[] = []
+    for (let index = 0; index < archiveChunks.length; index += 1) {
+      partialReviews.push(...await this.reviewArchiveSegment(archiveChunks[index], strength, index + 1, archiveChunks.length))
+    }
+    const evidence = partialReviews.map(({ topic, summary, nextPractice, assessment }) => ({ topic, summary, nextPractice, assessment }))
+    const savedVocabulary = favorites.length ? favorites.map((word) => `- ${word}`).join('\n') : '(none)'
+    const savedSentences = JSON.stringify(sentences)
+    const result = await this.askLlm(`You are a concise English speaking coach. Synthesize the overall review from segmented evidence at correction level ${strength}. The correction issues have already been preserved separately, so do not return issues. Return JSON only with this exact shape: {"topic":"string","summary":"string","vocabulary":[{"term":"string","meaning":"string","example":"string"}],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]},"sentenceAnalyses":[{"sourceMessageId":"copy the supplied id exactly","analysis":{"translation":"自然中文意思","structure":"一句简短的句型结构说明","reusablePattern":"一个可以替换内容复用的英文句型","expressions":[{"phrase":"原句中的常用表达","meaning":"简短中文含义和使用场景"}],"breakdown":[{"part":"原句片段","explanation":"该片段在句中的作用"}],"examples":["使用可复用句型的新例句"],"tip":"一个简短的易错点或更自然表达建议"}}]}. Use Chinese for explanations. Base the overall scores on all segment evidence and do not claim acoustic pronunciation analysis. Vocabulary must explain only the saved vocabulary; add no other words. Return exactly one sentenceAnalyses item for each saved sentence, preserving sourceMessageId exactly; return an empty array when there are none. Keep sentence analyses concise and return at most 4 expressions, 5 breakdown items, and 3 examples per sentence. Saved vocabulary:\n${savedVocabulary}\nSaved sentences:\n${savedSentences}\nSegmented review evidence:\n${JSON.stringify(evidence)}`, REVIEW_LLM_TIMEOUT_MS)
+    const parsed = reviewSynthesisSchema.parse(result)
     const savedWords = new Set(favorites.map((word) => word.toLocaleLowerCase()))
     const sentenceIds = new Set(sentences.map((sentence) => sentence.sourceMessageId))
     const seenSentenceIds = new Set<string>()
-    const { sentenceAnalyses: rawSentenceAnalyses, ...rawReview } = parsed
-    const review = { ...rawReview, vocabulary: rawReview.vocabulary.filter((item) => savedWords.has(item.term.toLocaleLowerCase())) }
-    const sentenceAnalyses = rawSentenceAnalyses.filter((item) => {
+    const sentenceAnalyses = parsed.sentenceAnalyses.filter((item) => {
       if (!sentenceIds.has(item.sourceMessageId) || seenSentenceIds.has(item.sourceMessageId)) return false
       seenSentenceIds.add(item.sourceMessageId)
       return true
     })
     if (sentenceAnalyses.length !== sentenceIds.size) throw new Error('大模型返回的收藏句子分析不完整，请重新生成复盘。')
-    return { review, sentenceAnalyses }
+    const { sentenceAnalyses: _sentenceAnalyses, ...synthesis } = parsed
+    return {
+      review: { ...synthesis, issues: uniqueReviewIssues(partialReviews), vocabulary: synthesis.vocabulary.filter((item) => savedWords.has(item.term.toLocaleLowerCase())) },
+      sentenceAnalyses
+    }
+  }
+
+  private async reviewArchiveSegment(archiveChunk: string, strength: string, segmentNumber: number, segmentCount: number): Promise<ReviewResult[]> {
+    try {
+      const result = await this.askLlm(`You are a concise English speaking coach. Analyze transcript segment ${segmentNumber} of ${segmentCount} at correction level ${strength}. Return JSON only with this exact shape: {"topic":"string","summary":"string","issues":[{"original":"string","improved":"string","reason":"string"}],"vocabulary":[],"nextPractice":"string","assessment":{"estimatedCefr":"A1|A2|B1|B2|C1","scores":{"accuracy":0,"vocabulary":0,"fluency":0,"interaction":0},"errorCategories":[{"category":"grammar|word-choice|tense|articles|prepositions|fluency|coherence|interaction|other","count":1}],"weakPoints":["string"]}}. Scores are integer-like values from 0 to 100 based only on visible language. Use Chinese for explanations. Correct only learner language in ### Me turns. Include every distinct, meaningful correction in this segment; do not impose a fixed 8- or 10-item limit. Never correct AI turns, setup instructions, frontmatter, saved items, or metadata. Keep vocabulary empty because saved vocabulary is handled in the final synthesis. Transcript segment:\n${archiveChunk}`, REVIEW_LLM_TIMEOUT_MS)
+      return [reviewSchema.parse(result)]
+    } catch (error) {
+      const transcriptLength = reviewTranscriptLength(archiveChunk)
+      if (!isReviewTimeout(error) || transcriptLength <= REVIEW_RETRY_MIN_CHARACTERS) throw error
+      const smallerMaxCharacters = Math.max(REVIEW_RETRY_MIN_CHARACTERS, Math.floor(transcriptLength / 2))
+      const smallerChunks = reviewArchiveChunks(archiveChunk, 0, smallerMaxCharacters)
+      if (smallerChunks.length <= 1) throw error
+      const reviews: ReviewResult[] = []
+      for (let index = 0; index < smallerChunks.length; index += 1) {
+        reviews.push(...await this.reviewArchiveSegment(smallerChunks[index], strength, index + 1, smallerChunks.length))
+      }
+      return reviews
+    }
   }
 
   async chat(events: TranscriptEvent[], topic: string, level: string, prompt?: string, systemPrompt?: string): Promise<string> {
@@ -190,6 +329,30 @@ export class LearningService {
 
   private async askLlm(prompt: string, timeoutMs = DEFAULT_LLM_TIMEOUT_MS): Promise<unknown> {
     const content = await this.requestLlm([{ role: 'user', content: prompt }], true, timeoutMs)
+    try { return JSON.parse(content) } catch { throw new Error('LLM returned invalid JSON.') }
+  }
+
+  private async askStreamingLlm(prompt: string, timeoutMs: number): Promise<unknown> {
+    const config = this.requireLlmConfig()
+    const messages: LlmMessage[] = [{ role: 'user', content: prompt }]
+    const body = { model: config.model, messages, stream: true, response_format: { type: 'json_object' } }
+    let content: string
+    try {
+      const response = await this.post(config.url, config.apiKey, body, undefined, timeoutMs)
+      if (!response.ok) {
+        if ([400, 404, 405, 415, 422].includes(response.status)) {
+          content = await this.requestLlm(messages, true, timeoutMs)
+        } else {
+          throw new Error(`LLM request failed (${response.status})`)
+        }
+      } else {
+        const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+        content = contentType.includes('text/event-stream') ? await readSseResponse(response) : await this.readNonStreamingResponse(response)
+      }
+    } catch (error) {
+      if (isTimeoutError(error)) throw timeoutError(timeoutMs)
+      throw error
+    }
     try { return JSON.parse(content) } catch { throw new Error('LLM returned invalid JSON.') }
   }
 
@@ -248,7 +411,7 @@ export class LearningService {
   }
 }
 
-async function readSseResponse(response: Response, onDelta: (delta: string) => void, signal?: AbortSignal): Promise<string> {
+async function readSseResponse(response: Response, onDelta?: (delta: string) => void, signal?: AbortSignal): Promise<string> {
   if (!response.body) throw new Error('LLM streaming response had no body.')
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -261,7 +424,10 @@ async function readSseResponse(response: Response, onDelta: (delta: string) => v
     let payload: { choices?: Array<{ delta?: { content?: string } }> }
     try { payload = JSON.parse(data) as typeof payload } catch { return false }
     const delta = payload.choices?.[0]?.delta?.content
-    if (delta) { result += delta; await emitSubtitleDeltas(delta, onDelta, signal) }
+    if (delta) {
+      result += delta
+      if (onDelta) await emitSubtitleDeltas(delta, onDelta, signal)
+    }
     return false
   }
   while (true) {
