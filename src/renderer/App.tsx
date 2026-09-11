@@ -143,6 +143,10 @@ export function App() {
   const [mode, setMode] = useState<PracticeMode>('voice')
   const [focus, setFocus] = useState('')
   const [focusEnabled, setFocusEnabled] = useState(false)
+  const [topicDocumentName, setTopicDocumentName] = useState<string>('')
+  const [topicDocument, setTopicDocument] = useState<string>('')
+  const [topicDocumentError, setTopicDocumentError] = useState<string>('')
+  const [topicDocumentParsing, setTopicDocumentParsing] = useState(false)
   const [templates, setTemplates] = useState<PromptTemplates>()
   const [selectedTemplates, setSelectedTemplates] = useState({ scenario: '', difficulty: '', correction: '' })
   const [templateEditor, setTemplateEditor] = useState<PromptTemplateCategory>()
@@ -342,6 +346,23 @@ export function App() {
     requireApiVoiceSetup('api-direct', 'voice')
   }
   async function clearPendingCleanup(): Promise<void> { if (source === 'api-direct') return; await window.speaksub.clearPendingCleanup(); setAutomation({ phase: 'idle', message: '已清除上一条练习记录；现在可以重新开始。' }) }
+  async function handleTopicDocumentUpload(file: File | undefined): Promise<void> {
+    setTopicDocumentError('')
+    if (!file) { setTopicDocument(''); setTopicDocumentName(''); return }
+    if (!/\.(txt|pdf|docx)$/i.test(file.name)) { setTopicDocument(''); setTopicDocumentName(''); setTopicDocumentError('仅支持 .txt、.pdf 或 .docx 格式的文档（不支持旧版 .doc）。'); return }
+    if (file.size > 10 * 1024 * 1024) { setTopicDocument(''); setTopicDocumentName(''); setTopicDocumentError('文档过大，请上传小于 10MB 的文件。'); return }
+    setTopicDocumentParsing(true); setTopicDocument(''); setTopicDocumentName('')
+    try {
+      const buffer = await file.arrayBuffer()
+      const text = await window.speaksub.parseTopicDocument(file.name, new Uint8Array(buffer))
+      setTopicDocument(text); setTopicDocumentName(file.name)
+    } catch (error) {
+      setTopicDocument(''); setTopicDocumentName(''); setTopicDocumentError(error instanceof Error ? error.message : '文档解析失败，请重试。')
+    } finally {
+      setTopicDocumentParsing(false)
+    }
+  }
+  function clearTopicDocument(): void { setTopicDocument(''); setTopicDocumentName(''); setTopicDocumentError(''); setTopicDocumentParsing(false) }
   async function copyCommunityGroupNumber(): Promise<void> {
     try {
       await window.speaksub.copyCommunityGroupNumber()
@@ -418,7 +439,7 @@ export function App() {
         : selectedPrompt
       const correctionStrength: CorrectionStrength = ['light', 'normal', 'strict'].includes(correction.id) ? correction.id as CorrectionStrength : 'normal'
       const cefrLevel = ['A1', 'A2', 'B1', 'B2', 'C1'].includes(difficulty.name) ? difficulty.name : 'B1'
-      const result = await window.speaksub.startPractice(scenario.name, cefrLevel, correctionStrength, source, mode, focusEnabled ? focus || undefined : undefined, prompt, source === 'api-direct' ? templates?.systemPrompt : undefined)
+      const result = await window.speaksub.startPractice(scenario.name, cefrLevel, correctionStrength, source, mode, focusEnabled ? focus || undefined : undefined, prompt, source === 'api-direct' ? templates?.systemPrompt : undefined, source === 'api-direct' ? topicDocument.trim() || undefined : undefined)
       if (request !== practiceStartRequest.current) return
       setSession(result.session.id); setEvents([]); setReview(undefined); setLifecycle('active')
       if (result.warning) setAutomation({ phase: 'failed', message: result.warning, recoverable: true })
@@ -823,7 +844,8 @@ export function App() {
         {templates && <><div className="prompt-category"><div><strong>情景</strong><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('scenario')}>管理提示词</button><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={openSystemPromptEditor}>管理系统提示词</button></div><div className="topic-grid">{templates.scenario.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.scenario === item.id ? 'topic active' : 'topic'} onClick={() => { setSelectedTemplates((value) => ({ ...value, scenario: item.id })); savePracticePreferences({ scenarioTemplateId: item.id }) }}>{item.name}</button>)}</div></div>
         <div className="session-config"><div className="level-picker"><span>难度</span>{templates.difficulty.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.difficulty === item.id ? 'active' : ''} onClick={() => { setSelectedTemplates((value) => ({ ...value, difficulty: item.id })); savePracticePreferences({ difficultyTemplateId: item.id }) }}>{item.name}</button>)}</div><div className="correction-picker"><span>纠错</span>{templates.correction.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.correction === item.id ? 'active' : ''} onClick={() => { setSelectedTemplates((value) => ({ ...value, correction: item.id })); savePracticePreferences({ correctionTemplateId: item.id }) }}>{item.name}</button>)}</div><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('difficulty')}>管理难度</button><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('correction')}>管理纠错</button>{session ? <button className="finish-action" disabled={transitionBusy} onClick={() => void endPractice()}>{lifecycle === 'ending' ? '正在生成复盘与句子分析…' : '结束并生成复盘'}</button> : <button className="primary-action" disabled={lifecycle === 'ending' || practiceStartCancelBusy} aria-label={lifecycle === 'starting' ? '取消正在启动的练习' : '确认并开始'} onClick={() => void startPractice()}>{practiceStartCancelBusy ? '正在取消…' : lifecycle === 'starting' ? '正在启动… 再次点击取消' : '确认并开始'}</button>}</div>
         <section className="prompt-preview"><strong>{source === 'api-direct' ? '将作为 system 发送给 AI 的完整提示词' : '将发送给 ChatGPT 的完整提示词'}</strong><p>{promptPreview}</p></section>{systemPromptEditorOpen && <div className="confirm-layer template-editor" role="dialog" aria-modal="true" aria-labelledby="system-prompt-editor-title"><div><header className="template-editor-header"><div><p className="kicker">SYSTEM PROMPT</p><h2 id="system-prompt-editor-title">管理系统提示词</h2><p>这份系统提示词会先与情景、难度和纠错提示词组合。API 直连会将其作为 system 发送；ChatGPT 网页会将相同内容合并进首条提示词。</p></div><button className="template-editor-close" type="button" aria-label="关闭系统提示词管理" title="关闭" onClick={() => setSystemPromptEditorOpen(false)}>×</button></header><textarea value={systemPromptDraft} aria-label="系统提示词内容" rows={12} onChange={(event) => setSystemPromptDraft(event.target.value)}/><footer><button className="quiet-action" onClick={resetSystemPromptDraft}>恢复默认</button><button className="quiet-action" onClick={() => setSystemPromptEditorOpen(false)}>取消</button><button className="primary-action" disabled={!systemPromptDraft.trim()} onClick={() => void saveSystemPrompt()}>保存</button></footer></div></div>}
-        {!session && focus && <label className="practice-focus"><span><input type="checkbox" checked={focusEnabled} onChange={(event) => { setFocusEnabled(event.target.checked); savePracticePreferences({ focusEnabled: event.target.checked }) }}/> 带入上次复盘重点</span><textarea disabled={!focusEnabled} value={focus} onChange={(event) => { setFocus(event.target.value); savePracticePreferences({ focus: event.target.value }) }} rows={3}/><small>重点来自所选历史对话的薄弱点和“下一次练习”建议；勾选后会追加到最终提示词。</small></label>}</>}
+        {!session && focus && <label className="practice-focus"><span><input type="checkbox" checked={focusEnabled} onChange={(event) => { setFocusEnabled(event.target.checked); savePracticePreferences({ focusEnabled: event.target.checked }) }}/> 带入上次复盘重点</span><textarea disabled={!focusEnabled} value={focus} onChange={(event) => { setFocus(event.target.value); savePracticePreferences({ focus: event.target.value }) }} rows={3}/><small>重点来自所选历史对话的薄弱点和“下一次练习”建议；勾选后会追加到最终提示词。</small></label>}
+        {!session && source === 'api-direct' && <div className="practice-focus topic-document-upload"><span><strong>上传练习题目文档（可选）</strong><small>支持 .txt、.pdf、.docx；AI 会基于文档中的题目逐一向你提问。每次练习前重新上传一次。</small></span><div className="topic-document-row"><label className="quiet-action"><input type="file" accept=".txt,.pdf,.docx" className="hidden-file-input" disabled={topicDocumentParsing} onChange={(event) => void handleTopicDocumentUpload(event.target.files?.[0])}/>{topicDocumentParsing ? '解析中…' : '选择文件'}</label>{topicDocumentName && <><span className="topic-document-name" title={topicDocumentName}>{topicDocumentName}</span><button className="quiet-action" type="button" disabled={topicDocumentParsing} onClick={clearTopicDocument}>清除</button></>}</div>{topicDocumentError && <small role="alert">{topicDocumentError}</small>}{!topicDocumentError && topicDocumentParsing && <small role="status">正在解析文档…</small>}{!topicDocumentError && !topicDocumentParsing && topicDocumentName && <small role="status">已加载，开始练习时会一并提交给 AI。</small>}</div>}</>}
         {session && source === 'api-direct' && mode === 'text' && <div className="api-composer" aria-busy={apiBusy}><textarea value={apiMessage} onChange={(event) => setApiMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendApiMessage() } }} placeholder="用英语输入你的回答…" rows={3}/><button className="primary-action" aria-label={apiBusy ? '打断当前回复并发送' : '发送'} disabled={!apiMessage.trim()} onClick={() => void sendApiMessage()}>发送</button></div>}
         {session && mode === 'voice' && <div className="api-composer microphone-control"><div><strong>{microphone.active ? (source === 'api-direct' && voicePhase === 'listening' ? '正在听你说' : '麦克风已开启，可随时打断 AI') : '麦克风已暂停'}</strong><span>按 {microphone.shortcut} 开启或暂停；API 语音在 AI 思考和朗读时也会持续监听。</span></div><button className={microphone.active ? 'finish-action' : 'primary-action'} type="button" onClick={() => void toggleMicrophone()}>{microphone.active ? `暂停麦克风 · ${microphone.shortcut}` : `开启麦克风 · ${microphone.shortcut}`}</button></div>}
       </section>

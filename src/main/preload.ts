@@ -9,7 +9,8 @@ function onIpc<T>(channel: string, listener: (payload: T) => void): () => void {
 
 const api: SpeakSubApi = {
   getAppVersion: () => ipcRenderer.invoke('app:version'),
-  startPractice: (topic, level, strength, source, mode, focus, prompt, systemPrompt) => ipcRenderer.invoke('practice:start', topic, level, strength, source, mode, focus, prompt, systemPrompt),
+  parseTopicDocument: (fileName, data) => ipcRenderer.invoke('practice:parse-topic-document', fileName, data),
+  startPractice: (topic, level, strength, source, mode, focus, prompt, systemPrompt, topicDocument) => ipcRenderer.invoke('practice:start', topic, level, strength, source, mode, focus, prompt, systemPrompt, topicDocument),
   getPromptTemplates: () => ipcRenderer.invoke('practice:templates:get'),
   savePromptTemplates: (templates) => ipcRenderer.invoke('practice:templates:save', templates),
   getPracticePreferences: () => ipcRenderer.invoke('practice:preferences:get'),

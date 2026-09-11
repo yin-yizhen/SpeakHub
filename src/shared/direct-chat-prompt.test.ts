@@ -9,9 +9,10 @@ describe('buildDirectChatSystemPrompt', () => {
     expect(prompt).toContain('不要使用 Markdown、列表、星号')
     expect(prompt).toContain('不要用符号包围单词来强调')
     expect(prompt).toContain('避免连续或装饰性标点')
-    expect(prompt).toContain('1 到 2 个简短句子')
-    expect(prompt).toContain('英文不超过约 20 个单词')
-    expect(prompt).toContain('不要连续教学、长篇解释')
+    expect(prompt).toContain('3 到 5 个句子')
+    expect(prompt).toContain('英文约 40 到 80 个单词')
+    expect(prompt).toContain('雅思 Part 2 cue card')
+    expect(prompt).toContain('为学习者留出充分开口时间')
   })
 
   it('uses the saved system prompt for a ChatGPT web prompt too', () => {
