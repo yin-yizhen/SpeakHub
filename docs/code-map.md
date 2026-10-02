@@ -388,6 +388,8 @@ App 启动 5 秒 / 设置页手动检查
 
 ### 发布 Windows 新版本
 
+先读根目录 `agent.md`。它汇总已核实的打包、源码推送、用户上传 Release 和旧版自动更新验收流程；根目录 `AGENTS.md` 是后续任务的入口。
+
 1. 按 `X.Y.Z` 提升 `package.json` 版本号。
 2. 更新代码和 Release 正文；正文会原样显示在更新弹窗中。
 3. 运行 `pnpm lint`、`pnpm test`、`pnpm build` 和 `pnpm package:win`。
