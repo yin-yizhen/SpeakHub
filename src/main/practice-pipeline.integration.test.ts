@@ -9,10 +9,11 @@ import { mergeTranscriptEvent, subtitleEvents } from '../shared/transcript'
 import type { TranscriptEvent } from '../shared/types'
 
 describe('fake provider to archive integration', () => {
-  it('carries parser output through transcript, subtitle and Markdown boundaries', () => {
+  it.each(['legacy', 'current'])('carries %s parser output through transcript, subtitle and Markdown boundaries', (format) => {
     const directory = mkdtempSync(join(tmpdir(), 'speaksub-pipeline-'))
     try {
       document.body.innerHTML = '<article data-testid="conversation-turn-1"><div data-message-author-role="user" data-message-id="u1">I went to London.</div></article><article data-testid="conversation-turn-2"><div data-message-author-role="assistant" data-message-id="a1">What did you enjoy there?</div></article>'
+      if (format === 'current') document.body.innerHTML = '<div data-content-search-unit-key="fallback-turn-0:0:user"><div data-user-message-bubble="true">I went to London.<button>显示更多</button></div></div><div data-content-search-unit-key="fallback-turn-0:2:assistant"><div data-chatgpt-selection-message-id="a1"><div data-markdown-text-style="assistant-message">What did you enjoy there?</div></div></div>'
       const store = new SpeakSubStore(directory); const session = store.createSession('normal'); let events: TranscriptEvent[] = []
       for (const row of parseChatGPTPage(document)) {
         const event: TranscriptEvent = { ...row, id: row.sourceMessageId, sessionId: session.id, speaker: row.speaker as TranscriptEvent['speaker'], receivedAt: '2026-01-01T00:00:00.000Z' }

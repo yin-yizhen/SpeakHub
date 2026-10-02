@@ -1,10 +1,11 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, net, Notification, screen, session, shell, WebContentsView, type OpenDialogOptions } from 'electron'
+import { app, BaseWindow, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, net, Notification, screen, session, shell, WebContentsView, type OpenDialogOptions } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { z } from 'zod'
 import { ChatGPTAdapter, type SourceAdapter } from './chatgpt-adapter'
 import { ChatGPTAutomation } from './chatgpt-automation'
+import { placeChatGPTView } from './chatgpt-view-host'
 import { clearSavedChatGptBrowserLogin, importChatGptLoginFromBrowser } from './chatgpt-browser-login'
 import { ChatGPTMarkerStore } from './chatgpt-marker'
 import { cleanRecordedConversations } from './background-cleanup'
@@ -23,6 +24,7 @@ import { AppSettingsStore, defaultSubtitlePreferences, parseSubtitleUpdate } fro
 import { discoverProviderModels } from './provider-model-probe'
 import { checkAliyunConnection, checkLlmConnection } from './provider-connection-check'
 import { defaultMicrophoneShortcut, normalizeMicrophoneShortcut, replaceGlobalMicrophoneShortcut } from './microphone-shortcut'
+import { MicrophoneGate, shouldResetMicrophoneGateForNavigation } from './microphone-gate'
 import { bargeInDelayMs } from './barge-in-policy'
 import { PracticeController } from './practice-controller'
 import { endPracticeWithSubtitles, startPracticeWithSubtitles } from './practice-subtitle-lifecycle'
@@ -31,7 +33,7 @@ import { DiagnosticLog } from './diagnostic-log'
 import { AnonymousAnalytics } from './analytics'
 import { ALIYUN_FUN_ASR_CNY_PER_SECOND } from './aliyun-fun-asr'
 import { openAllowedHelpUrl } from './external-help-navigation'
-import { embeddedConnectionBounds, resizeBounds, subtitleBounds, subtitleHeight, type ResizeDirection } from './window-layout'
+import { resizeBounds, subtitleBounds, subtitleHeight, type ResizeDirection } from './window-layout'
 import { UpdateService } from './update-service'
 import { launchInstallerAndQuit } from './installer-launcher'
 import { activateExistingWindow } from './window-activation'
@@ -46,6 +48,7 @@ const mimoTtsVoices = ['Mia', 'Chloe', 'Milo', 'Dean', '冰糖', '茉莉', '苏�
 
 let mainWindow: BrowserWindow | undefined
 let chatHostView: WebContentsView | undefined
+let chatBackgroundWindow: BaseWindow | undefined
 let cleanupWindow: BrowserWindow | undefined
 let cleanupTask: Promise<void> | undefined
 let overlayWindow: BrowserWindow | undefined
@@ -99,7 +102,7 @@ const textReplies = new InterruptibleTaskHandoff()
 let diagnostics: DiagnosticLog
 let sessionCheckpoint: SessionCheckpoint | undefined
 let archiveDirectory: string
-let microphoneActive = false
+const microphoneGate = new MicrophoneGate()
 let microphoneShortcut = defaultMicrophoneShortcut
 let microphoneShortcutError: string | undefined
 let chatgptMicrophoneGateReady = false
@@ -115,7 +118,7 @@ function chatgptMicrophonePreloadPath(): string { return join(__dirname, '../pre
 function chatgptBrowserProfileDirectory(): string { return join(app.getPath('userData'), 'chatgpt-login-browser') }
 function developmentAppIconPath(): string | undefined { return app.isPackaged ? undefined : join(app.getAppPath(), 'resources', 'app-icon-rounded.ico') }
 function broadcast(channel: string, payload: unknown): void { for (const window of [mainWindow, overlayWindow]) if (window && !window.isDestroyed()) window.webContents.send(channel, payload) }
-function microphoneGateState(): MicrophoneGateState { return { active: microphoneActive, available: Boolean(activeSession) && activeMode === 'voice', shortcut: microphoneShortcut } }
+function microphoneGateState(): MicrophoneGateState { return microphoneGate.state(Boolean(activeSession), activeMode, microphoneShortcut) }
 function usageMonth(): string {
   const date = new Date()
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
@@ -144,17 +147,16 @@ function sourceUrl(): string { return CHATGPT_URL }
 function assertPracticeStartActive(signal: AbortSignal): void { if (signal.aborted) throw new Error('Practice startup was cancelled.') }
 
 async function setMicrophoneGate(active: boolean): Promise<MicrophoneGateState> {
-  if (!activeSession || activeMode !== 'voice') { microphoneActive = false; announceMicrophone(); return microphoneGateState() }
-  if (activeSource === 'chatgpt-web') {
+  await microphoneGate.set(active, Boolean(activeSession), activeMode, async (next) => {
+    if (activeSource !== 'chatgpt-web') return
     if (!chatHostView || !chatgptMicrophoneGateReady) throw new Error('ChatGPT microphone gate is not ready. Refresh the connection page and try again.')
-    chatHostView.webContents.send('speaksub:microphone-gate', active)
-  }
-  microphoneActive = active
+    chatHostView.webContents.send('speaksub:microphone-gate', next)
+  })
   announceMicrophone()
   return microphoneGateState()
 }
 
-async function toggleMicrophoneGate(): Promise<MicrophoneGateState> { return setMicrophoneGate(!microphoneActive) }
+async function toggleMicrophoneGate(): Promise<MicrophoneGateState> { return setMicrophoneGate(!microphoneGateState().active) }
 
 function registerMicrophoneShortcut(next: string): string {
   const previous = microphoneShortcut
@@ -166,26 +168,27 @@ function registerMicrophoneShortcut(next: string): string {
 }
 
 function layoutChatHostView(): void {
-  if (!mainWindow || !chatHostView) return
-  const [width, height] = mainWindow.getContentSize()
-  chatHostView.setBounds(embeddedConnectionBounds({ width, height }, CONNECTION_WIDTH))
+  if (!mainWindow || !chatHostView || !chatBackgroundWindow) return
+  placeChatGPTView(chatHostView, mainWindow, chatBackgroundWindow, connection.pageVisible, CONNECTION_WIDTH)
 }
 
 function applyWindowMode(): void {
   if (!mainWindow || !chatHostView) return
   mainWindow.setMinimumSize(1020, 680); mainWindow.setBounds(studioBounds)
+  layoutChatHostView()
   if (connection.pageVisible) {
-    layoutChatHostView(); chatHostView.setVisible(true); mainWindow.show(); chatHostView.webContents.focus(); return
+    mainWindow.show(); chatHostView.webContents.focus(); return
   }
-  chatHostView.setVisible(false); mainWindow.show(); mainWindow.focus()
+  mainWindow.show(); mainWindow.focus()
 }
 
 function createChatHostView(): void {
   if (!mainWindow) return
+  chatBackgroundWindow = new BaseWindow({ width: 900, height: 860, show: false, skipTaskbar: true, title: 'SpeakHub background practice' })
   chatHostView = new WebContentsView({ webPreferences: { partition: WEB_PRACTICE_PARTITION, preload: chatgptMicrophonePreloadPath(), contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false } })
-  mainWindow.contentView.addChildView(chatHostView)
+  layoutChatHostView()
   const contents = chatHostView.webContents
-  chatHostView.setVisible(false); contents.setBackgroundThrottling(false)
+  contents.setBackgroundThrottling(false)
   contents.setUserAgent(chromeCompatibleUserAgent(process.versions.chrome))
   contents.setWindowOpenHandler(({ url }) => {
     if (isAllowedConnectionUrl(url)) {
@@ -196,8 +199,8 @@ function createChatHostView(): void {
     return { action: 'deny' }
   })
   contents.on('will-navigate', (event, url) => { if (!isAllowedConnectionUrl(url)) event.preventDefault() })
-  contents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
-    chatgptMicrophoneGateReady = false
+  contents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (shouldResetMicrophoneGateForNavigation(isMainFrame, isInPlace)) chatgptMicrophoneGateReady = false
     if (isMainFrame) connectionPageFailed = false
   })
   contents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
@@ -221,12 +224,13 @@ function createChatHostView(): void {
     if (event.sender !== chatHostView?.webContents) return
     chatgptMicrophoneGateReady = result?.ok === true
     if (!chatgptMicrophoneGateReady) { announceAutomation({ phase: 'failed', message: result?.message ?? 'ChatGPT microphone gate could not start.', recoverable: true }); return }
-    const webInputActive = Boolean(activeSession) && activeSource === 'chatgpt-web' && activeMode === 'voice' ? microphoneActive : true
+    event.sender.send('speaksub:microphone-input', appSettings.microphoneInput())
+    const webInputActive = Boolean(activeSession) && activeSource === 'chatgpt-web' && activeMode === 'voice' ? microphoneGate.active : true
     event.sender.send('speaksub:microphone-gate', webInputActive)
   })
   ipcMain.on('speaksub:microphone-gate:applied', (event, result: { ok?: boolean; message?: string }) => {
     if (event.sender !== chatHostView?.webContents || result?.ok) return
-    microphoneActive = false; announceMicrophone(); announceAutomation({ phase: 'failed', message: result?.message ?? 'ChatGPT microphone gate did not apply.', recoverable: true })
+    microphoneGate.end(); announceMicrophone(); announceAutomation({ phase: 'failed', message: result?.message ?? 'ChatGPT microphone gate did not apply.', recoverable: true })
   })
   void loadConnectionUrl(chatHostView.webContents, CHATGPT_URL).catch((error) => {
     connectionPageFailed = true
@@ -247,8 +251,8 @@ function createMainWindow(): void {
   })
   mainWindow.removeMenu(); mainWindow.loadURL(rendererUrl('index.html'))
   mainWindow.on('move', () => { studioBounds = mainWindow!.getBounds() })
-  mainWindow.on('resize', () => { studioBounds = mainWindow!.getBounds(); if (connection.pageVisible) layoutChatHostView() })
-  mainWindow.on('restore', applyWindowMode); mainWindow.on('closed', () => { adapter?.stop(); adapter = undefined; chatHostView = undefined; chatgptAutomation = undefined; cleanupWindow?.destroy(); overlayWindow?.close() })
+  mainWindow.on('resize', () => { studioBounds = mainWindow!.getBounds(); layoutChatHostView() })
+  mainWindow.on('restore', applyWindowMode); mainWindow.on('closed', () => { adapter?.stop(); adapter = undefined; chatHostView?.webContents.close(); chatHostView = undefined; chatgptAutomation = undefined; chatBackgroundWindow?.destroy(); chatBackgroundWindow = undefined; cleanupWindow?.destroy(); overlayWindow?.close() })
 }
 
 function createOverlayWindow(): void {
@@ -331,9 +335,7 @@ function cleanPreviousInBackground(): void {
   if (!markerStore.readAll().length) return
   const worker = createCleanupWindow()
   const automation = new ChatGPTAutomation(worker.webContents)
-  cleanupTask = cleanRecordedConversations(markerStore, (conversation) => conversation.conversationTitle
-    ? automation.deleteConversationByTitle(conversation.conversationTitle)
-    : automation.deleteConversation(conversation.conversationUrl)).then((summary) => {
+  cleanupTask = cleanRecordedConversations(markerStore, (conversation) => automation.deleteConversation(conversation.conversationUrl)).then((summary) => {
     if (!summary.attempted) return
     if (summary.remainingRecordedUrls.length) {
       notify('SpeakSub cleanup needs attention', `${summary.remainingRecordedUrls.length} recorded ChatGPT chat${summary.remainingRecordedUrls.length === 1 ? '' : 's'} could not be deleted and will be retried later.`)
@@ -874,8 +876,8 @@ function installIpc(): void {
     assertPracticeStartActive(signal)
     const profile = parsePracticeProfile({ topic, level, correctionStrength: strength, source, mode, focus, prompt, systemPrompt })
     activeSource = profile.source; activeMode = profile.mode; activeTopic = profile.topic; activeLevel = profile.level; activePrompt = buildPracticePrompt(profile); activeSystemPrompt = profile.systemPrompt; activeTextReply = undefined; activeTextTtsGeneration = undefined
-    microphoneActive = profile.mode === 'voice'
-    if (profile.source === 'chatgpt-web' && profile.mode === 'voice') chatHostView?.webContents.send('speaksub:microphone-gate', true)
+    microphoneGate.start(profile.mode)
+    if (profile.source === 'chatgpt-web' && profile.mode === 'voice') chatHostView?.webContents.send('speaksub:microphone-gate', microphoneGate.active)
     announceMicrophone()
     if (profile.source === 'api-direct') {
       const config = settings.get()
@@ -894,7 +896,7 @@ function installIpc(): void {
   ipcMain.handle('voice:audio', (_event, input: VoiceAudioChunk) => {
     const chunk = z.object({ sampleRate: z.literal(16000), format: z.literal('float32'), samples: z.instanceof(ArrayBuffer) }).parse(input)
     if (chunk.samples.byteLength > 1_048_576 || chunk.samples.byteLength % 4 !== 0) throw new Error('Invalid voice audio chunk.')
-    if (activeSource === 'api-direct' && activeMode === 'voice' && microphoneActive) localSpeech?.accept(new Float32Array(chunk.samples))
+    if (activeSource === 'api-direct' && activeMode === 'voice' && microphoneGate.active) localSpeech?.accept(new Float32Array(chunk.samples))
   })
   ipcMain.handle('voice:playback:ended', (_event, chunkId: string) => {
     const id = z.string().min(1).max(300).parse(chunkId)
@@ -929,6 +931,13 @@ function installIpc(): void {
   ipcMain.handle('microphone:toggle', () => toggleMicrophoneGate())
   ipcMain.handle('microphone:set', (_event, active: boolean) => setMicrophoneGate(z.boolean().parse(active)))
   ipcMain.handle('microphone:shortcut:save', (_event, shortcut: string) => { const saved = registerMicrophoneShortcut(z.string().max(80).parse(shortcut)); appSettings.setMicrophoneShortcut(saved); return saved })
+  ipcMain.handle('microphone:input:get', () => appSettings.microphoneInput())
+  ipcMain.handle('microphone:input:save', (_event, input) => {
+    if (activeSession) throw new Error('请先结束练习，再切换语音输入设备。')
+    const saved = appSettings.setMicrophoneInput(input)
+    chatHostView?.webContents.send('speaksub:microphone-input', saved)
+    return saved
+  })
   ipcMain.handle('practice:cancel-start', async () => {
     const cancelledPendingStart = practiceController.cancelStart()
     if (!cancelledPendingStart && !activeSession) return
@@ -943,7 +952,7 @@ function installIpc(): void {
     localSpeech = undefined; activeVoiceReply = undefined; activeTextReply = undefined; pendingPlayback.clear(); announceVoicePhase('idle')
     adapter?.stop(); adapter = undefined; stopSessionCheckpoint(true)
     if (activeSession) store.abortSession(activeSession.id)
-    activeSession = undefined; events = []; microphoneActive = false; announceMicrophone()
+    activeSession = undefined; events = []; microphoneGate.end(); announceMicrophone()
     if (!cancelledPendingStart) practiceController.reset()
     announceAutomation({ phase: 'idle', message: '已取消本次启动，可以重新开始。' })
   })
@@ -979,7 +988,7 @@ function installIpc(): void {
       try { store.finalizeSession(ended.id) }
       catch (error) { throw new Error(`Could not finalize the practice archive: ${error instanceof Error ? error.message : 'unknown file error'}. The session remains available to retry.`) }
     activeSession = undefined
-      microphoneActive = false; announceMicrophone()
+      microphoneGate.end(); announceMicrophone()
       return { session: ended, review, error: reviewError, voiceStopped, voiceWarning }
     }, () => Boolean(activeSession))
     broadcast('practice:ended', result)
@@ -1120,7 +1129,7 @@ if (!hasSingleInstanceLock) {
     archiveDirectory = appSettings.archiveDirectory(join(userData, 'learning-archive')); store = new SpeakSubStore(archiveDirectory); settings = new SecureSettings(join(userData, 'provider-settings.json')); chatMarker = new ChatGPTMarkerStore(join(userData, 'last-speaksub-chat.json')); learning = new LearningService(settings, join(app.getAppPath(), 'resources', 'dictionaries', 'ecdict-en-zh')); speechModels = new SpeechModelManager(speechModelRoot({ isPackaged: app.isPackaged, executablePath: process.execPath, userDataDirectory: userData }), (input, init) => net.fetch(input instanceof URL ? input.toString() : input, init)); speechModels.subscribe((assetState) => broadcast('speech-assets:state', assetState))
     const showPersistedOverlay = subtitle.visible
     try { registerMicrophoneShortcut(microphoneShortcut) } catch (error) { microphoneShortcutError = error instanceof Error ? error.message : 'The saved microphone shortcut is unavailable.' }
-    createMainWindow(); createChatHostView(); createOverlayWindow(); installIpc(); applyWindowMode(); cleanPreviousInBackground(); mainWindow?.webContents.once('did-finish-load', () => { analytics = new AnonymousAnalytics({ userDataDirectory: userData, appVersion: app.getVersion(), platform: process.platform, arch: process.arch }); void analytics.start() }); if (microphoneShortcutError) announceAutomation({ phase: 'failed', message: microphoneShortcutError, recoverable: true }); if (showPersistedOverlay) showOverlay()
+    createMainWindow(); createChatHostView(); createOverlayWindow(); installIpc(); applyWindowMode(); mainWindow?.webContents.once('did-finish-load', () => { analytics = new AnonymousAnalytics({ userDataDirectory: userData, appVersion: app.getVersion(), platform: process.platform, arch: process.arch }); void analytics.start() }); if (microphoneShortcutError) announceAutomation({ phase: 'failed', message: microphoneShortcutError, recoverable: true }); if (showPersistedOverlay) showOverlay()
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) { createMainWindow(); createChatHostView(); createOverlayWindow(); applyWindowMode() } })
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)

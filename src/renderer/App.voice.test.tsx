@@ -54,6 +54,7 @@ let reloadWebConnectionPage: ReturnType<typeof vi.fn>
 let importWebConnectionLogin: ReturnType<typeof vi.fn>
 let hideConnectionPage: ReturnType<typeof vi.fn>
 let automationListener: ((status: AutomationStatus) => void) | undefined
+let transcriptListener: Parameters<SpeakSubApi['onTranscript']>[0] | undefined
 
 beforeEach(() => {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -62,6 +63,7 @@ beforeEach(() => {
   container = document.createElement('div'); document.body.append(container); root = createRoot(container)
   startVoiceCapture = vi.fn(async () => undefined); stopVoiceCapture = vi.fn(async () => undefined)
   practiceEndedListener = undefined; microphoneListener = undefined; voicePhaseListener = undefined; automationListener = undefined; practiceSource = 'api-direct'
+  transcriptListener = undefined
   connectionPageVisible = false
   connectionReady = true
   clearWebConnectionLogin = vi.fn(async () => ({ ready: false, pageVisible: true, activeProvider: 'chatgpt-web' as const, providers: { 'chatgpt-web': false } }))
@@ -131,7 +133,7 @@ beforeEach(() => {
     stopVoiceCapture,
     reportVoiceCaptureStatus: vi.fn(async () => undefined),
     sendVoiceAudio: vi.fn(async () => undefined),
-    onTranscript: vi.fn(() => () => undefined),
+    onTranscript: vi.fn((listener) => { transcriptListener = listener; return () => { transcriptListener = undefined } }),
     onSubtitleSettings: vi.fn(() => () => undefined),
     onAutomationStatus: vi.fn((listener) => { automationListener = listener; return () => { automationListener = undefined } }),
     onPracticeEnded: vi.fn((listener) => { practiceEndedListener = listener; return () => { practiceEndedListener = undefined } }),
@@ -145,6 +147,8 @@ beforeEach(() => {
     toggleMicrophoneGate,
     setMicrophoneGate: vi.fn(async () => microphone),
     saveMicrophoneShortcut: vi.fn(async (shortcut: string) => shortcut),
+    getMicrophoneInput: vi.fn(async () => ({ deviceId: 'default', label: '系统默认', labelIndex: 0 })),
+    saveMicrophoneInput: vi.fn(async selection => selection),
     getSpeechAssetInstallInfo: vi.fn(async () => ({
       root: 'C:\\Users\\test\\AppData\\Roaming\\speaksub\\speech-models',
       vadFile: 'C:\\Users\\test\\AppData\\Roaming\\speaksub\\speech-models\\silero-vad\\silero_vad.onnx',
@@ -161,13 +165,25 @@ beforeEach(() => {
   window.speaksub = api
 })
 
-afterEach(() => { act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.restoreAllMocks() })
+afterEach(() => { act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 const settle = async () => {
   await act(async () => { await Promise.resolve(); await Promise.resolve() })
 }
 
 describe('unified voice microphone gate', () => {
+  it('saves a settings input selection and sends the same choice into microphone detection', async () => {
+    vi.stubGlobal('navigator', { mediaDevices: { enumerateDevices: vi.fn(async () => [{ kind: 'audioinput', deviceId: 'chosen-device', label: 'Selected mic' }]), getUserMedia: vi.fn() } })
+    act(() => root.render(<App/>)); await settle()
+    await act(async () => { [...container.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === '设置')!.click(); await Promise.resolve(); await Promise.resolve() })
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="语音输入设备"]')!
+    await act(async () => { select.value = 'chosen-device'; select.dispatchEvent(new Event('change', { bubbles: true })); await Promise.resolve() })
+    const selected = { deviceId: 'chosen-device', label: 'Selected mic', labelIndex: 0 }
+    expect(window.speaksub.saveMicrophoneInput).toHaveBeenCalledWith(selected)
+    expect(select.value).toBe('chosen-device')
+    await act(async () => { container.querySelector<HTMLButtonElement>('.microphone-test-trigger')!.click(); await Promise.resolve() })
+    expect(audio.captureStart).toHaveBeenLastCalledWith(expect.any(Function), selected)
+  })
   it('always returns to the main interface when the login is not ready', async () => {
     connectionPageVisible = true
     connectionReady = false
@@ -667,13 +683,42 @@ describe('unified voice microphone gate', () => {
     expect(audio.captureStart).toHaveBeenCalledOnce()
     expect(container.textContent).toContain('正在听你说')
 
-    const microphoneButton = container.querySelector<HTMLButtonElement>('.microphone-control .finish-action')!
+    const microphoneButton = container.querySelector<HTMLButtonElement>('.top-actions .microphone-toggle')!
+    expect(microphoneButton.nextElementSibling?.textContent).toBe('显示字幕')
+    expect(microphoneButton.getAttribute('aria-pressed')).toBe('true')
     await act(async () => { microphoneButton.click(); await Promise.resolve() })
     expect(toggleMicrophoneGate).toHaveBeenCalledOnce()
     expect(audio.captureStop).toHaveBeenCalled()
     expect(stopVoiceCapture).toHaveBeenCalled()
     expect(audio.playTone).toHaveBeenLastCalledWith(false)
     expect(container.textContent).toContain('麦克风已暂停')
+    expect(microphoneButton.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('lets the header microphone icon choose its state before practice without starting capture', async () => {
+    act(() => root.render(<App/>)); await settle()
+    const button = container.querySelector<HTMLButtonElement>('.top-actions .microphone-toggle')!
+    expect(button.disabled).toBe(false)
+    expect(button.textContent).toContain('麦克风关闭')
+    expect(button.title).toContain('当前未在录音')
+    expect(button.querySelector('kbd')?.textContent).toBe('F8')
+    expect(button.nextElementSibling?.textContent).toBe('显示字幕')
+    await act(async () => { button.querySelector('svg')!.dispatchEvent(new MouseEvent('click', { bubbles: true })); await Promise.resolve() })
+    expect(toggleMicrophoneGate).toHaveBeenCalledOnce()
+    expect(button.getAttribute('aria-pressed')).toBe('true')
+    expect(audio.captureStart).not.toHaveBeenCalled()
+    await act(async () => { button.click(); await Promise.resolve() })
+    expect(toggleMicrophoneGate).toHaveBeenCalledTimes(2)
+    expect(button.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('shows the configured shortcut in the header when shared microphone settings change', async () => {
+    act(() => root.render(<App/>)); await settle()
+    await act(async () => { microphoneListener?.({ active: false, available: false, shortcut: 'Control+Shift+M' }); await Promise.resolve() })
+    const button = container.querySelector<HTMLButtonElement>('.top-actions .microphone-toggle')!
+    expect(button.querySelector('kbd')?.textContent).toBe('Control+Shift+M')
+    expect(button.title).toContain('Control+Shift+M')
+    expect(button.title).not.toContain('F8')
   })
 
   it('lets a second click cancel a practice that is still starting and ignores its late result', async () => {
@@ -696,6 +741,19 @@ describe('unified voice microphone gate', () => {
     })
     expect(container.querySelector('.finish-action')).toBeNull()
     expect(container.textContent).toContain('已取消本次启动')
+  })
+
+  it('retains subtitle events received while practice startup is still pending', async () => {
+    let finishStart!: (result: Awaited<ReturnType<SpeakSubApi['startPractice']>>) => void
+    vi.mocked(window.speaksub.startPractice).mockImplementationOnce(() => new Promise(resolve => { finishStart = resolve }))
+    act(() => root.render(<App/>)); await settle()
+    await act(async () => { container.querySelector<HTMLButtonElement>('.session-config .primary-action')!.click(); await Promise.resolve() })
+    await act(async () => {
+      transcriptListener?.({ id: 'early-ai', sessionId: 'session-1', sourceMessageId: 'a1', speaker: 'assistant', text: 'First reply during startup', status: 'complete', receivedAt: 'now' })
+      finishStart({ session: { id: 'session-1', startedAt: 'now', correctionStrength: 'normal' }, voiceStarted: true, source: 'chatgpt-web', mode: 'voice' })
+      await Promise.resolve()
+    })
+    expect(container.textContent).toContain('First reply during startup')
   })
 
   it('uses the same gate for ChatGPT voice without starting the API audio capture', async () => {

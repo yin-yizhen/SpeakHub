@@ -36,6 +36,12 @@ export class AliyunFunAsr {
   private completedUsageSeconds = 0
   private taskUsageSeconds = 0
   private startPromise?: Promise<void>
+  private endConnection?: (error: Error, report?: boolean) => void
+  private reconnectTimer?: ReturnType<typeof setTimeout>
+  private keepAliveTimer?: ReturnType<typeof setInterval>
+  private reconnectDelay = 1_000
+  private hasConnected = false
+  private lastAudioAt = 0
   private transcriptListener?: (event: AsrTranscript) => void
   private usageListener?: (cumulativeSeconds: number) => void
   private errorListener?: (error: Error) => void
@@ -52,73 +58,127 @@ export class AliyunFunAsr {
   start(): Promise<void> {
     if (this.state === 'ready') return Promise.resolve()
     if (this.startPromise) return this.startPromise
+    clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = undefined
     this.stopped = false
     this.state = 'connecting'
     this.taskId = randomUUID()
-    this.startPromise = new Promise<void>((resolve, reject) => {
-      const socket = this.socketFactory(ENDPOINT, { headers: { Authorization: `Bearer ${this.apiKey}`, 'X-DashScope-DataInspection': 'enable' } })
+    let resolve!: () => void
+    let reject!: (error: Error) => void
+    const starting = new Promise<void>((yes, no) => { resolve = yes; reject = no })
+    this.startPromise = starting
+    let ended = false
+    let socket: SocketLike | undefined
+    const timeout = setTimeout(() => fail(new Error('阿里云语音识别连接超时。')), 5_000)
+    const fail = (error: Error, report = true): void => {
+      if (ended) return
+      ended = true
+      clearTimeout(timeout)
+      clearInterval(this.keepAliveTimer)
+      this.keepAliveTimer = undefined
+      this.socket = undefined
+      this.state = 'closed'
+      this.startPromise = undefined
+      this.endConnection = undefined
+      this.completedUsageSeconds += this.taskUsageSeconds
+      this.taskUsageSeconds = 0
+      reject(error)
+      // Detach this attempt before close: old socket events must never change
+      // the state, task ID, or usage of a replacement connection.
+      try { socket?.close() } catch { /* already closed */ }
+      if (!this.stopped && this.hasConnected) this.scheduleReconnect()
+      if (report && !this.stopped) this.reportError(error)
+    }
+    this.endConnection = fail
+    try {
+      socket = this.socketFactory(ENDPOINT, { headers: { Authorization: `Bearer ${this.apiKey}`, 'X-DashScope-DataInspection': 'enable' } })
       this.socket = socket
-      const timeout = setTimeout(() => {
-        const error = new Error('阿里云语音识别连接超时。')
-        reject(error)
-        this.reportError(error)
-        socket.close()
-      }, 5_000)
-      socket.on('open', () => socket.send(JSON.stringify(this.startMessage())))
+      socket.on('open', () => {
+        if (ended) return
+        try { socket!.send(JSON.stringify(this.startMessage())) }
+        catch (error) { fail(error instanceof Error ? error : new Error(String(error))) }
+      })
       socket.on('message', (data) => {
+        if (ended) return
         try {
           const event = this.parseMessage(data as RawData)
-          if (event === 'ready') {
+          if (event === 'ready' && this.state === 'connecting') {
             clearTimeout(timeout)
             this.state = 'ready'
+            this.hasConnected = true
+            this.reconnectDelay = 1_000
+            this.lastAudioAt = Date.now()
             this.flushBuffered()
+            // Capture can be intentionally muted or not yet started. Supply
+            // only synthetic silence then, never reopen the microphone.
+            this.keepAliveTimer = setInterval(() => {
+              if (Date.now() - this.lastAudioAt >= 200) this.sendAudio(new Float32Array(3_200))
+            }, 200)
+            this.keepAliveTimer.unref()
             resolve()
           }
         } catch (error) {
-          const next = error instanceof Error ? error : new Error(String(error))
-          clearTimeout(timeout)
-          reject(next)
-          this.reportError(next)
+          fail(error instanceof Error ? error : new Error(String(error)))
         }
       })
-      socket.on('error', (error) => {
-        clearTimeout(timeout)
-        reject(error)
-        this.reportError(error)
-      })
-      socket.on('close', () => {
-        clearTimeout(timeout)
-        this.state = 'closed'
-        this.startPromise = undefined
-        if (!this.stopped) {
-          this.completedUsageSeconds += this.taskUsageSeconds
-          this.taskUsageSeconds = 0
-          this.reportError(new Error('阿里云语音识别连接已断开，正在等待重连。'))
-        }
-      })
-    })
-    return this.startPromise
+      socket.on('error', (error) => fail(error))
+      socket.on('close', () => fail(new Error('阿里云语音识别连接已断开，正在自动重连。')))
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)))
+    }
+    return starting
   }
 
   accept(samples: Float32Array): void {
     if (this.stopped) return
     if (this.state !== 'ready' || !this.socket) {
       this.buffer(samples)
-      void this.start().catch(() => undefined)
+      if (!this.reconnectTimer) void this.start().catch(() => undefined)
       return
     }
-    this.socket.send(float32ToPcm16(samples))
+    this.sendAudio(samples)
   }
 
   async stop(): Promise<void> {
     this.stopped = true
-    if (this.socket && this.state === 'ready') this.socket.send(JSON.stringify(this.finishMessage()))
-    this.socket?.close()
+    clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = undefined
+    clearInterval(this.keepAliveTimer)
+    this.keepAliveTimer = undefined
+    try {
+      if (this.socket?.readyState === WebSocket.OPEN && this.state === 'ready') this.socket.send(JSON.stringify(this.finishMessage()))
+    } catch {
+      // A broken transport must not prevent local shutdown and timer cleanup.
+    } finally {
+      this.endConnection?.(new Error('语音识别已停止。'), false)
+    }
     this.socket = undefined
     this.state = 'closed'
     this.startPromise = undefined
     this.buffered = []
     this.bufferedSamples = 0
+    this.hasConnected = false
+    this.reconnectDelay = 1_000
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer || this.stopped) return
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined
+      void this.start().catch(() => undefined)
+    }, this.reconnectDelay)
+    this.reconnectTimer.unref()
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, 8_000)
+  }
+
+  private sendAudio(samples: Float32Array): void {
+    try {
+      if (this.socket?.readyState !== WebSocket.OPEN) throw new Error('阿里云语音识别连接不可用，正在自动重连。')
+      this.socket.send(float32ToPcm16(samples))
+      this.lastAudioAt = Date.now()
+    } catch (error) {
+      this.endConnection?.(error instanceof Error ? error : new Error(String(error)))
+    }
   }
 
   private startMessage(): unknown {
@@ -155,6 +215,7 @@ export class AliyunFunAsr {
     }
     if (event.header?.event === 'task-started') return 'ready'
     if (event.header?.event === 'task-failed') throw new Error(event.header.error_message || '阿里云语音识别任务失败。')
+    if (event.header?.event === 'task-finished') throw new Error('阿里云语音识别任务已结束，正在自动重连。')
     if (event.header?.event !== 'result-generated') return 'handled'
     const sentence = event.payload?.output?.sentence
     if (!sentence || sentence.heartbeat) return 'handled'

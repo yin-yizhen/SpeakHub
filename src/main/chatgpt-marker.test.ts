@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ChatGPTMarkerStore } from './chatgpt-marker'
+import { ChatGPTMarkerStore, isStableChatGPTConversationUrl } from './chatgpt-marker'
 
 describe('ChatGPT conversation marker', () => {
   it('only reads and clears a valid ChatGPT conversation marker', () => {
@@ -40,6 +40,17 @@ describe('ChatGPT conversation marker', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'speaksub-marker-')), 'last-chat.json')
     writeFileSync(path, JSON.stringify({ conversationUrl: 'https://chatgpt.com/', createdAt: 'now' }), 'utf8')
     expect(new ChatGPTMarkerStore(path).read()).toBeUndefined()
+  })
+
+  it('does not persist optimistic local URLs or accept a lookalike host', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'speaksub-marker-')), 'last-chat.json')
+    const store = new ChatGPTMarkerStore(path)
+    for (const url of ['https://chatgpt.com/c/local-chatgpt%3Aabc', 'https://chatgpt.com/c/WEB:abc', 'https://chatgpt.com.evil.example/c/abc']) {
+      expect(isStableChatGPTConversationUrl(url)).toBe(false)
+      expect(() => store.write(url)).toThrow('temporary or invalid')
+    }
+    writeFileSync(path, JSON.stringify({ conversationUrl: 'https://chatgpt.com/c/local-chatgpt%3Aabc', createdAt: 'then' }))
+    expect(store.readAll()).toEqual([])
   })
 
   it('does not clear a newer conversation while background cleanup finishes', () => {

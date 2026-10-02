@@ -18,6 +18,11 @@ describe('AppSettingsStore', () => {
       expect(store.microphoneShortcut()).toBe('F8')
       store.setMicrophoneShortcut('Ctrl+Shift+M')
       expect(store.microphoneShortcut()).toBe('Ctrl+Shift+M')
+      expect(store.microphoneInput()).toEqual({ deviceId: 'default', label: '系统默认', labelIndex: 0 })
+      const selected = { deviceId: 'local-device-id', label: 'External microphone', labelIndex: 0 }
+      store.setMicrophoneInput(selected)
+      expect(new AppSettingsStore(path).microphoneInput()).toEqual(selected)
+      expect(() => store.setMicrophoneInput({ ...selected, labelIndex: -1 })).toThrow()
     } finally { rmSync(directory, { recursive: true, force: true }) }
   })
   it('rejects subtitle values outside the UI boundary', () => {

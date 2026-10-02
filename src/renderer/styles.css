@@ -297,6 +297,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .studio-topbar { min-height: 80px; padding: 8px 0 0 31px; -webkit-app-region: drag; }
 .studio-topbar .top-actions, .window-controls, .connection-shell button { -webkit-app-region: no-drag; }
 .top-actions { margin-left: auto; }
+.microphone-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.72); color: var(--ink-soft); white-space: nowrap; font-size: 11px; font-weight: 600; -webkit-app-region: no-drag; }
+.microphone-toggle.active { border-color: rgba(21,156,147,.4); color: var(--accent-strong); background: var(--accent-soft); }
+.microphone-toggle:not(:disabled):hover { border-color: var(--accent); }
+.microphone-toggle:disabled { cursor: default; opacity: .62; }
+.microphone-toggle svg { flex-shrink: 0; }
+.microphone-toggle kbd { padding: 2px 5px; border: 1px solid currentColor; border-radius: 5px; font: inherit; font-size: 10px; opacity: .75; }
+.microphone-input-picker { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
+.microphone-input-picker label { display: grid; gap: 7px; flex: 1; min-width: 240px; color: var(--ink-soft); font-size: 12px; }
+.microphone-input-picker select { width: 100%; border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; background: var(--surface); color: var(--ink); }
 .window-controls { display: flex; align-self: center; gap: 7px; margin: 5px 14px 0 12px; }
 .window-control { position: relative; display: grid; width: 32px; height: 32px; place-items: center; border: 1.5px solid rgba(76, 187, 180, .52); border-radius: 50%; padding: 0; color: #4c8589; background: rgba(255,255,255,.72); transition: background .18s ease, color .18s ease, border-color .18s ease; }
 .window-control::before, .window-control::after { content: ''; position: absolute; top: 50%; left: 50%; background: currentColor; }

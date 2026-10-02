@@ -1,4 +1,5 @@
-import type { GeneratedSpeechChunk, VoiceAudioChunk, VoiceCaptureStatus } from '../shared/types'
+import type { GeneratedSpeechChunk, MicrophoneInputSelection, VoiceAudioChunk, VoiceCaptureStatus } from '../shared/types'
+import { requestMicrophoneStream } from './microphone-input'
 
 export const captureChunkFrames = 2048
 export const microphoneSignalThreshold = 0.012
@@ -18,9 +19,9 @@ export class LocalSpeechAudioCapture {
   private sink: GainNode | undefined
   private workletUrl: string | undefined
 
-  async start(onAudio: (chunk: VoiceAudioChunk) => void): Promise<VoiceCaptureStatus> {
+  async start(onAudio: (chunk: VoiceAudioChunk) => void, input?: MicrophoneInputSelection): Promise<VoiceCaptureStatus> {
     this.stop()
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+    this.stream = await requestMicrophoneStream(input)
     this.context = new AudioContext()
     this.source = this.context.createMediaStreamSource(this.stream)
     const source = `class SpeakSubCapture extends AudioWorkletProcessor {

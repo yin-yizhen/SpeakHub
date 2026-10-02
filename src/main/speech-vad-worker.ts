@@ -1,6 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads'
 import { Vad } from 'sherpa-onnx-node'
-import { AudioPreRoll } from './audio-pre-roll'
 
 type Incoming =
   | { type: 'audio'; samples: Float32Array }
@@ -27,7 +26,6 @@ const vad = new Vad({
 }, 30)
 
 let speechDetected = false
-const preRoll = new AudioPreRoll(6_400)
 
 function emitAudio(chunk: Float32Array): void {
   const copy = chunk.slice()
@@ -36,7 +34,6 @@ function emitAudio(chunk: Float32Array): void {
 
 function reset(): void {
   speechDetected = false
-  preRoll.clear()
   vad.reset()
 }
 
@@ -45,20 +42,13 @@ port.on('message', (message: Incoming) => {
     if (message.type === 'audio') {
       vad.acceptWaveform(message.samples)
       const detected = vad.isDetected()
-      if (!speechDetected) {
-        preRoll.push(message.samples)
-        if (detected) {
-          speechDetected = true
-          port.postMessage({ type: 'speech-started' })
-          for (const chunk of preRoll.drain()) emitAudio(chunk)
-        }
-      } else {
-        emitAudio(message.samples)
-        if (!detected) {
-          speechDetected = false
-          port.postMessage({ type: 'speech-stopped' })
-        }
+      if (detected !== speechDetected) {
+        speechDetected = detected
+        port.postMessage({ type: detected ? 'speech-started' : 'speech-stopped' })
       }
+      // ASR needs continuous audio, including sentence-ending silence. VAD
+      // controls barge-in notifications, not transport or utterance boundaries.
+      emitAudio(message.samples)
       while (!vad.isEmpty()) vad.pop()
     }
     if (message.type === 'reset') reset()

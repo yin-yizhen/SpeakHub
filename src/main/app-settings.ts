@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { z } from 'zod'
 import { defaultMicrophoneShortcut } from './microphone-shortcut'
-import type { ConnectionState, PracticePreferences, PromptTemplates, SubtitlePreferences, WebPracticeSource } from '../shared/types'
+import type { ConnectionState, MicrophoneInputSelection, PracticePreferences, PromptTemplates, SubtitlePreferences, WebPracticeSource } from '../shared/types'
 import { defaultDirectChatSystemPrompt } from '../shared/direct-chat-prompt'
 import { defaultSubtitlePreferences } from '../shared/defaults'
 
@@ -26,6 +26,7 @@ const storedSchema = z.object({
   subtitle: subtitleSchema.optional(),
   archiveDirectory: z.string().min(1).optional(),
   microphoneShortcut: z.string().min(1).max(80).optional(),
+  microphoneInput: z.object({ deviceId: z.string().min(1).max(512), label: z.string().min(1).max(200), labelIndex: z.number().int().min(0).max(32) }).optional(),
   promptTemplates: promptTemplatesSchema.optional(),
   practicePreferences: practicePreferencesSchema.optional(),
   speechUsageSeconds: z.record(z.string(), z.number().int().nonnegative()).optional()
@@ -69,6 +70,11 @@ export class AppSettingsStore {
   setArchiveDirectory(directory: string): void { this.write({ ...this.read(), archiveDirectory: z.string().min(1).parse(directory) }) }
   microphoneShortcut(): string { return this.read().microphoneShortcut ?? defaultMicrophoneShortcut }
   setMicrophoneShortcut(shortcut: string): void { this.write({ ...this.read(), microphoneShortcut: z.string().min(1).max(80).parse(shortcut) }) }
+  microphoneInput(): MicrophoneInputSelection { return this.read().microphoneInput ?? { deviceId: 'default', label: '系统默认', labelIndex: 0 } }
+  setMicrophoneInput(input: MicrophoneInputSelection): MicrophoneInputSelection {
+    const parsed = storedSchema.shape.microphoneInput.unwrap().parse(input)
+    this.write({ ...this.read(), microphoneInput: parsed }); return parsed
+  }
   promptTemplates(): PromptTemplates { const saved = this.read().promptTemplates; return saved ? { ...defaultPromptTemplates, ...saved } : defaultPromptTemplates }
   setPromptTemplates(templates: PromptTemplates): PromptTemplates { const parsed = { ...defaultPromptTemplates, ...promptTemplatesSchema.parse(templates) }; this.write({ ...this.read(), promptTemplates: parsed }); return parsed }
   practicePreferences(): PracticePreferences { return this.read().practicePreferences ?? defaultPracticePreferences }

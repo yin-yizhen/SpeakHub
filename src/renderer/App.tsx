@@ -5,6 +5,8 @@ import { LocalSpeechAudioCapture, LocalSpeechAudioPlayer, microphoneSignalLevel,
 import { isPracticeTransitionBusy, templateSelectionForDraft } from './app-state'
 import { LearningCenter } from './LearningCenter'
 import { shortcutFromKeyboardEvent } from '../main/microphone-shortcut'
+import type { MicrophoneInputSelection } from '../shared/types'
+import { defaultMicrophoneInput, microphoneInputChoices } from './microphone-input'
 import { ALIYUN_HELP_LINKS, MIMO_HELP_LINKS, SPEECH_MODEL_DOWNLOAD_LINKS } from '../shared/help-links'
 import { buildChatGptWebPrompt, buildDirectChatSystemPrompt, defaultDirectChatSystemPrompt } from '../shared/direct-chat-prompt'
 import { useAppUpdates } from './use-app-updates'
@@ -172,6 +174,10 @@ export function App() {
   const [practiceStartCancelBusy, setPracticeStartCancelBusy] = useState(false)
   const [archiveDirectory, setArchiveDirectory] = useState('')
   const [microphone, setMicrophone] = useState<MicrophoneGateState>(defaultMicrophone)
+  const [microphoneInput, setMicrophoneInput] = useState<MicrophoneInputSelection>(defaultMicrophoneInput)
+  const [microphoneInputs, setMicrophoneInputs] = useState<MicrophoneInputSelection[]>([])
+  const [microphoneInputStatus, setMicrophoneInputStatus] = useState('')
+  const [microphoneInputBusy, setMicrophoneInputBusy] = useState(false)
   const [shortcutDraft, setShortcutDraft] = useState(defaultMicrophone.shortcut)
   const [shortcutError, setShortcutError] = useState<string>()
   const [speechAssets, setSpeechAssets] = useState<SpeechAssetState>(defaultSpeechAssets)
@@ -206,6 +212,7 @@ export function App() {
   const microphoneTestTimer = useRef<number | undefined>(undefined)
 
   useEffect(() => {
+    void window.speaksub.getMicrophoneInput?.().then(setMicrophoneInput).catch(() => undefined)
     void Promise.all([window.speaksub.getState(), window.speaksub.getProviderSettings(), window.speaksub.getArchiveDirectory(), window.speaksub.getPromptTemplates(), window.speaksub.getPracticePreferences(), window.speaksub.getAppVersion(), window.speaksub.getSpeechAssetInstallInfo()]).then(([state, provider, directory, promptTemplates, preferences, version, installInfo]) => {
       const selected = {
         scenario: promptTemplates.scenario.some((item) => item.id === preferences.scenarioTemplateId) ? preferences.scenarioTemplateId : promptTemplates.scenario[0].id,
@@ -277,7 +284,7 @@ export function App() {
     void (async () => {
       try {
         await window.speaksub.startVoiceCapture()
-        const status = await capture.current.start((chunk) => void window.speaksub.sendVoiceAudio(chunk))
+        const status = await capture.current.start((chunk) => void window.speaksub.sendVoiceAudio(chunk), microphoneInput)
         if (!disposed) await window.speaksub.reportVoiceCaptureStatus(status)
       } catch (error) {
         if (disposed) return
@@ -286,7 +293,11 @@ export function App() {
       }
     })()
     return () => { disposed = true }
-  }, [session, source, mode, lifecycle, microphone.active])
+  }, [session, source, mode, lifecycle, microphone.active, microphoneInput])
+
+  useEffect(() => {
+    if (tab === 'settings') void refreshMicrophoneInputs(false)
+  }, [tab])
 
   async function enterPractice(): Promise<void> { try { setConnection(await window.speaksub.completeConnection()) } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法确认登录状态。', recoverable: true }) } }
   async function startBrowserWebLogin(): Promise<void> {
@@ -405,6 +416,7 @@ export function App() {
     if (lifecycle === 'ending') return
     if (!requireApiVoiceSetup(source, mode)) return
     const request = ++practiceStartRequest.current
+    setEvents([])
     setLifecycle('starting')
     try {
       setAutomation({ phase: 'filling-prompt', message: source === 'api-direct' ? '正在创建 API 直连练习…' : `正在启动 ${sourceLabels[source]} 练习…` })
@@ -420,7 +432,7 @@ export function App() {
       const cefrLevel = ['A1', 'A2', 'B1', 'B2', 'C1'].includes(difficulty.name) ? difficulty.name : 'B1'
       const result = await window.speaksub.startPractice(scenario.name, cefrLevel, correctionStrength, source, mode, focusEnabled ? focus || undefined : undefined, prompt, source === 'api-direct' ? templates?.systemPrompt : undefined)
       if (request !== practiceStartRequest.current) return
-      setSession(result.session.id); setEvents([]); setReview(undefined); setLifecycle('active')
+      setSession(result.session.id); setReview(undefined); setLifecycle('active')
       if (result.warning) setAutomation({ phase: 'failed', message: result.warning, recoverable: true })
     } catch (error) {
       if (request !== practiceStartRequest.current) return
@@ -441,7 +453,29 @@ export function App() {
     } finally { if (request === apiSendRequest.current) setApiBusy(false) }
   }
   async function endPractice(): Promise<void> { if (lifecycle === 'ending') return; setLifecycle('ending'); capture.current.stop(); player.current.stop(); await window.speaksub.stopVoiceCapture(); try { const result = await window.speaksub.endPractice(); setSession(undefined); setReview(result.review); setLifecycle('idle'); if (result.error) setAutomation({ phase: 'failed', message: result.error, recoverable: true }); else if (result.voiceWarning) setAutomation({ phase: 'failed', message: result.voiceWarning, recoverable: true }) } catch (error) { setLifecycle('error'); setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法结束练习。', recoverable: true }) } }
-  async function toggleMicrophone(): Promise<void> { try { await window.speaksub.toggleMicrophoneGate() } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法切换麦克风。', recoverable: true }) } }
+  async function toggleMicrophone(): Promise<void> { try { setMicrophone(await window.speaksub.toggleMicrophoneGate()) } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法切换麦克风。', recoverable: true }) } }
+  async function refreshMicrophoneInputs(requestPermission: boolean): Promise<void> {
+    setMicrophoneInputBusy(true)
+    try {
+      if (requestPermission) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        stream.getTracks().forEach(track => track.stop())
+      }
+      const choices = microphoneInputChoices(await navigator.mediaDevices.enumerateDevices())
+      setMicrophoneInputs(choices)
+      setMicrophoneInputStatus(choices.length ? '' : '点击“刷新输入设备”授权后显示设备名称。')
+    } catch { setMicrophoneInputStatus('无法读取设备列表，请点击刷新并允许访问麦克风。') }
+    finally { setMicrophoneInputBusy(false) }
+  }
+  async function selectMicrophoneInput(deviceId: string): Promise<void> {
+    const selected = deviceId === 'default' ? defaultMicrophoneInput : microphoneInputs.find(device => device.deviceId === deviceId)
+    if (!selected) return
+    cancelMicrophoneTest()
+    setMicrophoneInputBusy(true)
+    try { setMicrophoneInput(await window.speaksub.saveMicrophoneInput(selected)); setMicrophoneInputStatus('语音输入设备已保存。') }
+    catch (error) { setMicrophoneInputStatus(error instanceof Error ? error.message : '保存语音输入设备失败。') }
+    finally { setMicrophoneInputBusy(false) }
+  }
   function clearMicrophoneTestTimer(): void {
     if (microphoneTestTimer.current !== undefined) window.clearTimeout(microphoneTestTimer.current)
     microphoneTestTimer.current = undefined
@@ -484,7 +518,7 @@ export function App() {
         const level = microphoneSignalLevel(new Float32Array(chunk.samples))
         microphoneTestPeak.current = Math.max(microphoneTestPeak.current, level)
         setMicrophoneTestLevel(Math.min(1, level / (microphoneSignalThreshold * 4)))
-      })
+      }, microphoneInput)
       if (version !== microphoneTestVersion.current) { testCapture.stop(); return }
       microphoneTestTimer.current = window.setTimeout(() => finishMicrophoneTest(version, testCapture), microphoneTestDurationMs)
     } catch (error) {
@@ -809,6 +843,10 @@ export function App() {
 
   return <>{mimoHelpDialog}{kokoroRemovalDialog}<main className="studio-shell"><header className="studio-topbar">
     <div className="brand-lockup"><img className="brand-icon" src={brandIcon} alt="" /><span className="brand-copy"><strong>SpeakHub</strong><em>personal practice</em></span></div><span className="brand-credit">Made By Ajin</span>{appVersion && <span className="brand-version" aria-label={`应用版本 v${appVersion}`} title={`SpeakHub v${appVersion}`}>v{appVersion}</span>}<div className="top-actions">
+      <button className={`microphone-toggle${microphone.active ? ' active' : ''}`} type="button" disabled={mode !== 'voice' || lifecycle === 'starting' || lifecycle === 'ending'} aria-pressed={microphone.active} aria-label={microphone.active ? '关闭麦克风' : '开启麦克风'} title={`${session ? '' : '当前未在录音；这里只设置下一次练习，点击“确认并开始”进入语音对话。'}按 ${microphone.shortcut} 开启或关闭麦克风，也可点击切换`} onClick={() => void toggleMicrophone()}>
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/>{!microphone.active && <path d="m3 3 18 18"/>}</svg>
+        <span>{microphone.active ? '麦克风开启' : '麦克风关闭'}</span><kbd>{microphone.shortcut}</kbd>
+      </button>
       <button className={settings.visible ? 'subtitle-toggle active' : 'subtitle-toggle'} onClick={() => void window.speaksub.toggleOverlay()}>{settings.visible ? '隐藏字幕' : '显示字幕'}</button>
       {settings.locked && <button className="subtitle-unlock-action" onClick={() => updateSubtitle({ locked: false })}>解锁字幕</button>}
       {isWebSource && <button className="quiet-action" onClick={() => void openConnection()}>连接页</button>}
@@ -825,7 +863,7 @@ export function App() {
         <section className="prompt-preview"><strong>{source === 'api-direct' ? '将作为 system 发送给 AI 的完整提示词' : '将发送给 ChatGPT 的完整提示词'}</strong><p>{promptPreview}</p></section>{systemPromptEditorOpen && <div className="confirm-layer template-editor" role="dialog" aria-modal="true" aria-labelledby="system-prompt-editor-title"><div><header className="template-editor-header"><div><p className="kicker">SYSTEM PROMPT</p><h2 id="system-prompt-editor-title">管理系统提示词</h2><p>这份系统提示词会先与情景、难度和纠错提示词组合。API 直连会将其作为 system 发送；ChatGPT 网页会将相同内容合并进首条提示词。</p></div><button className="template-editor-close" type="button" aria-label="关闭系统提示词管理" title="关闭" onClick={() => setSystemPromptEditorOpen(false)}>×</button></header><textarea value={systemPromptDraft} aria-label="系统提示词内容" rows={12} onChange={(event) => setSystemPromptDraft(event.target.value)}/><footer><button className="quiet-action" onClick={resetSystemPromptDraft}>恢复默认</button><button className="quiet-action" onClick={() => setSystemPromptEditorOpen(false)}>取消</button><button className="primary-action" disabled={!systemPromptDraft.trim()} onClick={() => void saveSystemPrompt()}>保存</button></footer></div></div>}
         {!session && focus && <label className="practice-focus"><span><input type="checkbox" checked={focusEnabled} onChange={(event) => { setFocusEnabled(event.target.checked); savePracticePreferences({ focusEnabled: event.target.checked }) }}/> 带入上次复盘重点</span><textarea disabled={!focusEnabled} value={focus} onChange={(event) => { setFocus(event.target.value); savePracticePreferences({ focus: event.target.value }) }} rows={3}/><small>重点来自所选历史对话的薄弱点和“下一次练习”建议；勾选后会追加到最终提示词。</small></label>}</>}
         {session && source === 'api-direct' && mode === 'text' && <div className="api-composer" aria-busy={apiBusy}><textarea value={apiMessage} onChange={(event) => setApiMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendApiMessage() } }} placeholder="用英语输入你的回答…" rows={3}/><button className="primary-action" aria-label={apiBusy ? '打断当前回复并发送' : '发送'} disabled={!apiMessage.trim()} onClick={() => void sendApiMessage()}>发送</button></div>}
-        {session && mode === 'voice' && <div className="api-composer microphone-control"><div><strong>{microphone.active ? (source === 'api-direct' && voicePhase === 'listening' ? '正在听你说' : '麦克风已开启，可随时打断 AI') : '麦克风已暂停'}</strong><span>按 {microphone.shortcut} 开启或暂停；API 语音在 AI 思考和朗读时也会持续监听。</span></div><button className={microphone.active ? 'finish-action' : 'primary-action'} type="button" onClick={() => void toggleMicrophone()}>{microphone.active ? `暂停麦克风 · ${microphone.shortcut}` : `开启麦克风 · ${microphone.shortcut}`}</button></div>}
+        {session && mode === 'voice' && <div className="api-composer microphone-control"><div><strong>{microphone.active ? (source === 'api-direct' && voicePhase === 'listening' ? '正在听你说' : '麦克风已开启，可随时打断 AI') : '麦克风已暂停'}</strong><span>按 {microphone.shortcut} 开启或暂停；API 语音在 AI 思考和朗读时也会持续监听。</span></div></div>}
       </section>
       <section className="support-row"><div className="compact-panel"><div><p className="kicker">LIVE SUBTITLES</p><h3>{settings.visible ? '悬浮字幕已显示' : '悬浮字幕暂未显示'}</h3><p>主页面和悬浮窗使用同一组字幕事件。</p></div><button className="quiet-action" onClick={() => void window.speaksub.toggleOverlay()}>{settings.visible ? '隐藏' : '显示'}</button></div><div className="compact-panel transcript-preview dual-transcript"><div><p className="kicker">我</p><p>{latestUser || '开始说话后，中英混合识别字幕会显示在这里。'}</p></div><div><p className="kicker">AI {latestAssistantEvent?.interrupted && <span>· 已打断</span>}</p><p>{latestAssistant || 'DeepSeek 的流式回复会逐步显示在这里。'}</p></div></div></section>
       {review && <section className="review-panel"><p className="kicker">SESSION REVIEW</p><h2>{review.topic}</h2><p>{review.summary}</p>{review.issues.slice(0, 3).map((issue, index) => <div className="review-issue" key={index}><span>{issue.original}</span><strong>{issue.improved}</strong><small>{issue.reason}</small></div>)}</section>}
@@ -834,6 +872,13 @@ export function App() {
     {tab === 'settings' && <section className="utility-page settings-page"><p className="kicker">SPEAKSUB CONTROLS</p><h1>设置</h1><section className="community-support-card" aria-labelledby="community-support-title"><div className="community-support-copy"><p className="kicker">SPEAKHUB COMMUNITY</p><h2 id="community-support-title">免费开源，欢迎交流学习 AI</h2><p>加入 QQ 交流群 <strong>1091142340</strong>，一起交流 SpeakHub 的使用体验、AI 学习心得和改进建议。</p></div><div className="community-support-actions"><button className="community-primary-action" type="button" onClick={() => void copyCommunityGroupNumber()}>加入 QQ 群 1091142340</button><button className="community-support-action" type="button" onClick={() => setCommunitySupportOpen(true)}>请作者喝杯咖啡</button>{groupCopyStatus && <small role="status" aria-live="polite">{groupCopyStatus}</small>}</div></section>{automation.recoverable && <div className="settings-guidance" role="alert">{automation.message}</div>}<div className="settings-grid"><label>字幕内容<select value={settings.mode} onChange={(event) => updateSubtitle({ mode: event.target.value as SubtitlePreferences['mode'] })}><option value="assistant">只显示 AI</option><option value="user">只显示我</option><option value="both">显示双方</option></select></label><label>背景<select value={settings.background} onChange={(event) => updateSubtitle({ background: event.target.value as SubtitlePreferences['background'] })}><option value="glass">半透明磨砂</option><option value="solid">纯色底板</option><option value="transparent">完全透明</option></select></label><label>背景颜色<input type="color" value={settings.backgroundColor} onChange={(event) => updateSubtitle({ backgroundColor: event.target.value })}/></label><label>背景透明度 <output>{Math.round(settings.backgroundOpacity * 100)}%</output><input type="range" min="0.1" max="1" step="0.05" value={settings.backgroundOpacity} onChange={(event) => updateSubtitle({ backgroundOpacity: Number(event.target.value) })}/></label><label>持续显示行数<select value={settings.maxLines} onChange={(event) => updateSubtitle({ maxLines: Number(event.target.value) })}>{[2, 3, 4, 5, 6].map((count) => <option key={count} value={count}>{count} 行</option>)}</select></label><label>字号 <output>{settings.fontSize}px</output><input type="range" min="18" max="38" value={settings.fontSize} onChange={(event) => updateSubtitle({ fontSize: Number(event.target.value) })}/></label><label>整体透明度 <output>{Math.round(settings.opacity * 100)}%</output><input type="range" min="0.55" max="1" step="0.05" value={settings.opacity} onChange={(event) => updateSubtitle({ opacity: Number(event.target.value) })}/></label><label>AI 字幕颜色<input type="color" value={settings.assistantColor} onChange={(event) => updateSubtitle({ assistantColor: event.target.value })}/></label><label>我的字幕颜色<input type="color" value={settings.userColor} onChange={(event) => updateSubtitle({ userColor: event.target.value })}/></label><label className="check-label"><input type="checkbox" checked={settings.locked} onChange={(event) => updateSubtitle({ locked: event.target.checked })}/>锁定字幕位置和操作</label></div>
       <section className="archive-directory microphone-settings-card">
         <h2>麦克风与快捷键</h2>
+        <div className="microphone-input-picker"><label>语音输入设备<select aria-label="语音输入设备" value={microphoneInput.deviceId} disabled={Boolean(session) || transitionBusy || microphoneInputBusy} onChange={event => void selectMicrophoneInput(event.target.value)}>
+          <option value="default">系统默认麦克风</option>
+          {microphoneInput.deviceId !== 'default' && !microphoneInputs.some(device => device.deviceId === microphoneInput.deviceId) && <option value={microphoneInput.deviceId}>{microphoneInput.label}（已保存，请刷新确认）</option>}
+          {microphoneInputs.map(device => <option key={device.deviceId} value={device.deviceId}>{device.label}{device.labelIndex > 0 ? ` · ${device.labelIndex + 1}` : ''}</option>)}
+        </select></label><button className="quiet-action" type="button" disabled={Boolean(session) || microphoneInputBusy} onClick={() => void refreshMicrophoneInputs(true)}>刷新输入设备</button></div>
+        <p>麦克风检测、API 直连和 ChatGPT 语音使用同一输入设备。请先结束练习再切换。</p>
+        {microphoneInputStatus && <small role="status">{microphoneInputStatus}</small>}
         <p>先检测电脑能否收到你的声音；检测只在本机运行，不调用阿里或大模型 API。</p>
         <div className={`microphone-test ${microphoneTestState}`}>
           <button className="quiet-action microphone-test-trigger" type="button" disabled={Boolean(session) || microphoneTestState === 'checking'} onClick={() => void testMicrophone()}>{microphoneTestState === 'checking' ? '正在检测麦克风…' : '检测麦克风'}</button>

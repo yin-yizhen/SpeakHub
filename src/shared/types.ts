@@ -308,6 +308,12 @@ export interface MicrophoneGateState {
   shortcut: string
 }
 
+export interface MicrophoneInputSelection {
+  deviceId: string
+  label: string
+  labelIndex: number
+}
+
 type SpeechAssetStatus = 'missing' | 'downloading' | 'ready' | 'error'
 export type VoiceTurnPhase = 'idle' | 'listening' | 'thinking' | 'synthesizing' | 'speaking'
 
@@ -460,6 +466,8 @@ export interface SpeakSubApi {
   previewMimoTtsVoice: (input: MimoTtsPreviewInput) => Promise<MimoTtsPreviewAudio>
   cancelMimoTtsPreview: () => Promise<void>
   saveMicrophoneShortcut: (shortcut: string) => Promise<string>
+  getMicrophoneInput: () => Promise<MicrophoneInputSelection>
+  saveMicrophoneInput: (selection: MicrophoneInputSelection) => Promise<MicrophoneInputSelection>
   toggleMicrophoneGate: () => Promise<MicrophoneGateState>
   setMicrophoneGate: (active: boolean) => Promise<MicrophoneGateState>
   clearAllData: () => Promise<void>
