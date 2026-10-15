@@ -63,7 +63,7 @@ SpeakHub（项目代码名 SpeakSub）是一款面向 Windows 的 AI 英语口�
 
 ### API 直连模式
 
-使用 DeepSeek 或其他 OpenAI-compatible 文本接口生成回复和复盘。语音模式使用阿里云 Fun-ASR 识别声音，本地 Silero VAD 检测开口和打断，本地 Kokoro 负责 AI 朗读。
+使用 DeepSeek 或其他 OpenAI-compatible 文本接口生成回复和复盘。语音模式使用阿里云 Paraformer 识别声音，本地 Silero VAD 检测开口和打断，本地 Kokoro 负责 AI 朗读。
 
 > API 直连模式需要使用你自己的 API Key，相关服务可能产生费用，请以服务商的实际计费规则为准。
 

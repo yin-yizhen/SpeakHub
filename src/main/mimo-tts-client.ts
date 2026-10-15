@@ -40,7 +40,7 @@ function decodePcm16(chunks: Buffer[]): Float32Array {
   return samples
 }
 
-function parseSseEvent(event: string, chunks: Buffer[]): void {
+function parseSseEvent(event: string, accept: (chunk: Buffer) => void): void {
   const payload = event
     .split(/\r?\n/)
     .filter((line) => line.startsWith('data:'))
@@ -52,26 +52,45 @@ function parseSseEvent(event: string, chunks: Buffer[]): void {
   try { parsed = JSON.parse(payload) }
   catch { throw new Error('MiMo TTS returned an invalid streaming response.') }
   const data = audioData(parsed)
-  if (data) chunks.push(Buffer.from(data, 'base64'))
+  if (data) accept(Buffer.from(data, 'base64'))
 }
 
-async function readStreamingAudio(response: Response, signal: AbortSignal): Promise<Float32Array> {
+async function readStreamingAudio(response: Response, signal: AbortSignal, onAudio?: (samples: Float32Array) => void): Promise<Float32Array> {
   if (!response.body) throw new Error('MiMo TTS returned an empty response.')
   const chunks: Buffer[] = []
   const decoder = new TextDecoder()
   const reader = response.body.getReader()
   let pending = ''
-  while (true) {
+  let remainder = Buffer.alloc(0)
+  const accept = (chunk: Buffer): void => {
     if (signal.aborted) throw abortError()
-    const { done, value } = await reader.read()
-    pending += decoder.decode(value, { stream: !done })
-    const events = pending.split(/\r?\n\r?\n/)
-    pending = events.pop() ?? ''
-    for (const event of events) parseSseEvent(event, chunks)
-    if (done) break
+    chunks.push(chunk)
+    if (!onAudio) return
+    const bytes = Buffer.concat([remainder, chunk])
+    const aligned = bytes.length - bytes.length % 2
+    if (aligned) onAudio(decodePcm16([bytes.subarray(0, aligned)]))
+    remainder = bytes.subarray(aligned)
   }
-  if (pending.trim()) parseSseEvent(pending, chunks)
-  return decodePcm16(chunks)
+  const cancel = (): void => { void reader.cancel().catch(() => undefined) }
+  signal.addEventListener('abort', cancel, { once: true })
+  try {
+    while (true) {
+      if (signal.aborted) throw abortError()
+      const { done, value } = await reader.read()
+      if (signal.aborted) throw abortError()
+      pending += decoder.decode(value, { stream: !done })
+      const events = pending.split(/\r?\n\r?\n/)
+      pending = events.pop() ?? ''
+      for (const event of events) parseSseEvent(event, accept)
+      if (done) break
+    }
+    if (pending.trim()) parseSseEvent(pending, accept)
+    return decodePcm16(chunks)
+  } finally {
+    signal.removeEventListener('abort', cancel)
+    void reader.cancel().catch(() => undefined)
+    reader.releaseLock()
+  }
 }
 
 async function responseError(response: Response): Promise<Error> {
@@ -102,7 +121,8 @@ export class MimoTtsClient {
     if (!this.apiKey) throw new Error('请先在设置中填写 Xiaomi MiMo API Key。')
   }
 
-  async synthesize(text: string, signal: AbortSignal): Promise<{ samples: Float32Array; sampleRate: 24000 }> {
+  async synthesize(text: string, signal: AbortSignal, onAudio?: (samples: Float32Array) => void): Promise<{ samples: Float32Array; sampleRate: 24000 }> {
+    if (signal.aborted) throw abortError()
     let response: Response
     try {
       response = await this.fetcher(this.endpoint, {
@@ -129,8 +149,11 @@ export class MimoTtsClient {
     if (contentType.includes('application/json')) {
       const data = audioData(await response.json())
       if (!data) throw new Error('MiMo TTS returned no audio.')
-      return { samples: decodePcm16([Buffer.from(data, 'base64')]), sampleRate: 24000 }
+      if (signal.aborted) throw abortError()
+      const samples = decodePcm16([Buffer.from(data, 'base64')])
+      onAudio?.(samples)
+      return { samples, sampleRate: 24000 }
     }
-    return { samples: await readStreamingAudio(response, signal), sampleRate: 24000 }
+    return { samples: await readStreamingAudio(response, signal, onAudio), sampleRate: 24000 }
   }
 }

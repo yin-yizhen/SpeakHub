@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import WebSocket, { type ClientOptions, type RawData } from 'ws'
+import type { SpeechRecognitionLanguage } from '../shared/types'
 
-export const ALIYUN_FUN_ASR_MODEL = 'fun-asr-realtime-2025-09-15'
-export const ALIYUN_FUN_ASR_CNY_PER_SECOND = 0.00033
+export const ALIYUN_ASR_MODEL = 'paraformer-realtime-v2'
+export const ALIYUN_ASR_CNY_PER_SECOND = 0.00024
 const ENDPOINT = 'wss://dashscope.aliyuncs.com/api-ws/v1/inference'
 const MAX_BUFFERED_SAMPLES = 32_000
 
@@ -26,7 +27,7 @@ export function isSupportedBilingualTranscript(text: string): boolean {
   return meaningful.test(text) && !unsupportedScript.test(text)
 }
 
-export class AliyunFunAsr {
+export class AliyunAsr {
   private socket?: SocketLike
   private taskId = ''
   private state: 'idle' | 'connecting' | 'ready' | 'closed' = 'idle'
@@ -48,7 +49,8 @@ export class AliyunFunAsr {
 
   constructor(
     private readonly apiKey: string,
-    private readonly socketFactory: SocketFactory = (url, options) => new WebSocket(url, options)
+    private readonly socketFactory: SocketFactory = (url, options) => new WebSocket(url, options),
+    private readonly language: SpeechRecognitionLanguage = 'en'
   ) {}
 
   onTranscript(listener: (event: AsrTranscript) => void): void { this.transcriptListener = listener }
@@ -188,13 +190,15 @@ export class AliyunFunAsr {
         task_group: 'audio',
         task: 'asr',
         function: 'recognition',
-        model: ALIYUN_FUN_ASR_MODEL,
+        model: ALIYUN_ASR_MODEL,
         input: {},
         parameters: {
           format: 'pcm',
           sample_rate: 16_000,
+          ...(this.language === 'en' ? { language_hints: ['en'] } : {}),
+          disfluency_removal_enabled: false,
           semantic_punctuation_enabled: false,
-          max_sentence_silence: 700,
+          max_sentence_silence: 1_100,
           heartbeat: true
         }
       }

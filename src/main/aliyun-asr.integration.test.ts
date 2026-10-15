@@ -1,7 +1,7 @@
 import { once } from 'node:events'
 import WebSocket, { WebSocketServer } from 'ws'
 import { expect, it } from 'vitest'
-import { AliyunFunAsr, type AsrTranscript } from './aliyun-fun-asr'
+import { AliyunAsr, type AsrTranscript } from './aliyun-asr'
 
 async function within<T>(promise: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -40,7 +40,7 @@ it('keeps a real socket streaming beyond eight seconds and resumes transcripts a
       }
     })
   })
-  const service = new AliyunFunAsr('local-test-only', () => new WebSocket(`ws://127.0.0.1:${address.port}`))
+  const service = new AliyunAsr('local-test-only', () => new WebSocket(`ws://127.0.0.1:${address.port}`))
   let signalTranscript!: () => void
   const finalTranscript = new Promise<void>((resolve) => { signalTranscript = resolve })
   service.onTranscript((event) => { transcripts.push(event); if (event.final) signalTranscript() })

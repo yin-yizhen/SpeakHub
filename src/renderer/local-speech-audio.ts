@@ -78,8 +78,12 @@ export class LocalSpeechAudioPlayer {
     void this.context.resume()
     const samples = new Float32Array(chunk.samples); const buffer = this.context.createBuffer(1, samples.length, chunk.sampleRate)
     buffer.copyToChannel(samples, 0)
+    // A short initial cushion absorbs cloud packet jitter. Following packets
+    // and sentences share the same clock; never add a pause to every packet.
+    const firstPacket = this.nodes.size === 0
     const node = this.context.createBufferSource(); node.buffer = buffer; node.connect(this.context.destination); this.nodes.add(node); node.onended = () => { this.nodes.delete(node); onEnded?.() }
-    const at = Math.max(this.context.currentTime, this.scheduledAt); node.start(at); this.scheduledAt = at + buffer.duration
+    const earliest = this.context.currentTime + (firstPacket && chunk.streaming ? 0.6 : 0)
+    const at = Math.max(earliest, this.scheduledAt); node.start(at); this.scheduledAt = at + buffer.duration
   }
 
   interrupt(generation = this.generation + 1): void { this.generation = Math.max(this.generation, generation); for (const node of this.nodes) { try { node.stop() } catch { /* already stopped */ } }; this.nodes.clear(); this.scheduledAt = this.context?.currentTime ?? 0 }

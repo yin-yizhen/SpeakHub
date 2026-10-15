@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AliyunFunAsr, ALIYUN_FUN_ASR_MODEL, float32ToPcm16, isSupportedBilingualTranscript } from './aliyun-fun-asr'
+import { AliyunAsr, ALIYUN_ASR_MODEL, ALIYUN_ASR_CNY_PER_SECOND, float32ToPcm16, isSupportedBilingualTranscript } from './aliyun-asr'
 
 class FakeSocket {
   readonly sent: Array<string | Buffer> = []
@@ -14,13 +14,13 @@ class FakeSocket {
   emit(event: string, value?: unknown): void { for (const listener of this.listeners.get(event) ?? []) listener(value) }
 }
 
-describe('AliyunFunAsr', () => {
+describe('AliyunAsr', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => { vi.clearAllTimers(); vi.useRealTimers() })
-  it('starts the fixed bilingual low-semantic task and streams stable partial/final transcripts', async () => {
+  it('starts the bilingual Paraformer VAD task and streams stable partial/final transcripts', async () => {
     const socket = new FakeSocket()
     const factory = vi.fn(() => socket)
-    const service = new AliyunFunAsr('secret', factory as never)
+    const service = new AliyunAsr('secret', factory as never)
     const transcripts = vi.fn()
     const usage = vi.fn()
     service.onTranscript(transcripts)
@@ -30,11 +30,13 @@ describe('AliyunFunAsr', () => {
     socket.emit('open')
     const start = JSON.parse(socket.sent[0] as string)
     expect(start.payload).toMatchObject({
-      model: ALIYUN_FUN_ASR_MODEL,
+      model: 'paraformer-realtime-v2',
       input: {},
-      parameters: { format: 'pcm', sample_rate: 16000, semantic_punctuation_enabled: false, max_sentence_silence: 700, heartbeat: true }
+      parameters: { format: 'pcm', sample_rate: 16000, semantic_punctuation_enabled: false, max_sentence_silence: 1100, heartbeat: true }
     })
-    expect(start.payload.parameters).not.toHaveProperty('language_hints')
+    expect(start.payload.parameters).toMatchObject({ language_hints: ['en'], disfluency_removal_enabled: false })
+    expect(ALIYUN_ASR_MODEL).toBe('paraformer-realtime-v2')
+    expect(ALIYUN_ASR_CNY_PER_SECOND * 3600).toBeCloseTo(0.864)
     socket.emit('message', Buffer.from(JSON.stringify({ header: { event: 'task-started' }, payload: {} })))
     await starting
 
@@ -46,9 +48,20 @@ describe('AliyunFunAsr', () => {
     expect(usage).toHaveBeenCalledWith(4)
   })
 
+  it('leaves language detection automatic for mixed Chinese and English practice', async () => {
+    const socket = new FakeSocket()
+    const service = new AliyunAsr('secret', (() => socket) as never, 'auto')
+    const starting = service.start()
+    socket.emit('open')
+    expect(JSON.parse(socket.sent[0] as string).payload.parameters).not.toHaveProperty('language_hints')
+    socket.emit('message', Buffer.from('{"header":{"event":"task-started"}}'))
+    await starting
+    await service.stop()
+  })
+
   it('buffers audio until ready, sends PCM16, and rejects Japanese or Korean script', async () => {
     const socket = new FakeSocket()
-    const service = new AliyunFunAsr('secret', (() => socket) as never)
+    const service = new AliyunAsr('secret', (() => socket) as never)
     const transcripts = vi.fn()
     const errors = vi.fn()
     service.onTranscript(transcripts)
@@ -70,7 +83,7 @@ describe('AliyunFunAsr', () => {
   it('reconnects without waiting for speech and keeps usage cumulative across tasks', async () => {
     const sockets = [new FakeSocket(), new FakeSocket()]
     const factory = vi.fn(() => sockets.shift()!)
-    const service = new AliyunFunAsr('secret', factory as never)
+    const service = new AliyunAsr('secret', factory as never)
     const usage = vi.fn()
     service.onUsage(usage)
     service.onError(() => undefined)
@@ -96,7 +109,7 @@ describe('AliyunFunAsr', () => {
 
   it('supplies PCM silence for over eight seconds without capture and stops all traffic on stop', async () => {
     const socket = new FakeSocket()
-    const service = new AliyunFunAsr('secret', (() => socket) as never)
+    const service = new AliyunAsr('secret', (() => socket) as never)
     const transcripts = vi.fn()
     service.onTranscript(transcripts)
     const starting = service.start()
@@ -119,7 +132,7 @@ describe('AliyunFunAsr', () => {
 
   it('does not inject silence while real microphone chunks are flowing', async () => {
     const socket = new FakeSocket()
-    const service = new AliyunFunAsr('secret', (() => socket) as never)
+    const service = new AliyunAsr('secret', (() => socket) as never)
     const starting = service.start()
     socket.emit('message', Buffer.from('{"header":{"event":"task-started"}}'))
     await starting
@@ -136,7 +149,7 @@ describe('AliyunFunAsr', () => {
     first.close = vi.fn() // server never completes the close handshake
     const second = new FakeSocket()
     const factory = vi.fn().mockReturnValueOnce(first).mockReturnValue(second)
-    const service = new AliyunFunAsr('secret', factory)
+    const service = new AliyunAsr('secret', factory)
     const transcripts = vi.fn()
     const errors = vi.fn()
     service.onTranscript(transcripts)
@@ -165,7 +178,7 @@ describe('AliyunFunAsr', () => {
     const first = new FakeSocket()
     const second = new FakeSocket()
     const factory = vi.fn().mockReturnValueOnce(first).mockReturnValue(second)
-    const service = new AliyunFunAsr('secret', factory)
+    const service = new AliyunAsr('secret', factory)
     const starting = service.start()
     const rejected = expect(starting).rejects.toThrow('断开')
     first.emit('close')
@@ -184,7 +197,7 @@ describe('AliyunFunAsr', () => {
   it('backs off failed reconnects despite incoming audio and cancels retries on stop', async () => {
     const sockets: FakeSocket[] = []
     const factory = vi.fn(() => { const socket = new FakeSocket(); sockets.push(socket); return socket })
-    const service = new AliyunFunAsr('secret', factory as never)
+    const service = new AliyunAsr('secret', factory as never)
     const starting = service.start()
     sockets[0].emit('message', Buffer.from('{"header":{"event":"task-started"}}'))
     await starting
@@ -209,7 +222,7 @@ describe('AliyunFunAsr', () => {
     const socket = new FakeSocket()
     socket.close = vi.fn()
     const factory = vi.fn(() => socket)
-    const service = new AliyunFunAsr('secret', factory as never)
+    const service = new AliyunAsr('secret', factory as never)
     const starting = service.start()
     const failed = expect(starting).rejects.toThrow('超时')
     await vi.advanceTimersByTimeAsync(5_000)
@@ -226,7 +239,7 @@ describe('AliyunFunAsr', () => {
   it('recovers from audio send failures and still cleans up if finish-task cannot be sent', async () => {
     const first = new FakeSocket()
     const second = new FakeSocket()
-    const service = new AliyunFunAsr('secret', vi.fn().mockReturnValueOnce(first).mockReturnValue(second))
+    const service = new AliyunAsr('secret', vi.fn().mockReturnValueOnce(first).mockReturnValue(second))
     const starting = service.start()
     first.emit('message', Buffer.from('{"header":{"event":"task-started"}}'))
     await starting

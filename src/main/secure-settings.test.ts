@@ -10,8 +10,18 @@ describe('SecureSettings', () => {
   let directory: string; let path: string
   beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'speaksub-provider-')); path = join(directory, 'provider.json') })
   it('recovers from corrupt JSON', () => {
-    try { writeFileSync(path, '{bad', 'utf8'); expect(new SecureSettings(path).get()).toEqual({ llmBaseUrl: undefined, llmModel: undefined, hasLlmKey: false, hasAliyunAsrKey: false, ttsProvider: 'mimo', mimoTtsVoice: 'Mia', hasMimoTtsKey: false }) }
+    try { writeFileSync(path, '{bad', 'utf8'); expect(new SecureSettings(path).get()).toEqual({ llmBaseUrl: undefined, llmModel: undefined, hasLlmKey: false, hasAliyunAsrKey: false, asrLanguage: 'en', ttsProvider: 'mimo', mimoTtsVoice: 'Mia', hasMimoTtsKey: false }) }
     finally { rmSync(directory, { recursive: true, force: true }) }
+  })
+  it('persists mixed-language recognition across restarts and partial TTS saves', () => {
+    try {
+      const settings = new SecureSettings(path)
+      expect(settings.get().asrLanguage).toBe('en')
+      settings.save({ asrLanguage: 'auto', aliyunAsrApiKey: 'speech-secret' })
+      settings.save({ mimoTtsVoice: 'Milo' })
+      expect(new SecureSettings(path).get().asrLanguage).toBe('auto')
+      expect(settings.getSecrets().aliyunAsrApiKey).toBe('speech-secret')
+    } finally { rmSync(directory, { recursive: true, force: true }) }
   })
   it('defaults legacy settings to MiMo without overriding an explicit Kokoro choice', () => {
     try {

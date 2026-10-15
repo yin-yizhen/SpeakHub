@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { SpeechSegmenter } from './speech-segments'
 
 describe('SpeechSegmenter', () => {
+  it('keeps the first cloud sentence fast and groups following sentences into fewer requests', () => {
+    const segmenter = new SpeechSegmenter({ firstMaxLength: 52, firstMinLength: 24, followingMaxLength: 180, followingMinLength: 100 })
+    expect(segmenter.push('Hello there.')).toEqual([])
+    expect(segmenter.push(' I am glad you are practicing English today.')).toEqual(['Hello there. I am glad you are practicing English today.'])
+    expect(segmenter.push(' Tell me about your plans for the weekend.')).toEqual([])
+    const rest = ' We can practice describing your favorite activities together.'
+    expect(segmenter.push(rest)).toEqual(['Tell me about your plans for the weekend. We can practice describing your favorite activities together.'])
+    expect(segmenter.flush()).toEqual([])
+  })
+
   it('splits mixed Chinese and English text at natural punctuation across deltas', () => {
     const segmenter = new SpeechSegmenter()
     expect(segmenter.push('你好，today is')).toEqual([])

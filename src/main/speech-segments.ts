@@ -9,20 +9,23 @@ export class SpeechSegmenter {
   private pending = ''
   private emittedSegments = 0
 
+  constructor(private readonly options: { firstMaxLength?: number; firstMinLength?: number; followingMaxLength?: number; followingMinLength?: number } = {}) {}
+
   push(delta: string): string[] {
     this.pending += delta
     const segments: string[] = []
     while (this.pending) {
       let boundary = -1
-      for (let index = 0; index < this.pending.length; index += 1) {
+      const minimumLength = this.emittedSegments === 0 ? this.options.firstMinLength ?? 1 : this.options.followingMinLength ?? 1
+      for (let index = minimumLength - 1; index < this.pending.length; index += 1) {
         if (sentenceBoundary.test(this.pending[index])) { boundary = index + 1; break }
       }
       if (boundary < 0) {
-        for (let index = minimumClauseLength - 1; index < this.pending.length; index += 1) {
+        for (let index = Math.max(minimumClauseLength, minimumLength) - 1; index < this.pending.length; index += 1) {
           if (clauseBoundary.test(this.pending[index])) { boundary = index + 1; break }
         }
       }
-      const maximumLength = this.emittedSegments === 0 ? firstSegmentMaxLength : followingSegmentMaxLength
+      const maximumLength = this.emittedSegments === 0 ? this.options.firstMaxLength ?? firstSegmentMaxLength : this.options.followingMaxLength ?? followingSegmentMaxLength
       if (boundary < 0 && this.pending.length >= maximumLength) {
         for (let index = maximumLength; index >= minimumClauseLength - 1; index -= 1) {
           if (fallbackBoundary.test(this.pending[index])) { boundary = index + 1; break }

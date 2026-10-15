@@ -29,6 +29,7 @@ export class SecureSettings {
       llmModel: value.llmModel,
       hasLlmKey: Boolean(secrets.llmApiKey),
       hasAliyunAsrKey: Boolean(secrets.aliyunAsrApiKey),
+      asrLanguage: value.asrLanguage === 'auto' ? 'auto' : 'en',
       ttsProvider: value.ttsProvider === 'kokoro' ? 'kokoro' : 'mimo',
       mimoTtsVoice: value.mimoTtsVoice || 'Mia',
       hasMimoTtsKey: Boolean(secrets.mimoTtsApiKey)
@@ -55,6 +56,7 @@ export class SecureSettings {
     this.write({
       llmBaseUrl: input.llmBaseUrl ?? current.llmBaseUrl,
       llmModel: input.llmModel ?? current.llmModel,
+      asrLanguage: input.asrLanguage ?? current.asrLanguage,
       ttsProvider: input.ttsProvider ?? current.ttsProvider,
       mimoTtsVoice: input.mimoTtsVoice ?? current.mimoTtsVoice,
       encrypted

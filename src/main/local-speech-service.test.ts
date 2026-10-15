@@ -58,6 +58,32 @@ async function start(service: LocalSpeechService, workers: FakeWorker[]): Promis
 }
 
 describe('LocalSpeechService', () => {
+  it('forwards live cloud audio before completion and blocks late packets after interruption', async () => {
+    let emit!: (samples: Float32Array) => void
+    let finish!: (audio: { samples: Float32Array; sampleRate: 24000 }) => void
+    const service = new LocalSpeechService(
+      { vad: '', tts: '' },
+      { recognitionEnabled: false, ttsProvider: 'mimo', mimoTtsApiKey: 'secret' },
+      undefined, undefined,
+      () => ({ synthesize: async (_text, _signal, onAudio) => {
+        emit = onAudio!
+        return new Promise(resolve => { finish = resolve })
+      } })
+    )
+    const received = vi.fn()
+    const pending = service.synthesize('Two sentences.', 'message', 0, 4, received)
+    await vi.waitFor(() => expect(emit).toBeTypeOf('function'))
+    emit(Float32Array.from([0.25]))
+    expect(received).toHaveBeenCalledOnce()
+    service.cancelSynthesis(4)
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    emit(Float32Array.from([0.5]))
+    expect(received).toHaveBeenCalledOnce()
+    finish({ samples: Float32Array.from([0.25, 0.5]), sampleRate: 24000 })
+    await expect(service.synthesize('Stale', 'message', 1, 4)).rejects.toMatchObject({ name: 'AbortError' })
+    await service.stop()
+  })
+
   it('always uses VAD plus Aliyun recognition while keeping TTS in a separate worker', async () => {
     const workers: FakeWorker[] = []
     const { service, cloud, filenames } = createService(workers)
@@ -124,7 +150,7 @@ describe('LocalSpeechService', () => {
       model: 'mimo-v2.5-tts',
       voice: 'Milo'
     }), undefined)
-    expect(cloudTts.synthesize).toHaveBeenCalledWith('Hello', expect.any(AbortSignal))
+    expect(cloudTts.synthesize).toHaveBeenCalledWith('Hello', expect.any(AbortSignal), expect.any(Function))
   })
 
   it('starts TTS by itself for typed conversations without VAD or an Aliyun key', async () => {
@@ -144,7 +170,7 @@ describe('LocalSpeechService', () => {
 
     expect(workerFactory).not.toHaveBeenCalled()
     expect(recognizerFactory).not.toHaveBeenCalled()
-    expect(cloudTts.synthesize).toHaveBeenCalledWith('Typed reply', expect.any(AbortSignal))
+    expect(cloudTts.synthesize).toHaveBeenCalledWith('Typed reply', expect.any(AbortSignal), expect.any(Function))
   })
 
   it('aborts an in-flight MiMo request when speech is interrupted', async () => {

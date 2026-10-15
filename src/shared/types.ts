@@ -247,6 +247,7 @@ export interface NextPracticeDraft extends PracticeSessionProfile {
 }
 
 export type SpeechSynthesisProvider = 'kokoro' | 'mimo'
+export type SpeechRecognitionLanguage = 'en' | 'auto'
 export type MimoTtsVoice = 'Mia' | 'Chloe' | 'Milo' | 'Dean' | '冰糖' | '茉莉' | '苏打' | '白桦'
 
 export interface ProviderSettings {
@@ -254,6 +255,7 @@ export interface ProviderSettings {
   llmModel?: string
   hasLlmKey: boolean
   hasAliyunAsrKey?: boolean
+  asrLanguage?: SpeechRecognitionLanguage
   ttsProvider?: SpeechSynthesisProvider
   mimoTtsVoice?: MimoTtsVoice
   hasMimoTtsKey?: boolean
@@ -265,6 +267,7 @@ export interface ProviderSettingsInput {
   llmApiKey?: string
   clearLlmApiKey?: boolean
   aliyunAsrApiKey?: string
+  asrLanguage?: SpeechRecognitionLanguage
   clearAliyunAsrApiKey?: boolean
   ttsProvider?: SpeechSynthesisProvider
   mimoTtsVoice?: MimoTtsVoice
@@ -285,6 +288,7 @@ export interface LlmConnectionCheckInput {
 
 export interface AliyunConnectionCheckInput {
   aliyunAsrApiKey?: string
+  asrLanguage?: SpeechRecognitionLanguage
 }
 
 export interface ProviderConnectionCheckResult {
@@ -337,7 +341,7 @@ export interface SpeechAssetInstallInfo {
 }
 
 export interface SpeechUsageState {
-  provider: 'aliyun-fun-asr'
+  provider: 'aliyun-asr'
   sessionSeconds: number
   month: string
   monthlySeconds: number
@@ -363,6 +367,7 @@ export interface GeneratedSpeechChunk {
   format: 'float32'
   samples: ArrayBuffer
   final: boolean
+  streaming?: boolean
 }
 
 export interface UpdateReleaseInfo {

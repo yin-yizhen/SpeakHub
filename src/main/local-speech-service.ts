@@ -1,16 +1,16 @@
 import { randomUUID } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
 import { join } from 'node:path'
-import { AliyunFunAsr } from './aliyun-fun-asr'
+import { AliyunAsr } from './aliyun-asr'
 import { MimoTtsClient, type MimoTtsOptions } from './mimo-tts-client'
-import type { SpeechSynthesisProvider } from '../shared/types'
+import type { SpeechRecognitionLanguage, SpeechSynthesisProvider } from '../shared/types'
 
 type TranscriptListener = (event: { utteranceId: string; text: string; final: boolean }) => void
 type SpeechActivityListener = (active: boolean) => void
 type WorkerHandle = Pick<Worker, 'on' | 'postMessage' | 'unref'>
 type WorkerFactory = (filename: string, options: ConstructorParameters<typeof Worker>[1]) => WorkerHandle
-type CloudRecognizer = Pick<AliyunFunAsr, 'onTranscript' | 'onUsage' | 'onError' | 'start' | 'accept' | 'stop'>
-type CloudFactory = (apiKey: string) => CloudRecognizer
+type CloudRecognizer = Pick<AliyunAsr, 'onTranscript' | 'onUsage' | 'onError' | 'start' | 'accept' | 'stop'>
+type CloudFactory = (apiKey: string, language?: SpeechRecognitionLanguage) => CloudRecognizer
 type CloudSynthesizer = Pick<MimoTtsClient, 'synthesize'>
 type CloudSynthesizerFactory = (options: MimoTtsOptions, fetcher?: typeof fetch) => CloudSynthesizer
 type SpeechRequest = {
@@ -37,11 +37,13 @@ export class LocalSpeechService {
   private requests = new Map<string, SpeechRequest>()
   private cloudRecognizer?: CloudRecognizer
   private cloudSynthesizer?: CloudSynthesizer
+  private cancelledGeneration = -1
 
   constructor(
     private readonly paths: { vad: string; tts: string },
     private readonly options: {
       aliyunApiKey?: string
+      asrLanguage?: SpeechRecognitionLanguage
       recognitionEnabled?: boolean
       ttsProvider?: SpeechSynthesisProvider
       mimoTtsApiKey?: string
@@ -49,7 +51,7 @@ export class LocalSpeechService {
       mimoTtsFetcher?: typeof fetch
     } = {},
     private readonly workerFactory: WorkerFactory = (filename, options) => new Worker(filename, options),
-    private readonly cloudFactory: CloudFactory = (apiKey) => new AliyunFunAsr(apiKey),
+    private readonly cloudFactory: CloudFactory = (apiKey, language) => new AliyunAsr(apiKey, undefined, language),
     private readonly cloudSynthesizerFactory: CloudSynthesizerFactory = (options, fetcher) => new MimoTtsClient(options, fetcher)
   ) {}
 
@@ -83,13 +85,16 @@ export class LocalSpeechService {
     this.vadWorker.postMessage({ type: 'audio', samples: copy }, [copy.buffer])
   }
 
-  async synthesize(text: string, messageId: string, index: number, generation: number): Promise<{ samples: Float32Array; sampleRate: number }> {
+  async synthesize(text: string, messageId: string, index: number, generation: number, onAudio?: (samples: Float32Array) => void): Promise<{ samples: Float32Array; sampleRate: number }> {
     await this.start()
+    if (generation <= this.cancelledGeneration) throw aborted()
     const requestId = randomUUID()
     const controller = this.ttsProvider() === 'mimo' ? new AbortController() : undefined
     const result = new Promise<{ samples: Float32Array; sampleRate: number }>((resolve, reject) => this.requests.set(requestId, { generation, controller, resolve, reject }))
     if (controller) {
-      void this.cloudSynthesizer!.synthesize(text, controller.signal).then((audio) => {
+      void this.cloudSynthesizer!.synthesize(text, controller.signal, (samples) => {
+        if (this.requests.has(requestId) && !controller.signal.aborted) onAudio?.(samples)
+      }).then((audio) => {
         const request = this.requests.get(requestId)
         if (request?.generation === generation) request.resolve(audio)
         this.requests.delete(requestId)
@@ -106,6 +111,7 @@ export class LocalSpeechService {
   }
 
   cancelSynthesis(generation: number): void {
+    this.cancelledGeneration = Math.max(this.cancelledGeneration, generation)
     this.ttsWorker?.postMessage({ type: 'cancel', generation })
     for (const [requestId, request] of this.requests) {
       if (request.generation > generation) continue
@@ -218,7 +224,7 @@ export class LocalSpeechService {
   private startCloudRecognizer(): Promise<void> {
     const apiKey = this.options.aliyunApiKey?.trim()
     if (!apiKey) return Promise.reject(new Error('请先在设置中填写阿里云 DashScope API Key。'))
-    const recognizer = this.cloudFactory(apiKey)
+    const recognizer = this.cloudFactory(apiKey, this.options.asrLanguage)
     this.cloudRecognizer = recognizer
     recognizer.onTranscript((event) => this.transcriptListener?.(event))
     recognizer.onUsage((seconds) => this.usageListener?.(seconds))

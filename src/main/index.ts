@@ -15,7 +15,7 @@ import { LocalSpeechService } from './local-speech-service'
 import { MimoTtsClient } from './mimo-tts-client'
 import { SpeechModelManager, speechModelRoot } from './speech-model-manager'
 import { SpeechSegmenter } from './speech-segments'
-import { SequentialTaskQueue } from './sequential-task-queue'
+import { SpeechSynthesisQueue } from './speech-synthesis-queue'
 import { InterruptibleTaskHandoff } from './interruptible-task-handoff'
 import { SessionCheckpoint } from './session-checkpoint'
 import { SecureSettings } from './secure-settings'
@@ -31,7 +31,7 @@ import { endPracticeWithSubtitles, startPracticeWithSubtitles } from './practice
 import { buildPracticePrompt, parsePracticeProfile } from './practice-profile'
 import { DiagnosticLog } from './diagnostic-log'
 import { AnonymousAnalytics } from './analytics'
-import { ALIYUN_FUN_ASR_CNY_PER_SECOND } from './aliyun-fun-asr'
+import { ALIYUN_ASR_CNY_PER_SECOND } from './aliyun-asr'
 import { openAllowedHelpUrl } from './external-help-navigation'
 import { resizeBounds, subtitleBounds, subtitleHeight, type ResizeDirection } from './window-layout'
 import { UpdateService } from './update-service'
@@ -126,7 +126,7 @@ function usageMonth(): string {
 function speechUsageState(): SpeechUsageState {
   const month = usageMonth()
   const monthlySeconds = appSettings?.speechUsageSeconds(month) ?? 0
-  return { provider: 'aliyun-fun-asr', sessionSeconds: sessionSpeechUsageSeconds, month, monthlySeconds, estimatedCny: monthlySeconds * ALIYUN_FUN_ASR_CNY_PER_SECOND }
+  return { provider: 'aliyun-asr', sessionSeconds: sessionSpeechUsageSeconds, month, monthlySeconds, estimatedCny: monthlySeconds * ALIYUN_ASR_CNY_PER_SECOND }
 }
 function announceSpeechUsage(): void { broadcast('speech:usage', speechUsageState()) }
 function recordAliyunUsage(cumulativeSeconds: number): void {
@@ -414,6 +414,7 @@ async function beginApiVoicePractice(strength: CorrectionStrength, topic: string
   const secrets = settings.getSecrets()
   localSpeech = new LocalSpeechService(speechModels.paths, {
     aliyunApiKey: secrets.aliyunAsrApiKey,
+    asrLanguage: config.asrLanguage,
     ttsProvider: config.ttsProvider,
     mimoTtsApiKey: secrets.mimoTtsApiKey,
     mimoTtsVoice: config.mimoTtsVoice,
@@ -594,15 +595,24 @@ async function streamApiReply(addUserMessage: boolean, userText?: string, speakT
   if (!activeSession) throw new Error('Start an API practice first.')
   if (addUserMessage && userText) handleEvent({ sourceMessageId: `api-user-${randomUUID()}`, speaker: 'user', text: userText, status: 'complete', receivedAt: new Date().toISOString() })
   const messageId = `api-assistant-${randomUUID()}`
-  const segmenter = new SpeechSegmenter()
+  const segmenter = new SpeechSegmenter(settings.get().ttsProvider === 'mimo'
+    ? { firstMaxLength: 52, firstMinLength: 24, followingMaxLength: 180, followingMinLength: 100 }
+    : {})
   const voiceConversation = activeMode === 'voice'
   const textTtsRequested = activeMode === 'text' && speakTextReply
   const shouldSpeak = voiceConversation || textTtsRequested
   let reply = ''
   let segmentIndex = 0
-  const synthesis = new SequentialTaskQueue()
   const generation = shouldSpeak ? ++voiceGeneration : 0
   const controller = new AbortController()
+  const synthesis = new SpeechSynthesisQueue<GeneratedSpeechChunk>((chunk) => {
+    if (!activeSession || controller.signal.aborted || generation !== voiceGeneration) return
+    const playbackWindow = voiceConversation ? mainWindow : overlayWindow
+    if (!playbackWindow || playbackWindow.isDestroyed()) return
+    pendingPlayback.set(chunk.id, generation)
+    announceVoicePhase('speaking')
+    playbackWindow.webContents.send('voice:audio', chunk)
+  }, controller.signal)
   const turn = voiceConversation ? { generation, controller, messageId, reply } : undefined
   const textTurn: ActiveTextReply | undefined = voiceConversation
     ? undefined
@@ -614,19 +624,18 @@ async function streamApiReply(addUserMessage: boolean, userText?: string, speakT
   const queueSpeech = (text: string): void => {
     if (!shouldSpeak || !localSpeech) return
     const index = segmentIndex++
-    announceVoicePhase('synthesizing')
-    synthesis.enqueue(async () => {
-      const audio = await localSpeech!.synthesize(text, messageId, index, generation)
+    if (voicePhase !== 'speaking') announceVoicePhase('synthesizing')
+    synthesis.enqueue(async (emit) => {
       if (!activeSession || controller.signal.aborted || generation !== voiceGeneration) return
+      let part = 0
+      const publish = (audioSamples: Float32Array, streaming = true): void => {
+        const samples = audioSamples.slice()
+        emit({ id: `${messageId}-${index}-${part++}`, messageId, index, generation, sampleRate: 24000, format: 'float32', samples: samples.buffer, final: true, streaming })
+      }
+      const audio = await localSpeech!.synthesize(text, messageId, index, generation, publish)
       if (audio.sampleRate !== 24000) throw new Error(`Speech synthesis returned unsupported sample rate ${audio.sampleRate}.`)
-      const id = `${messageId}-${index}`
-      const samples = audio.samples.slice()
-      const chunk: GeneratedSpeechChunk = { id, messageId, index, generation, sampleRate: 24000, format: 'float32', samples: samples.buffer, final: true }
-      const playbackWindow = voiceConversation ? mainWindow : overlayWindow
-      if (!playbackWindow || playbackWindow.isDestroyed()) return
-      pendingPlayback.set(id, generation)
-      announceVoicePhase('speaking')
-      playbackWindow.webContents.send('voice:audio', chunk)
+      // Kokoro and compatible non-streaming clients return one completed buffer.
+      if (part === 0) publish(audio.samples, false)
     })
   }
   announceAutomation({ phase: 'waiting-for-reply', message: 'DeepSeek 正在流式回复…' })
@@ -1057,6 +1066,7 @@ function installIpc(): void {
       llmApiKey: z.string().max(2_000).optional(),
       clearLlmApiKey: z.boolean().optional(),
       aliyunAsrApiKey: z.string().max(2_000).optional(),
+      asrLanguage: z.enum(['en', 'auto']).optional(),
       clearAliyunAsrApiKey: z.boolean().optional(),
       ttsProvider: z.enum(['kokoro', 'mimo']).optional(),
       mimoTtsVoice: z.enum(['Mia', 'Chloe', 'Milo', 'Dean', '冰糖', '茉莉', '苏打', '白桦']).optional(),
@@ -1081,8 +1091,8 @@ function installIpc(): void {
   })
   ipcMain.handle('providers:check-aliyun', async (_event, input) => {
     if (activeSession) throw new Error('请先结束当前练习，再检测阿里识别连接。')
-    const parsed = z.object({ aliyunAsrApiKey: z.string().max(2_000).optional() }).parse(input)
-    return checkAliyunConnection(parsed.aliyunAsrApiKey, settings.getSecrets().aliyunAsrApiKey)
+    const parsed = z.object({ aliyunAsrApiKey: z.string().max(2_000).optional(), asrLanguage: z.enum(['en', 'auto']).optional() }).parse(input)
+    return checkAliyunConnection(parsed.aliyunAsrApiKey, settings.getSecrets().aliyunAsrApiKey, undefined, parsed.asrLanguage ?? settings.get().asrLanguage)
   })
   ipcMain.handle('providers:preview-mimo-tts', async (_event, input) => {
     if (activeSession) throw new Error('请先结束当前练习，再试听 MiMo 音色。')

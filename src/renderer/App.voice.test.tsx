@@ -92,6 +92,7 @@ beforeEach(() => {
       ...providerSettings,
       ...(input.llmBaseUrl !== undefined ? { llmBaseUrl: input.llmBaseUrl } : {}),
       ...(input.llmModel !== undefined ? { llmModel: input.llmModel } : {}),
+      ...(input.asrLanguage !== undefined ? { asrLanguage: input.asrLanguage } : {}),
       ...(input.ttsProvider !== undefined ? { ttsProvider: input.ttsProvider } : {}),
       ...(input.mimoTtsVoice !== undefined ? { mimoTtsVoice: input.mimoTtsVoice } : {})
     }
@@ -106,7 +107,7 @@ beforeEach(() => {
   })
   const api = {
     getAppVersion,
-    getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: connectionReady, pageVisible: connectionPageVisible, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': connectionReady } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone, speechAssets: speechAssetState, speechUsage: { provider: 'aliyun-fun-asr', sessionSeconds: 0, month: '2026-07', monthlySeconds: 0, estimatedCny: 0 }, voicePhase: 'listening' })),
+    getState: vi.fn(async () => ({ session: undefined, settings, events: [], connection: { ready: connectionReady, pageVisible: connectionPageVisible, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': connectionReady } }, automation: { phase: 'idle', message: 'Ready.' }, source: practiceSource, mode: 'voice', lifecycle: 'idle', microphone, speechAssets: speechAssetState, speechUsage: { provider: 'aliyun-asr', sessionSeconds: 0, month: '2026-07', monthlySeconds: 0, estimatedCny: 0 }, voicePhase: 'listening' })),
     clearWebConnectionLogin,
     reloadWebConnectionPage,
     importWebConnectionLogin,
@@ -518,6 +519,10 @@ describe('unified voice microphone gate', () => {
     expect(dialog.getAttribute('role')).toBe('dialog')
     expect(dialog.textContent).toContain('如何开通阿里语音识别')
     expect(dialog.textContent).toContain('华北 2（北京）')
+    expect(container.textContent).toContain('paraformer-realtime-v2')
+    expect(dialog.textContent).toContain('每月有 10 小时免费额度')
+    expect(dialog.textContent).toContain('0.864 元/小时')
+    expect(container.querySelector<HTMLSelectElement>('[name="asrLanguage"]')?.value).toBe('en')
     expect(dialog.textContent).toContain('sk-sp-')
 
     const links = [...dialog.querySelectorAll<HTMLAnchorElement>('.aliyun-help-actions a')]
@@ -571,6 +576,19 @@ describe('unified voice microphone gate', () => {
     expect(container.textContent).not.toContain('Zipformer')
     expect(container.textContent).not.toContain('Whisper')
     expect(container.querySelector('[name="speechRecognitionProvider"]')).toBeNull()
+  })
+
+  it('saves mixed-language recognition and uses it for connection checks', async () => {
+    act(() => root.render(<App/>)); await settle()
+    const settingsButton = [...container.querySelectorAll<HTMLButtonElement>('.studio-nav button')].find(button => button.textContent === '设置')!
+    await act(async () => { settingsButton.click(); await Promise.resolve() })
+    const language = container.querySelector<HTMLSelectElement>('[name="asrLanguage"]')!
+    await act(async () => { language.value = 'auto'; language.dispatchEvent(new Event('change', { bubbles: true })) })
+    await act(async () => { container.querySelector<HTMLButtonElement>('.aliyun-check-trigger')!.click(); await Promise.resolve() })
+    expect(checkAliyunConnection).toHaveBeenCalledWith({ aliyunAsrApiKey: undefined, asrLanguage: 'auto' })
+    await act(async () => { container.querySelector<HTMLFormElement>('.provider-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); await Promise.resolve() })
+    expect(saveProviderSettings).toHaveBeenCalledWith(expect.objectContaining({ asrLanguage: 'auto' }))
+    expect(container.querySelector<HTMLSelectElement>('[name="asrLanguage"]')!.value).toBe('auto')
   })
 
   it('detects a usable local microphone signal without calling provider APIs', async () => {
@@ -633,7 +651,7 @@ describe('unified voice microphone gate', () => {
 
     const aliyunButton = container.querySelector<HTMLButtonElement>('.aliyun-check-trigger')!
     await act(async () => { aliyunButton.click(); await Promise.resolve() })
-    expect(checkAliyunConnection).toHaveBeenCalledWith({ aliyunAsrApiKey: undefined })
+    expect(checkAliyunConnection).toHaveBeenCalledWith({ aliyunAsrApiKey: undefined, asrLanguage: 'en' })
     expect([...container.querySelectorAll('.provider-check.success')].some((item) => item.textContent?.includes('Key 和网络可用'))).toBe(true)
   })
 

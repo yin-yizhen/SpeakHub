@@ -1,8 +1,8 @@
-import { AliyunFunAsr } from './aliyun-fun-asr'
-import type { ProviderConnectionCheckResult } from '../shared/types'
+import { AliyunAsr } from './aliyun-asr'
+import type { ProviderConnectionCheckResult, SpeechRecognitionLanguage } from '../shared/types'
 
 type ConnectionFetch = (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>
-type Recognizer = Pick<AliyunFunAsr, 'onError' | 'start' | 'stop'>
+type Recognizer = Pick<AliyunAsr, 'onError' | 'start' | 'stop'>
 type RecognizerFactory = (apiKey: string) => Recognizer
 
 class ConnectionCheckError extends Error {}
@@ -88,7 +88,8 @@ function aliyunFailure(error: unknown): Error {
 export async function checkAliyunConnection(
   inputApiKey?: string,
   savedApiKey?: string,
-  recognizerFactory: RecognizerFactory = (apiKey) => new AliyunFunAsr(apiKey)
+  recognizerFactory: RecognizerFactory = (apiKey) => new AliyunAsr(apiKey, undefined, language),
+  language: SpeechRecognitionLanguage = 'en'
 ): Promise<ProviderConnectionCheckResult> {
   const apiKey = required(inputApiKey?.trim() || savedApiKey, '请填写阿里 DashScope API Key，或先保存一个 Key。')
   const recognizer = recognizerFactory(apiKey)
