@@ -4,7 +4,7 @@ import type { CefrLevel, HistorySearchQuery, LearningDashboard, LearningPeriod, 
 type LearningView = 'overview' | 'history' | 'vocabulary' | 'sentences'
 
 const familiarityLabels: Record<VocabularyFamiliarity, string> = { unfamiliar: '陌生', learning: '学习中', mastered: '已掌握' }
-const sourceLabels = { 'chatgpt-web': 'ChatGPT 网页', 'api-direct': 'API 直连' }
+const sourceLabels = { 'chatgpt-web': 'ChatGPT 网页', 'api-direct': 'API 直连', 'gemini-web': 'Gemini 网页' }
 const errorLabels: Record<string, string> = { grammar: '语法', 'word-choice': '用词', tense: '时态', articles: '冠词', prepositions: '介词', fluency: '流畅度', coherence: '连贯性', interaction: '互动', other: '其他' }
 const localDateBoundary = (value: string, end = false): string | undefined => value ? new Date(`${value}T${end ? '23:59:59.999' : '00:00:00.000'}`).toISOString() : undefined
 const REVIEW_ISSUES_COLLAPSE_THRESHOLD = 5

@@ -15,6 +15,20 @@ function host(width: number, height: number) {
 }
 
 describe('ChatGPT page host', () => {
+  it('keeps Gemini and ChatGPT in separate hidden hosts while switching the visible provider', () => {
+    const studio = host(1320, 860), chatBackground = host(900, 860), geminiBackground = host(900, 860)
+    const chat = { setBounds: vi.fn(), setVisible: vi.fn() }, gemini = { setBounds: vi.fn(), setVisible: vi.fn() }
+    placeChatGPTView(chat as never, studio as never, chatBackground as never, true)
+    placeChatGPTView(gemini as never, studio as never, geminiBackground as never, false)
+    placeChatGPTView(chat as never, studio as never, chatBackground as never, false)
+    placeChatGPTView(gemini as never, studio as never, geminiBackground as never, true)
+    expect(studio.contentView.children).toEqual([gemini])
+    expect(chatBackground.contentView.children).toEqual([chat])
+    placeChatGPTView(gemini as never, studio as never, geminiBackground as never, false)
+    expect(studio.contentView.children).toEqual([])
+    expect(geminiBackground.contentView.children).toEqual([gemini])
+    expect(gemini.setVisible).not.toHaveBeenCalledWith(false)
+  })
   it('removes the page from the studio while keeping its background viewport usable', () => {
     const studio = host(1320, 860)
     const background = host(900, 860)

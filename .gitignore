@@ -13,3 +13,4 @@ coverage/
 .electron-vite/
 .playwright-cli/
 artifacts/
+output/playwright/

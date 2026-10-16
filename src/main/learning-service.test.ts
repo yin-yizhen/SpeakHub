@@ -27,16 +27,19 @@ describe('review response boundary', () => {
     expect(JSON.parse(String(request.body)).messages[0].content).toContain('Practice archive Markdown:\n# Speaking practice')
   })
 
-  it('omits the generated ChatGPT setup prompt but keeps later learner turns', async () => {
+  it.each(['chatgpt-web', 'gemini-web'])('omits the generated %s setup prompt but keeps later learner turns', async source => {
     const response = { topic: 'interview', summary: 'summary', issues: [], vocabulary: [], nextPractice: 'next time' }
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(response) } }] }) }))
     const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'review-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
-    const archive = `---\nsource: chatgpt-web\n---\n\n<!-- speaksub-session:YWJj -->\n\n# Speaking practice\n\n## Transcript\n\n### Me at 2026-08-09T11:36:13.981Z\n\nGENERATED_SETUP_PROMPT\n\n### AI at 2026-08-09T11:36:15.444Z\n\nTell me about yourself.\n\n### Me at 2026-08-09T11:36:23.250Z\n\nI am a graduate student.\n\n## Review\n\nOLD_INCORRECT_REVIEW`
+    const archive = `---\nsource: ${source}\n---\n\n<!-- speaksub-session:YWJj -->\n\n# Speaking practice\n\n## Transcript\n\n### Me at 2026-08-09T11:36:13.981Z\n\nGENERATED_SETUP_PROMPT\n\n### AI at 2026-08-09T11:36:15.444Z\n\nTell me about yourself.\n\n### Me at 2026-08-09T11:36:23.250Z\n\nI am a graduate student.\n\n## Review\n\nOLD_INCORRECT_REVIEW`
 
     await service.review(archive, 'normal')
 
     const request = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1]
     const prompt = JSON.parse(String(request.body)).messages[0].content as string
+    expect(String((fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][0])).toBe('https://example.com/v1/chat/completions')
+    expect(new Headers(request.headers).get('authorization')).toBe('Bearer secret')
+    expect(JSON.parse(String(request.body)).model).toBe('review-model')
     expect(prompt).not.toContain('GENERATED_SETUP_PROMPT')
     expect(prompt).not.toContain('speaksub-session:YWJj')
     expect(prompt).not.toContain('OLD_INCORRECT_REVIEW')

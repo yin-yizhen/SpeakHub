@@ -17,7 +17,7 @@ const subtitleSchema = z.object({
 const promptTemplateSchema = z.object({ id: z.string().min(1).max(80), name: z.string().trim().min(1).max(80), prompt: z.string().trim().min(1).max(8_000) })
 const promptTemplatesSchema = z.object({ systemPrompt: z.string().trim().min(1).max(8_000).optional(), scenario: z.array(promptTemplateSchema).min(1).max(30), difficulty: z.array(promptTemplateSchema).min(1).max(30), correction: z.array(promptTemplateSchema).min(1).max(30) })
 const practicePreferencesSchema = z.object({
-  source: z.enum(['chatgpt-web', 'api-direct']), mode: z.enum(['text', 'voice']),
+  source: z.enum(['chatgpt-web', 'api-direct', 'gemini-web']), mode: z.enum(['text', 'voice']),
   scenarioTemplateId: z.string().min(1).max(80), difficultyTemplateId: z.string().min(1).max(80), correctionTemplateId: z.string().min(1).max(80),
   focus: z.string().max(2_000), focusEnabled: z.boolean()
 })

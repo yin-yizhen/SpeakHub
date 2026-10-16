@@ -58,7 +58,7 @@ const SUBTITLE_DELTA_DELAY_MS = 24
 function archiveForReview(archiveMarkdown: string): string {
   const withoutEmbeddedMetadata = archiveMarkdown.replace(/\n?<!-- speaksub-session:[A-Za-z0-9+/=]+ -->\n?/g, '\n')
   const withoutExistingReview = withoutEmbeddedMetadata.replace(/\n\n## Review\n\n[\s\S]*$/, '')
-  if (!/^source:\s*chatgpt-web\s*$/m.test(withoutExistingReview)) return withoutExistingReview
+  if (!/^source:\s*(?:chatgpt-web|gemini-web)\s*$/m.test(withoutExistingReview)) return withoutExistingReview
   const transcriptStart = withoutExistingReview.indexOf('## Transcript')
   if (transcriptStart < 0) return withoutExistingReview
   const transcript = withoutExistingReview.slice(transcriptStart)

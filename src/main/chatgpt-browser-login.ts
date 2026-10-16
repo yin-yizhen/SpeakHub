@@ -56,7 +56,7 @@ type PendingCommand = {
   reject: (error: Error) => void
 }
 
-class DevToolsClient {
+export class DevToolsClient {
   private nextId = 1
   private readonly pending = new Map<number, PendingCommand>()
 
@@ -202,18 +202,19 @@ export function browserExecutableCandidates(environment: NodeJS.ProcessEnv = pro
   return roots.flatMap((root) => relativePaths.map((segments) => join(root, ...segments)))
 }
 
-export function browserLaunchArguments(profileDirectory: string, port: number): string[] {
+export function browserLaunchArguments(profileDirectory: string, port: number, targetUrl = CHATGPT_LOGIN_URL): string[] {
   return [
     `--remote-debugging-port=${port}`,
+    '--remote-debugging-address=127.0.0.1',
     `--user-data-dir=${profileDirectory}`,
     '--no-first-run',
     '--no-default-browser-check',
     '--new-window',
-    CHATGPT_LOGIN_URL
+    targetUrl
   ]
 }
 
-function findBrowserExecutable(): string {
+export function findBrowserExecutable(): string {
   const executable = browserExecutableCandidates().find((candidate) => existsSync(candidate))
   if (!executable) throw new Error('没有找到 Google Chrome 或 Microsoft Edge。请先安装其中一个浏览器。')
   return executable
@@ -223,7 +224,7 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
-function findOpenPort(): Promise<number> {
+export function findOpenPort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer()
     server.once('error', reject)
@@ -263,7 +264,7 @@ function fetchJson<T>(url: string): Promise<T> {
   })
 }
 
-async function waitForDevTools(port: number): Promise<DevToolsVersion> {
+export async function waitForDevTools(port: number): Promise<DevToolsVersion> {
   const deadline = Date.now() + DEBUGGER_START_TIMEOUT_MS
   let lastError: unknown
   while (Date.now() < deadline) {

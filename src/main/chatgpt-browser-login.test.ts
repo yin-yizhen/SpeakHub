@@ -114,11 +114,19 @@ describe('one-time ChatGPT browser login handoff', () => {
   it('reuses the caller-owned dedicated browser profile', () => {
     expect(browserLaunchArguments('C:\\SpeakHub\\chatgpt-login-browser', 32145)).toEqual([
       '--remote-debugging-port=32145',
+      '--remote-debugging-address=127.0.0.1',
       '--user-data-dir=C:\\SpeakHub\\chatgpt-login-browser',
       '--no-first-run',
       '--no-default-browser-check',
       '--new-window',
       'https://chatgpt.com/auth/login'
     ])
+  })
+  it('can open AI Studio in its own profile while preserving the ChatGPT default', () => {
+    const args = browserLaunchArguments('C:\\SpeakHub\\ai-studio-login-browser', 32146, 'https://aistudio.google.com/live')
+    expect(args).toContain('--user-data-dir=C:\\SpeakHub\\ai-studio-login-browser')
+    expect(args).toContain('--remote-debugging-address=127.0.0.1')
+    expect(args.at(-1)).toBe('https://aistudio.google.com/live')
+    expect(browserLaunchArguments('C:\\SpeakHub\\chatgpt-login-browser', 32145).at(-1)).toBe('https://chatgpt.com/auth/login')
   })
 })

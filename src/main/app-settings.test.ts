@@ -5,6 +5,17 @@ import { describe, expect, it } from 'vitest'
 import { AppSettingsStore, defaultPracticePreferences, defaultPromptTemplates, defaultSubtitlePreferences, parseSubtitleUpdate } from './app-settings'
 
 describe('AppSettingsStore', () => {
+  it('persists the third Gemini source without changing ChatGPT readiness or saved settings', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'speaksub-gemini-settings-')); const path = join(directory, 'app.json')
+    try {
+      const settings = new AppSettingsStore(path)
+      settings.setProviderReady('chatgpt-web', true)
+      settings.setPracticePreferences({ ...defaultPracticePreferences, source: 'gemini-web' })
+      const restarted = new AppSettingsStore(path)
+      expect(restarted.practicePreferences().source).toBe('gemini-web')
+      expect(restarted.providerReady('chatgpt-web')).toBe(true)
+    } finally { rmSync(directory, { recursive: true, force: true }) }
+  })
   it('recovers from corrupt data and persists ChatGPT readiness', () => {
     const directory = mkdtempSync(join(tmpdir(), 'speaksub-settings-')); const path = join(directory, 'app.json')
     try {

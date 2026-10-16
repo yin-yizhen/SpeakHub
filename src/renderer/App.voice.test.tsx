@@ -55,6 +55,7 @@ let importWebConnectionLogin: ReturnType<typeof vi.fn>
 let hideConnectionPage: ReturnType<typeof vi.fn>
 let automationListener: ((status: AutomationStatus) => void) | undefined
 let transcriptListener: Parameters<SpeakSubApi['onTranscript']>[0] | undefined
+let geminiVisibleListener: ((visible: boolean) => void) | undefined
 
 beforeEach(() => {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -64,6 +65,7 @@ beforeEach(() => {
   startVoiceCapture = vi.fn(async () => undefined); stopVoiceCapture = vi.fn(async () => undefined)
   practiceEndedListener = undefined; microphoneListener = undefined; voicePhaseListener = undefined; automationListener = undefined; practiceSource = 'api-direct'
   transcriptListener = undefined
+  geminiVisibleListener = undefined
   connectionPageVisible = false
   connectionReady = true
   clearWebConnectionLogin = vi.fn(async () => ({ ready: false, pageVisible: true, activeProvider: 'chatgpt-web' as const, providers: { 'chatgpt-web': false } }))
@@ -124,6 +126,11 @@ beforeEach(() => {
     savePromptTemplates: vi.fn(async (templates) => templates),
     getPracticePreferences: vi.fn(async () => practicePreferences),
     savePracticePreferences,
+    openGeminiPage: vi.fn(async () => undefined),
+    hideGeminiPage: vi.fn(async () => { geminiVisibleListener?.(false) }),
+    loginGemini: vi.fn(async () => undefined),
+    reloadGeminiPage: vi.fn(async () => undefined),
+    onGeminiPageVisible: vi.fn(listener => { geminiVisibleListener = listener; return () => { geminiVisibleListener = undefined } }),
     startPractice: vi.fn(async () => {
       microphone = { ...microphone, active: true, available: true }
       microphoneListener?.(microphone)
@@ -576,6 +583,44 @@ describe('unified voice microphone gate', () => {
     expect(container.textContent).not.toContain('Zipformer')
     expect(container.textContent).not.toContain('Whisper')
     expect(container.querySelector('[name="speechRecognitionProvider"]')).toBeNull()
+  })
+
+  it('starts Gemini as a third independent source without requiring API credentials or local capture', async () => {
+    act(() => root.render(<App/>)); await settle()
+    const sourceButtons = [...container.querySelectorAll<HTMLButtonElement>('.template-workbench > .source-picker button')]
+    expect(sourceButtons.slice(0, 3).map(button => button.textContent)).toEqual(['ChatGPT 网页', 'API 直连', 'Gemini 网页'])
+    await act(async () => { sourceButtons.find(button => button.textContent === 'Gemini 网页')!.click(); await Promise.resolve() })
+    expect(savePracticePreferences).toHaveBeenCalledWith(expect.objectContaining({ source: 'gemini-web' }))
+    expect(container.textContent).toContain('无需 Gemini API Key')
+    expect(container.querySelector('.gemini-web-note')?.textContent).toContain('使用 Gemini 3.8 Live')
+    const open = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '打开 Gemini')!
+    await act(async () => { open.click(); await Promise.resolve() })
+    expect(window.speaksub.openGeminiPage).toHaveBeenCalledOnce()
+    const start = container.querySelector<HTMLButtonElement>('[aria-label="确认并开始"]')!
+    await act(async () => { start.click(); await Promise.resolve() })
+    expect(window.speaksub.startPractice).toHaveBeenCalledWith('日常聊天', 'A1', 'normal', 'gemini-web', 'voice', undefined, expect.stringContaining('场景提示词'), undefined)
+    expect(audio.captureStart).not.toHaveBeenCalled()
+    expect(container.querySelector<HTMLButtonElement>('.studio-nav button:last-child')?.textContent).toBe('设置')
+    stopVoiceCapture.mockImplementation(() => new Promise(() => undefined))
+    window.speaksub.endPractice = vi.fn(async () => ({ session: { id: 'session-1', startedAt: 'now', correctionStrength: 'normal' as const }, voiceStopped: true }))
+    await act(async () => { container.querySelector<HTMLButtonElement>('.finish-action')!.click(); await Promise.resolve() })
+    expect(window.speaksub.endPractice).toHaveBeenCalledOnce()
+    expect(stopVoiceCapture).not.toHaveBeenCalled()
+  })
+  it('shows an embedded Gemini login panel and returns without ending the page session', async () => {
+    window.speaksub.endPractice = vi.fn(async () => { throw new Error('Unexpected end') })
+    act(() => root.render(<App/>)); await settle()
+    await act(async () => { geminiVisibleListener?.(true); await Promise.resolve() })
+    expect(container.textContent).toContain('Gemini 连接页')
+    expect(container.querySelector('.gemini-login-hint')?.textContent).toContain('首次使用，请点击下方“使用 Google 登录 Gemini”')
+    const login = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '使用 Google 登录 Gemini')!
+    await act(async () => { login.click(); await Promise.resolve() })
+    expect(window.speaksub.loginGemini).toHaveBeenCalledOnce()
+    const back = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '返回主界面，保持 Gemini 后台运行')!
+    await act(async () => { back.click(); await Promise.resolve() })
+    expect(window.speaksub.hideGeminiPage).toHaveBeenCalledOnce()
+    expect(window.speaksub.endPractice).not.toHaveBeenCalled()
+    expect(container.querySelector('.template-workbench')).not.toBeNull()
   })
 
   it('saves mixed-language recognition and uses it for connection checks', async () => {

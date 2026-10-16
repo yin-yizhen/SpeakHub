@@ -430,3 +430,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @keyframes sentence-layer-in { from { opacity: 0; } }
 @keyframes sentence-drawer-in { from { opacity: 0; transform: translateX(22px); } }
 @media (max-width: 700px) { .sentence-toolbar { grid-template-columns: 1fr; gap: 9px; }.sentence-toolbar > span { justify-self: start; }.sentence-list article { grid-template-columns: 30px minmax(0,1fr); gap: 10px; }.sentence-analysis-preview p { grid-template-columns: 30px minmax(0,1fr); }.sentence-detail-drawer { padding: 23px 20px 40px; }.sentence-expression, .sentence-breakdown { grid-template-columns: 1fr; gap: 4px; } }
+
+.gemini-web-note { margin: 18px 0; }
+.gemini-web-note p { margin: 0 0 10px; line-height: 1.7; }
+.gemini-login-hint { width: 100%; margin: 20px 0 4px; padding: 16px; border: 1px solid var(--accent); border-radius: 12px; background: var(--accent-soft, #e3f4f1); color: var(--ink); }
+.gemini-login-hint strong { font-size: 17px; line-height: 1.6; }
+.gemini-login-hint p { margin: 8px 0 0; color: var(--ink-soft); font-size: 13px; line-height: 1.7; }

@@ -4,7 +4,7 @@ export type SubtitleMode = 'assistant' | 'user' | 'both'
 type SubtitleBackground = 'transparent' | 'glass' | 'solid'
 export type CorrectionStrength = 'light' | 'normal' | 'strict'
 export type PromptTemplateCategory = 'scenario' | 'difficulty' | 'correction'
-export type PracticeSource = 'chatgpt-web' | 'api-direct'
+export type PracticeSource = 'chatgpt-web' | 'api-direct' | 'gemini-web'
 export type PracticeMode = 'text' | 'voice'
 export type PracticeLifecycle = 'idle' | 'starting' | 'active' | 'ending' | 'error'
 export type WebPracticeSource = Extract<PracticeSource, 'chatgpt-web'>
@@ -429,7 +429,7 @@ export interface SpeakSubApi {
   removeKokoroModel: () => Promise<SpeechAssetState>
   endPractice: () => Promise<PracticeEndResult>
   cancelPracticeStart: () => Promise<void>
-  getState: () => Promise<{ session?: PracticeSession; settings: SubtitlePreferences; events: TranscriptEvent[]; connection: ConnectionState; automation: AutomationStatus; source: PracticeSource; mode: PracticeMode; lifecycle: PracticeLifecycle; microphone: MicrophoneGateState; speechAssets: SpeechAssetState; speechUsage: SpeechUsageState; voicePhase: VoiceTurnPhase }>
+  getState: () => Promise<{ geminiPageVisible?: boolean; session?: PracticeSession; settings: SubtitlePreferences; events: TranscriptEvent[]; connection: ConnectionState; automation: AutomationStatus; source: PracticeSource; mode: PracticeMode; lifecycle: PracticeLifecycle; microphone: MicrophoneGateState; speechAssets: SpeechAssetState; speechUsage: SpeechUsageState; voicePhase: VoiceTurnPhase }>
   completeConnection: () => Promise<ConnectionState>
   clearWebConnectionLogin: () => Promise<ConnectionState>
   reloadWebConnectionPage: () => Promise<void>
@@ -463,6 +463,11 @@ export interface SpeakSubApi {
   getArchiveDirectory: () => Promise<string>
   chooseArchiveDirectory: () => Promise<string | undefined>
   copyCommunityGroupNumber: () => Promise<string>
+  openGeminiPage: () => Promise<void>
+  hideGeminiPage: () => Promise<void>
+  loginGemini: () => Promise<void>
+  reloadGeminiPage: () => Promise<void>
+  onGeminiPageVisible: (listener: (visible: boolean) => void) => () => void
   getProviderSettings: () => Promise<ProviderSettings>
   saveProviderSettings: (settings: ProviderSettingsInput) => Promise<ProviderSettings>
   discoverProviderModels: (input: ProviderModelProbeInput) => Promise<string[]>

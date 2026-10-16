@@ -26,7 +26,7 @@ function WindowControls() {
   </div>
 }
 
-const sourceLabels: Record<PracticeSource, string> = { 'chatgpt-web': 'ChatGPT 网页', 'api-direct': 'API 直连' }
+const sourceLabels: Record<PracticeSource, string> = { 'chatgpt-web': 'ChatGPT 网页', 'api-direct': 'API 直连', 'gemini-web': 'Gemini 网页' }
 const defaultMicrophone: MicrophoneGateState = { active: false, available: false, shortcut: 'F8' }
 const defaultSpeechAssets: SpeechAssetState = {
   vad: { status: 'missing', downloadedBytes: 0, totalBytes: 0, progress: 0 },
@@ -135,6 +135,8 @@ export function App() {
   const [settings, setSettings] = useState<SubtitlePreferences>(defaultSubtitlePreferences)
   const [connection, setConnection] = useState<ConnectionState>({ ready: false, pageVisible: true, activeProvider: 'chatgpt-web', providers: { 'chatgpt-web': false } })
   const [connectionLoginBusy, setConnectionLoginBusy] = useState(false)
+  const [geminiPageVisible, setGeminiPageVisible] = useState(false)
+  const [geminiLoginBusy, setGeminiLoginBusy] = useState(false)
   const [connectionRepairBusy, setConnectionRepairBusy] = useState<'reload' | 'reset'>()
   const [connectionRepairAttempted, setConnectionRepairAttempted] = useState(false)
   const [connectionResetOpen, setConnectionResetOpen] = useState(false)
@@ -223,6 +225,7 @@ export function App() {
       const savedMimoVoice = provider.mimoTtsVoice ?? 'Mia'
       persistedTtsProvider.current = savedTtsProvider
       persistedMimoVoice.current = savedMimoVoice
+      setGeminiPageVisible(Boolean(state.geminiPageVisible))
       setSettings(state.settings); setConnection(state.connection); setAutomation(state.automation); setSession(state.session?.id); setEvents(state.events); setProviders(provider); setTtsProvider(savedTtsProvider); setMimoVoice(savedMimoVoice); setSource(preferences.source); setMode(preferences.mode); setLifecycle(state.lifecycle); setArchiveDirectory(directory); setMicrophone(state.microphone); setShortcutDraft(state.microphone.shortcut); setSpeechAssets(state.speechAssets); setSpeechInstallInfo(installInfo); setSpeechUsage(state.speechUsage); setVoicePhase(state.voicePhase); setTemplates(promptTemplates); setSelectedTemplates(selected); setFocus(preferences.focus); setFocusEnabled(preferences.focusEnabled); setAppVersion(version)
     })
     const removeTranscript = window.speaksub.onTranscript((event) => setEvents((current) => {
@@ -238,6 +241,7 @@ export function App() {
       else if (result.voiceWarning) setAutomation({ phase: 'failed', message: result.voiceWarning, recoverable: true })
     })
     const removeConnection = window.speaksub.onConnectionState(setConnection)
+    const removeGeminiVisible = window.speaksub.onGeminiPageVisible?.(setGeminiPageVisible)
     const removeVoiceAudio = window.speaksub.onVoiceAudio((chunk) => player.current.play(chunk, () => void window.speaksub.notifyVoicePlaybackEnded(chunk.id)))
     const removeVoiceInterrupt = window.speaksub.onVoiceInterrupt((generation) => player.current.interrupt(generation))
     const removeSpeechAssets = window.speaksub.onSpeechAssetState(setSpeechAssets)
@@ -248,14 +252,15 @@ export function App() {
       previousMicrophoneActive.current = next.active
       setMicrophone(next); setShortcutDraft(next.shortcut)
     })
-    return () => { capture.current.stop(); microphoneTestCapture.current?.stop(); if (microphoneTestTimer.current !== undefined) window.clearTimeout(microphoneTestTimer.current); player.current.stop(); mimoPreviewVersion.current += 1; previewPlayer.current.stop(); void window.speaksub.cancelMimoTtsPreview(); removeTranscript(); removeSettings(); removeAutomation(); removePracticeEnded(); removeConnection(); removeVoiceAudio(); removeVoiceInterrupt(); removeSpeechAssets(); removeSpeechUsage(); removeVoicePhase(); removeMicrophone() }
+    return () => { capture.current.stop(); microphoneTestCapture.current?.stop(); if (microphoneTestTimer.current !== undefined) window.clearTimeout(microphoneTestTimer.current); player.current.stop(); mimoPreviewVersion.current += 1; previewPlayer.current.stop(); void window.speaksub.cancelMimoTtsPreview(); removeTranscript(); removeSettings(); removeAutomation(); removePracticeEnded(); removeConnection(); removeGeminiVisible?.(); removeVoiceAudio(); removeVoiceInterrupt(); removeSpeechAssets(); removeSpeechUsage(); removeVoicePhase(); removeMicrophone() }
   }, [])
 
   const latestAssistantEvent = useMemo(() => [...events].reverse().find((event) => event.speaker === 'assistant'), [events])
   const latestAssistant = latestAssistantEvent?.text ?? ''
   const latestUser = useMemo(() => [...events].reverse().find((event) => event.speaker === 'user')?.text ?? '', [events])
   const updateSubtitle = (input: Partial<SubtitlePreferences>) => void window.speaksub.updateSubtitle(input)
-  const isWebSource = source !== 'api-direct'
+  const isWebSource = source === 'chatgpt-web'
+  const isGeminiSource = source === 'gemini-web'
   const transitionBusy = isPracticeTransitionBusy(lifecycle)
   const apiConfigured = Boolean(providers?.llmBaseUrl?.trim() && providers.llmModel?.trim() && providers.hasLlmKey)
   const recognitionConfigured = Boolean(providers?.hasAliyunAsrKey)
@@ -345,7 +350,7 @@ export function App() {
       setConnectionRepairBusy(undefined)
     }
   }
-  async function openConnection(): Promise<void> { if (source === 'api-direct') return; await window.speaksub.showConnectionPage() }
+  async function openConnection(): Promise<void> { try { if (source === 'gemini-web') { await window.speaksub.openGeminiPage(); return } if (source === 'api-direct') return; await window.speaksub.showConnectionPage() } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法打开连接页。', recoverable: true }) } }
   async function skipWebConnection(): Promise<void> {
     setSource('api-direct')
     setMode('voice')
@@ -425,7 +430,7 @@ export function App() {
       const correction = templates?.correction.find((item) => item.id === selectedTemplates.correction)
       const selectedPrompt = [scenario?.prompt, difficulty?.prompt, correction?.prompt].filter(Boolean).join('\n\n')
       if (!scenario || !difficulty || !correction || !selectedPrompt) throw new Error('请先为场景、难度和纠错各选择一个提示词。')
-      const prompt = source === 'chatgpt-web'
+      const prompt = source !== 'api-direct'
         ? buildChatGptWebPrompt(scenario.name, difficulty.name, selectedPrompt, templates?.systemPrompt)
         : selectedPrompt
       const correctionStrength: CorrectionStrength = ['light', 'normal', 'strict'].includes(correction.id) ? correction.id as CorrectionStrength : 'normal'
@@ -452,7 +457,7 @@ export function App() {
       }
     } finally { if (request === apiSendRequest.current) setApiBusy(false) }
   }
-  async function endPractice(): Promise<void> { if (lifecycle === 'ending') return; setLifecycle('ending'); capture.current.stop(); player.current.stop(); await window.speaksub.stopVoiceCapture(); try { const result = await window.speaksub.endPractice(); setSession(undefined); setReview(result.review); setLifecycle('idle'); if (result.error) setAutomation({ phase: 'failed', message: result.error, recoverable: true }); else if (result.voiceWarning) setAutomation({ phase: 'failed', message: result.voiceWarning, recoverable: true }) } catch (error) { setLifecycle('error'); setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法结束练习。', recoverable: true }) } }
+  async function endPractice(): Promise<void> { if (lifecycle === 'ending') return; setLifecycle('ending'); capture.current.stop(); player.current.stop(); if (source !== 'gemini-web') await window.speaksub.stopVoiceCapture(); try { const result = await window.speaksub.endPractice(); setSession(undefined); setReview(result.review); setLifecycle('idle'); if (result.error) setAutomation({ phase: 'failed', message: result.error, recoverable: true }); else if (result.voiceWarning) setAutomation({ phase: 'failed', message: result.voiceWarning, recoverable: true }) } catch (error) { setLifecycle('error'); setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法结束练习。', recoverable: true }) } }
   async function toggleMicrophone(): Promise<void> { try { setMicrophone(await window.speaksub.toggleMicrophoneGate()) } catch (error) { setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '无法切换麦克风。', recoverable: true }) } }
   async function refreshMicrophoneInputs(requestPermission: boolean): Promise<void> {
     setMicrophoneInputBusy(true)
@@ -823,7 +828,17 @@ export function App() {
       </div>
     : null
 
-  if (connection.pageVisible) return <><main className="connection-shell"><WindowControls/><section className="connection-panel">
+  if (geminiPageVisible) return <><main className="connection-shell"><WindowControls/><section className="connection-panel">
+    <div className="brand-lockup"><img className="brand-icon" src={brandIcon} alt=""/><span className="brand-copy"><strong>SpeakHub</strong><em>personal practice</em></span></div><p className="kicker">GEMINI WEB CONNECTION</p>
+    <h1>Gemini 连接页</h1><div className="gemini-login-hint"><strong>首次使用，请点击下方<br/>“使用 Google 登录 Gemini”</strong><p>在弹出的浏览器中完成 Google 登录，然后回到这里。</p></div><p>右侧是应用内 AI Studio，使用 Gemini 3.8 Live 进行对话。已登录可直接返回主界面开始练习。</p>
+    <p role="status" aria-live="polite">{automation.message}</p>
+    <button className="primary-action" disabled={geminiLoginBusy || Boolean(session) || lifecycle === 'starting'} onClick={() => { setGeminiLoginBusy(true); void window.speaksub.loginGemini().then(() => setAutomation({ phase: 'idle', message: 'Gemini 已在应用内登录。可以返回主界面开始练习。' })).catch(error => setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : 'Gemini 登录失败。', recoverable: true })).finally(() => setGeminiLoginBusy(false)) }}>{geminiLoginBusy ? '等待 Google 登录并转回应用…' : '使用 Google 登录 Gemini'}</button>
+    <button className="quiet-action" disabled={Boolean(session) || lifecycle === 'starting'} onClick={() => void window.speaksub.reloadGeminiPage().catch(error => setAutomation({ phase: 'failed', message: error instanceof Error ? error.message : '刷新失败。', recoverable: true }))}>刷新连接页</button>
+    {lifecycle === 'starting' && <button className="quiet-action" onClick={() => void cancelPracticeStartup()}>取消正在启动的练习</button>}
+    <button className="quiet-action" onClick={() => void window.speaksub.hideGeminiPage()}>返回主界面，保持 Gemini 后台运行</button>
+  </section></main>{updateDialog}</>
+
+  if (connection.pageVisible && source !== 'gemini-web') return <><main className="connection-shell"><WindowControls/><section className="connection-panel">
     <div className="brand-lockup"><img className="brand-icon" src={brandIcon} alt="" /><span className="brand-copy"><strong>SpeakHub</strong><em>personal practice</em></span></div><p className="kicker">WEB MODEL CONNECTION</p>
     <h1>{connection.ready ? '连接页面已打开' : '先登录你的 ChatGPT'}</h1>
     <p>右侧页面用于登录和恢复网页模式。完成登录后回到 SpeakSub，选择难度并开始对话。</p>
@@ -851,18 +866,18 @@ export function App() {
       </button>
       <button className={settings.visible ? 'subtitle-toggle active' : 'subtitle-toggle'} onClick={() => void window.speaksub.toggleOverlay()}>{settings.visible ? '隐藏字幕' : '显示字幕'}</button>
       {settings.locked && <button className="subtitle-unlock-action" onClick={() => updateSubtitle({ locked: false })}>解锁字幕</button>}
-      {isWebSource && <button className="quiet-action" onClick={() => void openConnection()}>连接页</button>}
+      {(isWebSource || isGeminiSource) && <button className="quiet-action" onClick={() => void openConnection()}>{isGeminiSource ? '打开 Gemini' : '连接页'}</button>}
     </div><WindowControls/>
   </header><aside className="studio-nav"><button className={tab === 'practice' ? 'active' : ''} onClick={() => { cancelMicrophoneTest(); cancelMimoPreview(); setTab('practice') }}>练习</button><button className={tab === 'learning' ? 'active' : ''} onClick={() => { cancelMicrophoneTest(); cancelMimoPreview(); setTab('learning') }}>学习</button><button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>设置</button></aside>
   <section className="studio-content">
     {tab === 'practice' && <>
-      <section className="practice-stage"><div className="stage-copy"><p className="kicker">SPEAKING SESSION</p><h1>{session ? '正在对话…' : '准备开口。'}</h1><p>{session ? (source === 'api-direct' ? `阿里中英识别与${ttsProvider === 'mimo' ? ` MiMo ${mimoVoice} 云端朗读` : ' Kokoro 本地朗读'}已接入流式 API、字幕和归档。` : `${sourceLabels[source]} 在后台保持运行，字幕可随时显示。`) : '选择来源、场景和难度，然后开始一次练习。'}</p></div><div className="automation-card"><span className={`status-dot ${automation.phase}`}></span><div><small>{source === 'api-direct' && mode === 'voice' ? voicePhase : automation.phase.replaceAll('-', ' ')}</small><strong>{automation.message}</strong></div>{automation.recoverable && isWebSource && <button onClick={() => void openConnection()}>打开连接页</button>}{automation.recoverable && isWebSource && <button onClick={() => void clearPendingCleanup()}>已处理旧对话</button>}</div></section>
+      <section className="practice-stage"><div className="stage-copy"><p className="kicker">SPEAKING SESSION</p><h1>{session ? '正在对话…' : '准备开口。'}</h1><p>{session ? (source === 'api-direct' ? `阿里中英识别与${ttsProvider === 'mimo' ? ` MiMo ${mimoVoice} 云端朗读` : ' Kokoro 本地朗读'}已接入流式 API、字幕和归档。` : `${sourceLabels[source]} 在后台保持运行，字幕可随时显示。`) : '选择来源、场景和难度，然后开始一次练习。'}</p></div><div className="automation-card"><span className={`status-dot ${automation.phase}`}></span><div><small>{source === 'api-direct' && mode === 'voice' ? voicePhase : automation.phase.replaceAll('-', ' ')}</small><strong>{automation.message}</strong></div>{automation.recoverable && (isWebSource || isGeminiSource) && <button onClick={() => void openConnection()}>打开连接页</button>}{automation.recoverable && isWebSource && <button onClick={() => void clearPendingCleanup()}>已处理旧对话</button>}</div></section>
       <section className="template-workbench"><div className="workbench-heading"><h2>选择一次对话</h2><span>{source === 'api-direct' ? apiVoiceSummary : `${sourceLabels[source]} 在后台执行`}</span></div>
         <div className="source-picker">{(Object.keys(sourceLabels) as PracticeSource[]).map((item) => <button key={item} disabled={Boolean(session) || transitionBusy} className={source === item ? 'active' : ''} onClick={() => selectSource(item)}>{sourceLabels[item]}</button>)}</div>
-        <div className="source-picker" aria-label="交流方式"><button disabled={Boolean(session) || transitionBusy} className={mode === 'voice' ? 'active' : ''} onClick={() => selectMode('voice')}>语音交流</button><button disabled={Boolean(session) || transitionBusy} className={mode === 'text' ? 'active' : ''} onClick={() => selectMode('text')}>文字交流</button></div>
+        {isGeminiSource && <div className="gemini-web-note"><p>使用 Gemini 3.8 Live 进行语音或文字对话，无需 Gemini API Key，可隐藏到后台。复盘使用设置中配置的大模型 API。</p><button className="quiet-action" onClick={() => void openConnection()}>打开 Gemini 并登录</button></div>}<div className="source-picker" aria-label="交流方式"><button disabled={Boolean(session) || transitionBusy} className={mode === 'voice' ? 'active' : ''} onClick={() => selectMode('voice')}>语音交流</button><button disabled={Boolean(session) || transitionBusy} className={mode === 'text' ? 'active' : ''} onClick={() => selectMode('text')}>文字交流</button></div>
         {templates && <><div className="prompt-category"><div><strong>情景</strong><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('scenario')}>管理提示词</button><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={openSystemPromptEditor}>管理系统提示词</button></div><div className="topic-grid">{templates.scenario.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.scenario === item.id ? 'topic active' : 'topic'} onClick={() => { setSelectedTemplates((value) => ({ ...value, scenario: item.id })); savePracticePreferences({ scenarioTemplateId: item.id }) }}>{item.name}</button>)}</div></div>
         <div className="session-config"><div className="level-picker"><span>难度</span>{templates.difficulty.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.difficulty === item.id ? 'active' : ''} onClick={() => { setSelectedTemplates((value) => ({ ...value, difficulty: item.id })); savePracticePreferences({ difficultyTemplateId: item.id }) }}>{item.name}</button>)}</div><div className="correction-picker"><span>纠错</span>{templates.correction.map((item) => <button key={item.id} disabled={Boolean(session) || transitionBusy} className={selectedTemplates.correction === item.id ? 'active' : ''} onClick={() => { setSelectedTemplates((value) => ({ ...value, correction: item.id })); savePracticePreferences({ correctionTemplateId: item.id }) }}>{item.name}</button>)}</div><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('difficulty')}>管理难度</button><button className="quiet-action" disabled={Boolean(session) || transitionBusy} onClick={() => openTemplateEditor('correction')}>管理纠错</button>{session ? <button className="finish-action" disabled={transitionBusy} onClick={() => void endPractice()}>{lifecycle === 'ending' ? '正在生成复盘与句子分析…' : '结束并生成复盘'}</button> : <button className="primary-action" disabled={lifecycle === 'ending' || practiceStartCancelBusy} aria-label={lifecycle === 'starting' ? '取消正在启动的练习' : '确认并开始'} onClick={() => void startPractice()}>{practiceStartCancelBusy ? '正在取消…' : lifecycle === 'starting' ? '正在启动… 再次点击取消' : '确认并开始'}</button>}</div>
-        <section className="prompt-preview"><strong>{source === 'api-direct' ? '将作为 system 发送给 AI 的完整提示词' : '将发送给 ChatGPT 的完整提示词'}</strong><p>{promptPreview}</p></section>{systemPromptEditorOpen && <div className="confirm-layer template-editor" role="dialog" aria-modal="true" aria-labelledby="system-prompt-editor-title"><div><header className="template-editor-header"><div><p className="kicker">SYSTEM PROMPT</p><h2 id="system-prompt-editor-title">管理系统提示词</h2><p>这份系统提示词会先与情景、难度和纠错提示词组合。API 直连会将其作为 system 发送；ChatGPT 网页会将相同内容合并进首条提示词。</p></div><button className="template-editor-close" type="button" aria-label="关闭系统提示词管理" title="关闭" onClick={() => setSystemPromptEditorOpen(false)}>×</button></header><textarea value={systemPromptDraft} aria-label="系统提示词内容" rows={12} onChange={(event) => setSystemPromptDraft(event.target.value)}/><footer><button className="quiet-action" onClick={resetSystemPromptDraft}>恢复默认</button><button className="quiet-action" onClick={() => setSystemPromptEditorOpen(false)}>取消</button><button className="primary-action" disabled={!systemPromptDraft.trim()} onClick={() => void saveSystemPrompt()}>保存</button></footer></div></div>}
+        <section className="prompt-preview"><strong>{source === 'api-direct' ? '将作为 system 发送给 AI 的完整提示词' : `将发送给 ${sourceLabels[source]} 的完整提示词`}</strong><p>{promptPreview}</p></section>{systemPromptEditorOpen && <div className="confirm-layer template-editor" role="dialog" aria-modal="true" aria-labelledby="system-prompt-editor-title"><div><header className="template-editor-header"><div><p className="kicker">SYSTEM PROMPT</p><h2 id="system-prompt-editor-title">管理系统提示词</h2><p>这份系统提示词会先与情景、难度和纠错提示词组合。API 直连会将其作为 system 发送；ChatGPT 网页会将相同内容合并进首条提示词。</p></div><button className="template-editor-close" type="button" aria-label="关闭系统提示词管理" title="关闭" onClick={() => setSystemPromptEditorOpen(false)}>×</button></header><textarea value={systemPromptDraft} aria-label="系统提示词内容" rows={12} onChange={(event) => setSystemPromptDraft(event.target.value)}/><footer><button className="quiet-action" onClick={resetSystemPromptDraft}>恢复默认</button><button className="quiet-action" onClick={() => setSystemPromptEditorOpen(false)}>取消</button><button className="primary-action" disabled={!systemPromptDraft.trim()} onClick={() => void saveSystemPrompt()}>保存</button></footer></div></div>}
         {!session && focus && <label className="practice-focus"><span><input type="checkbox" checked={focusEnabled} onChange={(event) => { setFocusEnabled(event.target.checked); savePracticePreferences({ focusEnabled: event.target.checked }) }}/> 带入上次复盘重点</span><textarea disabled={!focusEnabled} value={focus} onChange={(event) => { setFocus(event.target.value); savePracticePreferences({ focus: event.target.value }) }} rows={3}/><small>重点来自所选历史对话的薄弱点和“下一次练习”建议；勾选后会追加到最终提示词。</small></label>}</>}
         {session && source === 'api-direct' && mode === 'text' && <div className="api-composer" aria-busy={apiBusy}><textarea value={apiMessage} onChange={(event) => setApiMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendApiMessage() } }} placeholder="用英语输入你的回答…" rows={3}/><button className="primary-action" aria-label={apiBusy ? '打断当前回复并发送' : '发送'} disabled={!apiMessage.trim()} onClick={() => void sendApiMessage()}>发送</button></div>}
         {session && mode === 'voice' && <div className="api-composer microphone-control"><div><strong>{microphone.active ? (source === 'api-direct' && voicePhase === 'listening' ? '正在听你说' : '麦克风已开启，可随时打断 AI') : '麦克风已暂停'}</strong><span>按 {microphone.shortcut} 开启或暂停；API 语音在 AI 思考和朗读时也会持续监听。</span></div></div>}

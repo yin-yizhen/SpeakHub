@@ -5,7 +5,7 @@ const practiceProfileSchema = z.object({
   topic: z.string().trim().min(1).max(80),
   level: z.enum(['A1', 'A2', 'B1', 'B2', 'C1']),
   correctionStrength: z.enum(['light', 'normal', 'strict']),
-  source: z.enum(['chatgpt-web', 'api-direct']),
+  source: z.enum(['chatgpt-web', 'api-direct', 'gemini-web']),
   mode: z.enum(['text', 'voice']),
   focus: z.string().trim().max(2_000).optional(),
   prompt: z.string().trim().min(1).max(8_000).optional(),

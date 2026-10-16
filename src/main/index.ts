@@ -16,6 +16,7 @@ import { MimoTtsClient } from './mimo-tts-client'
 import { SpeechModelManager, speechModelRoot } from './speech-model-manager'
 import { SpeechSegmenter } from './speech-segments'
 import { SpeechSynthesisQueue } from './speech-synthesis-queue'
+import { GeminiWebSession } from './gemini-web-session'
 import { InterruptibleTaskHandoff } from './interruptible-task-handoff'
 import { SessionCheckpoint } from './session-checkpoint'
 import { SecureSettings } from './secure-settings'
@@ -54,6 +55,13 @@ let cleanupTask: Promise<void> | undefined
 let overlayWindow: BrowserWindow | undefined
 let overlayBoundsPersistenceTimer: ReturnType<typeof setTimeout> | undefined
 let adapter: SourceAdapter | undefined
+let geminiWeb: GeminiWebSession
+let geminiView: WebContentsView | undefined
+let geminiBackgroundWindow: BaseWindow | undefined
+let geminiPageVisible = false
+let geminiLoginTask: Promise<void> | undefined
+let closingGemini = false
+let geminiCloseReady = false
 let chatgptAutomation: ChatGPTAutomation | undefined
 let store: SpeakSubStore
 let settings: SecureSettings
@@ -137,7 +145,7 @@ function recordAliyunUsage(cumulativeSeconds: number): void {
   appSettings.addSpeechUsageSeconds(usageMonth(), delta)
   announceSpeechUsage()
 }
-function state() { return { session: activeSession, settings: subtitle, events, connection, automation: automationStatus, source: activeSource, mode: activeMode, lifecycle: practiceController.lifecycle, microphone: microphoneGateState(), speechAssets: speechModels.state(), speechUsage: speechUsageState(), voicePhase } }
+function state() { return { session: activeSession, settings: subtitle, events, connection, geminiPageVisible, automation: automationStatus, source: activeSource, mode: activeMode, lifecycle: practiceController.lifecycle, microphone: microphoneGateState(), speechAssets: speechModels.state(), speechUsage: speechUsageState(), voicePhase } }
 function announceAutomation(status: AutomationStatus): void { automationStatus = status; diagnostics?.write('automation', { phase: status.phase, recoverable: status.recoverable }); broadcast('automation:status', status) }
 function announceConnection(): void { broadcast('connection:state', connection) }
 function announceMicrophone(): void { broadcast('microphone:state', microphoneGateState()) }
@@ -147,7 +155,9 @@ function sourceUrl(): string { return CHATGPT_URL }
 function assertPracticeStartActive(signal: AbortSignal): void { if (signal.aborted) throw new Error('Practice startup was cancelled.') }
 
 async function setMicrophoneGate(active: boolean): Promise<MicrophoneGateState> {
+  if (activeSession && practiceController.lifecycle === 'ending') return microphoneGateState()
   await microphoneGate.set(active, Boolean(activeSession), activeMode, async (next) => {
+    if (activeSource === 'gemini-web') { await geminiWeb.setMicrophone(next); return }
     if (activeSource !== 'chatgpt-web') return
     if (!chatHostView || !chatgptMicrophoneGateReady) throw new Error('ChatGPT microphone gate is not ready. Refresh the connection page and try again.')
     chatHostView.webContents.send('speaksub:microphone-gate', next)
@@ -170,16 +180,51 @@ function registerMicrophoneShortcut(next: string): string {
 function layoutChatHostView(): void {
   if (!mainWindow || !chatHostView || !chatBackgroundWindow) return
   placeChatGPTView(chatHostView, mainWindow, chatBackgroundWindow, connection.pageVisible, CONNECTION_WIDTH)
+  if (geminiView && geminiBackgroundWindow) placeChatGPTView(geminiView, mainWindow, geminiBackgroundWindow, geminiPageVisible, CONNECTION_WIDTH)
+}
+
+function setGeminiPageVisible(visible: boolean): void {
+  geminiPageVisible = visible
+  if (visible) { connection = { ...connection, pageVisible: false }; announceConnection() }
+  applyWindowMode()
+  broadcast('gemini:page-visible', visible)
 }
 
 function applyWindowMode(): void {
   if (!mainWindow || !chatHostView) return
   mainWindow.setMinimumSize(1020, 680); mainWindow.setBounds(studioBounds)
   layoutChatHostView()
+  if (geminiPageVisible && geminiView) { mainWindow.show(); geminiView.webContents.focus(); return }
   if (connection.pageVisible) {
     mainWindow.show(); chatHostView.webContents.focus(); return
   }
   mainWindow.show(); mainWindow.focus()
+}
+
+function createGeminiView(): void {
+  if (!mainWindow) return
+  geminiBackgroundWindow = new BaseWindow({ width: 1000, height: 860, show: false, skipTaskbar: true, title: 'SpeakHub Gemini background practice' })
+  geminiView = new WebContentsView({ webPreferences: { partition: 'persist:speaksub-gemini', contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false } })
+  const contents = geminiView.webContents
+  contents.setAudioMuted(true)
+  contents.setBackgroundThrottling(false)
+  contents.setUserAgent(chromeCompatibleUserAgent(process.versions.chrome))
+  const allowed = (value: string): boolean => {
+    try { const url = new URL(value); return url.protocol === 'https:' && ['aistudio.google.com', 'accounts.google.com', 'consent.google.com'].includes(url.hostname) } catch { return false }
+  }
+  contents.setWindowOpenHandler(({ url }) => { if (allowed(url)) void contents.loadURL(url).catch(() => undefined); return { action: 'deny' } })
+  contents.on('will-navigate', (event, url) => { if (!allowed(url)) event.preventDefault() })
+  contents.session.setPermissionCheckHandler((_contents, permission, origin) => permission === 'media' && origin === 'https://aistudio.google.com')
+  contents.session.setPermissionRequestHandler((_contents, permission, callback, details) => {
+    const audioOnly = 'mediaTypes' in details && details.mediaTypes?.every(type => type === 'audio') === true
+    callback(permission === 'media' && audioOnly && connectionDiagnosticOrigin(details.requestingUrl) === 'https://aistudio.google.com')
+  })
+  contents.on('did-fail-load', (_event, code, description, _url, mainFrame) => {
+    if (shouldReportConnectionLoadFailure(code, mainFrame)) announceAutomation({ phase: 'failed', message: `Gemini 页面加载失败：${description}，请打开连接页刷新。`, recoverable: true })
+  })
+  layoutChatHostView()
+  // Give the hidden view a real document before remote inspection/activation.
+  void contents.loadURL('about:blank').catch(() => undefined)
 }
 
 function createChatHostView(): void {
@@ -252,7 +297,14 @@ function createMainWindow(): void {
   mainWindow.removeMenu(); mainWindow.loadURL(rendererUrl('index.html'))
   mainWindow.on('move', () => { studioBounds = mainWindow!.getBounds() })
   mainWindow.on('resize', () => { studioBounds = mainWindow!.getBounds(); layoutChatHostView() })
-  mainWindow.on('restore', applyWindowMode); mainWindow.on('closed', () => { adapter?.stop(); adapter = undefined; chatHostView?.webContents.close(); chatHostView = undefined; chatgptAutomation = undefined; chatBackgroundWindow?.destroy(); chatBackgroundWindow = undefined; cleanupWindow?.destroy(); overlayWindow?.close() })
+  mainWindow.on('close', (event) => {
+    if (activeSource !== 'gemini-web' || !activeSession || geminiCloseReady) return
+    event.preventDefault()
+    if (closingGemini) return
+    closingGemini = true
+    void geminiWeb.cancel().finally(() => { geminiCloseReady = true; mainWindow?.close() })
+  })
+  mainWindow.on('restore', applyWindowMode); mainWindow.on('closed', () => { adapter?.stop(); adapter = undefined; geminiView?.webContents.close(); geminiView = undefined; geminiBackgroundWindow?.destroy(); geminiBackgroundWindow = undefined; chatHostView?.webContents.close(); chatHostView = undefined; chatgptAutomation = undefined; chatBackgroundWindow?.destroy(); chatBackgroundWindow = undefined; cleanupWindow?.destroy(); overlayWindow?.close() })
 }
 
 function createOverlayWindow(): void {
@@ -683,7 +735,7 @@ async function streamApiReply(addUserMessage: boolean, userText?: string, speakT
   }
 }
 
-function setConnection(next: Partial<ConnectionState>): ConnectionState { connection = { ...connection, ...next }; connection.ready = connection.providers[connection.activeProvider]; applyWindowMode(); announceConnection(); return connection }
+function setConnection(next: Partial<ConnectionState>): ConnectionState { if (next.pageVisible && geminiPageVisible) { geminiPageVisible = false; broadcast('gemini:page-visible', false) } connection = { ...connection, ...next }; connection.ready = connection.providers[connection.activeProvider]; applyWindowMode(); announceConnection(); return connection }
 
 async function chooseArchiveDirectory(): Promise<string | undefined> {
   if (activeSession) throw new Error('End the active practice before changing the archive folder.')
@@ -806,6 +858,10 @@ async function sendPracticeMessage(message: string, speakReply = false): Promise
           await streamApiReply(true, text, speakReply)
           return
         }
+        if (activeSource === 'gemini-web') {
+          await geminiWeb.send(text)
+          return
+        }
         const automation = chatgptAutomation
         if (!automation) throw new Error('The web practice window is not ready.')
         const provider = 'ChatGPT'
@@ -828,6 +884,23 @@ async function sendPracticeMessage(message: string, speakReply = false): Promise
 }
 
 function installIpc(): void {
+  ipcMain.handle('gemini:open', async (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('只能从主窗口打开 Gemini。')
+    if (activeSession && activeSource !== 'gemini-web') throw new Error('请先结束当前练习。')
+    setConnection({ pageVisible: false })
+    await geminiWeb.open()
+  })
+  ipcMain.handle('gemini:hide', () => setGeminiPageVisible(false))
+  ipcMain.handle('gemini:login', async (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('只能从主窗口发起 Gemini 登录。')
+    if (activeSession) throw new Error('请先结束练习，再登录 Gemini。')
+    geminiLoginTask ??= geminiWeb.importLogin()
+    try { await geminiLoginTask } finally { geminiLoginTask = undefined }
+  })
+  ipcMain.handle('gemini:reload', async (event) => {
+    if (event.sender !== mainWindow?.webContents || activeSession) throw new Error('请先结束练习，再刷新 Gemini。')
+    if (geminiView) await geminiView.webContents.loadURL('https://aistudio.google.com/live?model=gemini-3.8-live')
+  })
   ipcMain.handle('app:version', () => app.getVersion())
   ipcMain.handle('app:state', () => state())
   ipcMain.handle('update:check', (event) => {
@@ -888,6 +961,22 @@ function installIpc(): void {
     microphoneGate.start(profile.mode)
     if (profile.source === 'chatgpt-web' && profile.mode === 'voice') chatHostView?.webContents.send('speaksub:microphone-gate', microphoneGate.active)
     announceMicrophone()
+    if (profile.source === 'gemini-web') {
+      setConnection({ pageVisible: false })
+      announceAutomation({ phase: 'filling-prompt', message: '正在专属 Google 浏览器准备 Gemini 网页…' })
+      await geminiWeb.prepare(signal, appSettings.microphoneInput(), profile.mode === 'voice' && microphoneGate.active)
+      assertPracticeStartActive(signal)
+      const practice = beginSession(profile)
+      geminiWeb.startCapture(handleEvent, message => announceAutomation({ phase: 'failed', message, recoverable: true }))
+      adapter = { start: () => undefined, stop: () => geminiWeb.stopCapture() }
+      await geminiWeb.send(activePrompt)
+      assertPracticeStartActive(signal)
+      const voiceStarted = profile.mode === 'voice' && await geminiWeb.enableVoice()
+      assertPracticeStartActive(signal)
+      geminiWeb.hide()
+      announceAutomation({ phase: voiceStarted ? 'voice-started' : 'idle', message: voiceStarted ? 'Gemini 已在应用内后台运行；字幕和归档已连接，可通过连接页查看网页。' : 'Gemini 网页已开始，字幕和归档已连接。' })
+      return { session: practice, voiceStarted, source: profile.source, mode: profile.mode, warning: profile.mode === 'voice' && !voiceStarted ? 'Gemini 尚未取得麦克风音轨。请打开应用内连接页，检查麦克风权限和网页的 Microphone 按钮。字幕采集已连接。' : undefined }
+    }
     if (profile.source === 'api-direct') {
       const config = settings.get()
       if (!config.llmBaseUrl || !config.llmModel || !config.hasLlmKey) throw new Error('请先在设置中填写 DeepSeek 或其他 OpenAI-compatible 文本 API。')
@@ -950,6 +1039,7 @@ function installIpc(): void {
   ipcMain.handle('practice:cancel-start', async () => {
     const cancelledPendingStart = practiceController.cancelStart()
     if (!cancelledPendingStart && !activeSession) return
+    if (activeSource === 'gemini-web') await geminiWeb.cancel()
     activeVoiceReply?.controller.abort(); activeTextReply?.controller.abort()
     if (activeTextTtsGeneration !== undefined) localSpeech?.cancelSynthesis(activeTextTtsGeneration)
     activeTextTtsGeneration = undefined; voiceGeneration += 1; clearBargeTimer()
@@ -965,7 +1055,10 @@ function installIpc(): void {
     if (!cancelledPendingStart) practiceController.reset()
     announceAutomation({ phase: 'idle', message: '已取消本次启动，可以重新开始。' })
   })
-  ipcMain.handle('practice:end', () => endPracticeWithSubtitles(async () => {
+  ipcMain.handle('practice:end', () => {
+    // Native mute is synchronous: silence buffered audio before any cleanup or API work.
+    if (activeSource === 'gemini-web') geminiWeb.muteOutput()
+    return endPracticeWithSubtitles(async () => {
     const result = await practiceController.end(async () => {
       if (!interruptVoiceResponse() && !interruptTextResponse()) {
         activeVoiceReply?.controller.abort()
@@ -981,6 +1074,7 @@ function installIpc(): void {
       const reviewFavorites = store.favoriteWordsForSession(session.id)
       const reviewSentences = store.favoriteSentencesForSession(session.id)
       let voiceStopped = activeMode !== 'voice'; let voiceWarning: string | undefined
+      if (activeSource === 'gemini-web') { await geminiWeb.pauseAndFlush(); await geminiWeb.disconnect(); microphoneGate.end(); announceMicrophone(); voiceStopped = true }
       if (activeSource === 'chatgpt-web' && activeMode === 'voice') { announceAutomation({ phase: 'stopping-voice', message: 'Ending ChatGPT voice…' }); const result = await chatgptAutomation?.stopVoice().catch(() => undefined); voiceStopped = result?.ok === true; voiceWarning = voiceStopped ? undefined : result?.message ?? 'Could not end ChatGPT voice automatically.' }
       if (activeSource === 'api-direct' && localSpeech) {
         await localSpeech?.stop().catch(() => undefined)
@@ -992,17 +1086,26 @@ function installIpc(): void {
       const reviewArchive = store.readSessionMarkdown(ended.id)
       announceAutomation({ phase: voiceStopped ? 'idle' : 'failed', message: voiceStopped ? 'Practice ended.' : voiceWarning!, recoverable: !voiceStopped })
       let review: ReviewResult | undefined; let reviewError: string | undefined
-      try { const result = await learning.reviewWithSentences(reviewArchive, ended.correctionStrength, reviewFavorites, reviewSentences); review = result.review; store.saveReview(ended.id, review, result.sentenceAnalyses) }
+      try {
+        if (activeSource === 'gemini-web') announceAutomation({ phase: 'waiting-for-reply', message: '正在使用已配置的 API 生成复盘…' })
+        const result = await learning.reviewWithSentences(reviewArchive, ended.correctionStrength, reviewFavorites, reviewSentences)
+        review = result.review
+        store.saveReview(ended.id, review, result.sentenceAnalyses)
+      }
       catch (error) { reviewError = error instanceof Error ? error.message : 'Review generation failed.' }
       try { store.finalizeSession(ended.id) }
       catch (error) { throw new Error(`Could not finalize the practice archive: ${error instanceof Error ? error.message : 'unknown file error'}. The session remains available to retry.`) }
-    activeSession = undefined
+      activeSession = undefined
       microphoneGate.end(); announceMicrophone()
+      if (activeSource === 'gemini-web') announceAutomation(reviewError
+        ? { phase: 'failed', message: `对话已归档，API 复盘未完成：${reviewError}`, recoverable: true }
+        : { phase: 'idle', message: 'Gemini 对话和 API 复盘已归档。' })
       return { session: ended, review, error: reviewError, voiceStopped, voiceWarning }
     }, () => Boolean(activeSession))
     broadcast('practice:ended', result)
     return result
-  }, hideOverlay, reportSubtitleVisibilityError))
+    }, hideOverlay, reportSubtitleVisibilityError)
+  })
   ipcMain.handle('subtitle:update', (_event, input: Partial<SubtitlePreferences>) => {
     const wasLocked = subtitle.locked
     const wasVisible = subtitle.visible
@@ -1024,7 +1127,7 @@ function installIpc(): void {
     if (!activeSession) throw new Error('Start a practice before saving a sentence.')
     return store.saveSentenceFavorite(activeSession.id, z.string().trim().min(1).max(2_000).parse(sourceMessageId))
   })
-  const historyQuerySchema = z.object({ text: z.string().max(10_000).optional(), source: z.enum(['chatgpt-web', 'api-direct']).optional(), mode: z.enum(['text', 'voice']).optional(), level: z.enum(['A1', 'A2', 'B1', 'B2', 'C1']).optional(), status: z.enum(['completed', 'interrupted']).optional(), dateFrom: z.string().datetime().optional(), dateTo: z.string().datetime().optional() }).optional()
+  const historyQuerySchema = z.object({ text: z.string().max(10_000).optional(), source: z.enum(['chatgpt-web', 'api-direct', 'gemini-web']).optional(), mode: z.enum(['text', 'voice']).optional(), level: z.enum(['A1', 'A2', 'B1', 'B2', 'C1']).optional(), status: z.enum(['completed', 'interrupted']).optional(), dateFrom: z.string().datetime().optional(), dateTo: z.string().datetime().optional() }).optional()
   ipcMain.handle('learning:sessions:search', (_event, query) => store.searchSessions(historyQuerySchema.parse(query)))
   ipcMain.handle('learning:sessions:review', async (_event, id) => {
     const sessionId = z.string().uuid().parse(id)
@@ -1135,12 +1238,12 @@ if (!hasSingleInstanceLock) {
 
   void app.whenReady().then(() => {
     const workArea = screen.getPrimaryDisplay().workArea; studioBounds = { x: Math.round(workArea.x + (workArea.width - Math.min(1320, workArea.width)) / 2), y: Math.round(workArea.y + (workArea.height - Math.min(860, workArea.height)) / 2), width: Math.min(1320, workArea.width), height: Math.min(860, workArea.height) }
-    const userData = app.getPath('userData'); diagnostics = new DiagnosticLog(join(userData, 'speaksub-diagnostics.jsonl')); appSettings = new AppSettingsStore(join(userData, 'app-settings.json')); updateService = new UpdateService({ currentVersion: app.getVersion(), downloadDirectory: join(userData, 'updates', 'downloads'), fetcher: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, init), openPath: (filePath) => launchInstallerAndQuit(filePath, { quit: () => app.quit() }), openExternal: (url) => shell.openExternal(url) }); try { microphoneShortcut = normalizeMicrophoneShortcut(appSettings.microphoneShortcut()) } catch { microphoneShortcut = defaultMicrophoneShortcut; appSettings.setMicrophoneShortcut(microphoneShortcut) } connection = appSettings.connection('chatgpt-web', !appSettings.providerReady('chatgpt-web')); subtitle = appSettings.readSubtitle()
+    const userData = app.getPath('userData'); geminiWeb = new GeminiWebSession(userData, app.isPackaged ? undefined : join(app.getAppPath(), 'tmp', 'ai-studio-probe-state.json'), { contents: () => { if (!geminiView) throw new Error('Gemini 内嵌页面尚未准备好。'); return geminiView.webContents }, show: () => setGeminiPageVisible(true), hide: () => setGeminiPageVisible(false) }); diagnostics = new DiagnosticLog(join(userData, 'speaksub-diagnostics.jsonl')); appSettings = new AppSettingsStore(join(userData, 'app-settings.json')); updateService = new UpdateService({ currentVersion: app.getVersion(), downloadDirectory: join(userData, 'updates', 'downloads'), fetcher: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, init), openPath: (filePath) => launchInstallerAndQuit(filePath, { quit: () => app.quit() }), openExternal: (url) => shell.openExternal(url) }); try { microphoneShortcut = normalizeMicrophoneShortcut(appSettings.microphoneShortcut()) } catch { microphoneShortcut = defaultMicrophoneShortcut; appSettings.setMicrophoneShortcut(microphoneShortcut) } connection = appSettings.connection('chatgpt-web', appSettings.practicePreferences().source !== 'gemini-web' && !appSettings.providerReady('chatgpt-web')); subtitle = appSettings.readSubtitle()
     archiveDirectory = appSettings.archiveDirectory(join(userData, 'learning-archive')); store = new SpeakSubStore(archiveDirectory); settings = new SecureSettings(join(userData, 'provider-settings.json')); chatMarker = new ChatGPTMarkerStore(join(userData, 'last-speaksub-chat.json')); learning = new LearningService(settings, join(app.getAppPath(), 'resources', 'dictionaries', 'ecdict-en-zh')); speechModels = new SpeechModelManager(speechModelRoot({ isPackaged: app.isPackaged, executablePath: process.execPath, userDataDirectory: userData }), (input, init) => net.fetch(input instanceof URL ? input.toString() : input, init)); speechModels.subscribe((assetState) => broadcast('speech-assets:state', assetState))
     const showPersistedOverlay = subtitle.visible
     try { registerMicrophoneShortcut(microphoneShortcut) } catch (error) { microphoneShortcutError = error instanceof Error ? error.message : 'The saved microphone shortcut is unavailable.' }
-    createMainWindow(); createChatHostView(); createOverlayWindow(); installIpc(); applyWindowMode(); mainWindow?.webContents.once('did-finish-load', () => { analytics = new AnonymousAnalytics({ userDataDirectory: userData, appVersion: app.getVersion(), platform: process.platform, arch: process.arch }); void analytics.start() }); if (microphoneShortcutError) announceAutomation({ phase: 'failed', message: microphoneShortcutError, recoverable: true }); if (showPersistedOverlay) showOverlay()
-    app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) { createMainWindow(); createChatHostView(); createOverlayWindow(); applyWindowMode() } })
+    createMainWindow(); createChatHostView(); createGeminiView(); createOverlayWindow(); installIpc(); applyWindowMode(); mainWindow?.webContents.once('did-finish-load', () => { analytics = new AnonymousAnalytics({ userDataDirectory: userData, appVersion: app.getVersion(), platform: process.platform, arch: process.arch }); void analytics.start() }); if (microphoneShortcutError) announceAutomation({ phase: 'failed', message: microphoneShortcutError, recoverable: true }); if (showPersistedOverlay) showOverlay()
+    app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) { createMainWindow(); createChatHostView(); createGeminiView(); createOverlayWindow(); applyWindowMode() } })
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
     diagnostics?.write('startup-failed', { message })
@@ -1154,5 +1257,5 @@ if (!hasSingleInstanceLock) {
 
 app.on('will-quit', () => globalShortcut.unregister(microphoneShortcut))
 
-app.on('before-quit', () => { stopSessionCheckpoint(true); void analytics?.close() })
+app.on('before-quit', () => { void geminiWeb?.disconnect(); stopSessionCheckpoint(true); void analytics?.close() })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
