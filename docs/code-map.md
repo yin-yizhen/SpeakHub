@@ -2,7 +2,7 @@
 
 ## Gemini Web Practice and AI Studio Login
 
-- UI guidance: `App.tsx` names Gemini 3.8 Live for conversations and the configured LLM API for reviews. The connection panel highlights “首次使用，请点击下方‘使用 Google 登录 Gemini’”; `styles.css` styles the hint separately from the live status. `App.voice.test.tsx` verifies the guidance and login control. Version 0.2.4 release copy: `docs/releases/v0.2.4.md`; follow `agent.md` for build/upload and update-popup acceptance. Source push alone does not trigger an update.
+- UI guidance: `App.tsx` names Gemini 3.8 Live for conversations and the configured LLM API for reviews. The connection panel highlights “首次使用，请点击下方‘使用 Google 登录 Gemini’”; `styles.css` styles the hint separately from the live status. `App.voice.test.tsx` verifies the guidance and login control. Version 0.2.5 release copy: `docs/releases/v0.2.5.md` (weak-point review validation fix); Gemini feature release copy: `docs/releases/v0.2.4.md`; follow `agent.md` for build/upload and update-popup acceptance. Source push alone does not trigger an update.
 
 - Entry: main selector `Gemini 网页` in `src/renderer/App.tsx` -> `gemini:open` -> independent `WebContentsView` created by `createGeminiView()` in `src/main/index.ts`, partition `persist:speaksub-gemini`. The renderer connection panel exposes Google login, refresh and return-to-main controls. `GeminiWebSession` receives this embedded host; normal practice does not launch or connect to external Chrome. Existing ChatGPT view/profile stay separate.
 - Startup: load a fresh Live document at `gemini-3.8-live` in the owned embedded view, install microphone routing/gate, start capture before sending the combined prompt through the embedded input bridge, and require its user transcript as submission confirmation. Voice mode waits for a live microphone track. Google copyright acknowledgement remains a user action in the app's connection page. Start cancellation disconnects/stops this view without destroying login. The first blank document is loaded explicitly so an unattached empty-frame target does not stall CDP/Playwright discovery.
@@ -479,6 +479,7 @@ pnpm dev
 - ChatGPT 清理失败时必须保留 marker，供下次启动重试；不能删除普通用户对话。
 - 不要只看 UI 截图猜修复点；至少验证解析输出、chunk 输出和入库结果中的一个或多个边界。
 - `store.ts` 是学习索引和复习日期的唯一写入点；列表刷新不得触发 LLM 网络回退。
+- 复盘薄弱点 `assessment.weakPoints`：`learning-service.ts` 的全部复盘提示词要求合并相近问题、按重要性排序并概括为最多 6 条；共享 schema 去除首尾空白、空项和完全重复项，但保留超出 6 条的有效内容，避免模型超量返回导致整份复盘失败。不得把此摘要目标套用到完整 `issues` 纠错列表。`learning-service.test.ts` 覆盖普通/收藏句子复盘及长对话分段、总评的超量解析与字段类型校验；运行 `pnpm exec vitest run src/main/learning-service.test.ts src/main/store.test.ts src/renderer/LearningCenter.test.tsx`。真实验收：对报错历史点击“重新生成复盘”，确认原对话保留且同一归档写入复盘、详情及能力趋势刷新。
 - 结束练习时复盘失败不会丢失对话；历史详情必须保留显式“重新生成复盘”入口。真实验收要确认重试成功后同一 Markdown 出现 `## Review`、详情出现评分，学习中心能力趋势随即更新。
 - 长对话的 `issues` 不设 8 条或 10 条硬上限；模型返回的全部有效、非重复纠错都应通过解析并写入归档。首页可单独截取少量摘要，但历史详情保存和展示完整列表；每条纠错的字段类型与收藏句子分析完整性仍必须严格校验。
 - 长对话的上下文容量与网关等待时间是两个边界：只要模型支持，先把完整转写一次发送并流式接收 JSON；不要因持续时间长而主动删减或分段。仅在完整请求收到 504/超时时，才按 Markdown 的完整 AI/Me turn 分段提取纠错并继续缩小失败段。每段内容都送入模型，最终总评只携带精简证据；各段 `issues` 在本地按原句和改写去重合并，避免汇总模型截断或重新施加数量上限。

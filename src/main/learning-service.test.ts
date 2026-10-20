@@ -12,6 +12,36 @@ afterEach(() => {
 })
 
 describe('review response boundary', () => {
+  it.each([false, true])('accepts excess weak points without losing review or sentence analyses (saved sentences: %s)', async withSentences => {
+    const weakPoints = ['时态运用', '冠词', '词汇重复', '回答展开', '衔接', '主谓一致', '介词搭配']
+    const analysis = { translation: '慢慢来。', structure: '祈使句', reusablePattern: 'Take your time.', expressions: [], breakdown: [], examples: [] }
+    const issues = Array.from({ length: 12 }, (_, i) => ({ original: `wrong ${i}`, improved: `right ${i}`, reason: '纠错' }))
+    const response = {
+      topic: 'travel', summary: 'summary', issues, vocabulary: [], nextPractice: 'next time',
+      assessment: { estimatedCefr: 'B1', scores: { accuracy: 72, vocabulary: 68, fluency: 75, interaction: 80 }, errorCategories: [], weakPoints: ['  ', ...weakPoints, ' 时态运用 ', ''] },
+      sentenceAnalyses: withSentences ? [{ sourceMessageId: 'sentence-1', analysis }] : []
+    }
+    const fetchMock = vi.fn(async () => Response.json({ choices: [{ message: { content: JSON.stringify(response) } }] }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'review-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
+
+    const result = await service.reviewWithSentences('# Speaking practice', 'normal', [], withSentences ? [{ sourceMessageId: 'sentence-1', text: 'Take your time.' }] : [])
+
+    expect(result.review.assessment?.weakPoints).toEqual(weakPoints)
+    expect(result.review.issues).toEqual(issues)
+    expect(result.sentenceAnalyses).toEqual(response.sentenceAnalyses)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const request = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>)[0][1]
+    expect(JSON.parse(String(request.body)).messages[0].content).toContain('merge overlapping weaknesses into at most 6 distinct, actionable points')
+  })
+
+  it('still rejects non-string weak points', async () => {
+    const response = { topic: 'travel', summary: 'summary', issues: [], vocabulary: [], nextPractice: 'next time', assessment: { estimatedCefr: 'B1', scores: { accuracy: 72, vocabulary: 68, fluency: 75, interaction: 80 }, errorCategories: [], weakPoints: ['时态', 7] } }
+    const fetchMock = vi.fn(async () => Response.json({ choices: [{ message: { content: JSON.stringify(response) } }] }))
+    const service = new LearningService(settings({ llmBaseUrl: 'https://example.com/v1', llmModel: 'review-model', hasLlmKey: true }, { llmApiKey: 'secret' }), undefined, fetchMock as unknown as typeof fetch)
+
+    await expect(service.review('# Speaking practice', 'normal')).rejects.toThrow(z.ZodError)
+  })
+
   it('rejects malformed review JSON', () => {
     const schema = z.object({ topic: z.string(), issues: z.array(z.object({ original: z.string() })) })
     expect(() => schema.parse({ topic: 'travel', issues: [{ original: 2 }] })).toThrow()
@@ -105,7 +135,8 @@ describe('review response boundary', () => {
 
   it('splits a long transcript, retries a gateway-timed-out segment at a smaller boundary, and merges every correction locally', async () => {
     const analysis = { translation: '慢慢来。', structure: '祈使句', reusablePattern: 'Take your time to + 动词', expressions: [], breakdown: [], examples: ['Take your time to think.'] }
-    const assessment = { estimatedCefr: 'B1', scores: { accuracy: 72, vocabulary: 68, fluency: 75, interaction: 80 }, errorCategories: [], weakPoints: [] }
+    const weakPoints = ['时态', '冠词', '词汇', '展开', '衔接', '主谓一致', '介词']
+    const assessment = { estimatedCefr: 'B1', scores: { accuracy: 72, vocabulary: 68, fluency: 75, interaction: 80 }, errorCategories: [], weakPoints: [...weakPoints, ' 时态 ', ''] }
     let rejectedFullReview = false
     let rejectedLargeSegment = false
     let continuedSegment = 0
@@ -139,11 +170,13 @@ describe('review response boundary', () => {
     expect(rejectedFullReview).toBe(true)
     expect(rejectedLargeSegment).toBe(true)
     expect(result.review).toMatchObject({ topic: 'overall', vocabulary: [{ term: 'persistent' }] })
+    expect(result.review.assessment?.weakPoints).toEqual(weakPoints)
     expect(result.review.issues.map((issue) => issue.original)).toEqual(expect.arrayContaining(['retry issue', 'second issue', 'third issue']))
     expect(result.review.issues.length).toBeGreaterThanOrEqual(4)
     expect(result.sentenceAnalyses).toEqual([{ sourceMessageId: 'sentence-1', analysis }])
     const prompts = (fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>).map(([, request]) => JSON.parse(String(request.body)).messages[0].content as string)
     const synthesisPrompt = prompts.find((prompt) => prompt.includes('Synthesize the overall review'))
+    expect(prompts.every(prompt => prompt.includes('merge overlapping weaknesses into at most 6 distinct, actionable points'))).toBe(true)
     expect(synthesisPrompt).not.toContain('RETRY_SEGMENT')
     expect(synthesisPrompt).toContain('Saved vocabulary:\n- persistent')
     expect(prompts.filter((prompt) => prompt.includes('Analyze transcript segment')).length).toBeGreaterThan(3)
